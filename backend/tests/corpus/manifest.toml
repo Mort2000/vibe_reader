@@ -1,0 +1,33 @@
+# Vibe Reader Mini · Verification Corpus Manifest
+#
+# Each book entry defines a real epub used in system verification.
+# sha256 must match the actual file to ensure reproducibility.
+# license must be declared to confirm authorization for test usage.
+#
+# Place epub files in: tests/corpus/books/
+
+[[books]]
+alias = "genius_prince"
+path = "tests/corpus/books/long_cn_novel_01.epub"
+language = "zh-CN"
+license = "public-domain-or-authorized"
+sha256 = "5b8a4e552e42c7769da068ec8eec87e760a022a11bcfa34c155b55d81e0b11a4"
+expected_min_chapters = 50
+expected_min_paragraphs = 3000
+expected_min_chars = 500000
+
+[[books.probes]]
+name = "early"
+chapter_idx = 0
+paragraph_idx = 20
+
+[[books.probes]]
+name = "middle"
+chapter_idx = 8
+paragraph_idx = 120
+
+[[books.probes]]
+name = "long_context"
+chapter_idx = 12
+paragraph_idx = 900
+requires_context_tokens_gte = 100000

@@ -1,0 +1,42 @@
+[project]
+name = "vibe-reader-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "aiosqlite>=0.21",
+    "toml>=0.10",
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+    "sse-starlette>=2.2",
+    "python-multipart>=0.0.20",
+    "opentelemetry-api>=1.29",
+    "opentelemetry-sdk>=1.29",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+vibe-reader = "app.main:cli"
+vibe-verify = "tests.system_verify.__main__:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "system_llm: system verification tests requiring real backend and LLM",
+    "system_verify: all system verification tests",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
