@@ -1,4 +1,17 @@
-"""Pytest fixtures and markers for system verification tests."""
+"""Pytest fixtures and markers for system verification tests.
+
+On startup, loads the first ``.env`` found under the current working directory,
+``backend/``, or the repository root (see ``.env.example``). Shell environment
+variables already set take precedence.
+
+When running pytest scenarios against a live backend, start it with an isolated
+data directory and verify mode, for example:
+
+    VIBE_READER_DATA_DIR=/tmp/vibe_reader_verify VIBE_READER_VERIFY_MODE=1 python3 -m app.main
+
+Pre/post data directory reset is handled by the vibe-verify CLI run command;
+pytest fixtures do not manage backend process lifecycle.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -6,6 +19,10 @@ import os
 import pathlib
 
 import pytest
+
+from .env_file import load_project_dotenv
+
+load_project_dotenv()
 
 from .config import VerifyConfig, load_verify_config
 from .corpus import CorpusManager
@@ -29,6 +46,15 @@ def run_manager(verify_config: VerifyConfig) -> RunManager:
     mgr = RunManager(verify_config, run_id=run_id)
     mgr.start()
     yield mgr
+    metrics = MetricsAggregator(mgr)
+    findings = metrics.check_no_api_key_in_outputs()
+    mgr.set_security_checks({
+        "api_key_leak_scan": {
+            "passed": len(findings) == 0,
+            "findings_count": len(findings),
+            "findings": findings,
+        },
+    })
     mgr.finish()
     mgr.write_manifest()
 

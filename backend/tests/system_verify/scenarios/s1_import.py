@@ -62,7 +62,7 @@ async def _step_import(ctx: dict[str, Any]) -> None:
     book_manifest = corpus.books[0]
     ctx["book_manifest"] = book_manifest
 
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "import_book") as client:
+    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "import_book", context=ctx) as client:
         body, rec = await client.import_book(book_manifest.path)
         validate_import_response(body, rec)
 
@@ -92,7 +92,7 @@ async def _step_list_books(ctx: dict[str, Any]) -> None:
     config: VerifyConfig = ctx["config"]
     imported_book = ctx.get("imported_book", {})
 
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_books") as client:
+    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_books", context=ctx) as client:
         body, rec = await client.list_books()
         validate_list_response(body, rec)
 
@@ -113,7 +113,7 @@ async def _step_book_detail(ctx: dict[str, Any]) -> None:
     book_id = imported_book.get("id")
     assert_that.is_not_none(book_id, "book_id should be set")
 
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "book_detail") as client:
+    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "book_detail", context=ctx) as client:
         body, rec = await client.get_book(book_id)
 
         assert_that.equal(body.get("id"), book_id, label="book_id")
@@ -133,7 +133,7 @@ async def _step_list_chapters(ctx: dict[str, Any]) -> None:
     imported_book = ctx.get("imported_book", {})
 
     book_id = imported_book.get("id")
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_chapters") as client:
+    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_chapters", context=ctx) as client:
         body, rec = await client.list_chapters(book_id)
         validate_chapters_response(body, rec)
 
@@ -162,7 +162,7 @@ async def _step_list_paragraphs(ctx: dict[str, Any]) -> None:
     first_chapter = chapters[0]
     chapter_idx = first_chapter["idx"]
 
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_paragraphs") as client:
+    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_paragraphs", context=ctx) as client:
         body, rec = await client.list_paragraphs(book_id, chapter_idx)
         validate_paragraphs_response(body, rec)
 

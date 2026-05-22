@@ -30,7 +30,10 @@ ERROR_MAP = {
     "internal_error": 500,
     "llm_provider_error": 502,
     "llm_timeout": 504,
+    "llm_not_configured": 400,
     "verify_mode_required": 404,
+    "data_dir_mismatch": 400,
+    "unsafe_reset_target": 403,
 }
 
 

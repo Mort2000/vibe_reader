@@ -84,11 +84,13 @@ class TargetClient:
         verify_scenario_id: str = "",
         verify_step_id: str = "",
         timeout: float = 30.0,
+        context: dict[str, Any] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.run_manager = run_manager
         self.verify_scenario_id = verify_scenario_id
         self.verify_step_id = verify_step_id
+        self._context = context
         self._records: list[APIRecord] = []
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -180,6 +182,8 @@ class TargetClient:
             raise
         finally:
             self._records.append(rec)
+            if self._context is not None:
+                self._context["last_api_record"] = rec
             self.run_manager.write_ndjson("api_requests.ndjson", [rec.to_dict()])
 
         return resp, rec
@@ -196,6 +200,14 @@ class TargetClient:
 
     async def verify_runtime(self) -> tuple[dict, APIRecord]:
         resp, rec = await self._request("GET", "/api/verify/runtime")
+        return resp.json(), rec
+
+    async def verify_reset(self, confirm_data_dir: str) -> tuple[dict, APIRecord]:
+        resp, rec = await self._request(
+            "POST",
+            "/api/verify/reset",
+            json_body={"confirm_data_dir": confirm_data_dir},
+        )
         return resp.json(), rec
 
     async def settings(self) -> tuple[dict, APIRecord]:
@@ -284,6 +296,10 @@ class TargetClient:
             f"/api/books/{book_id}/chapters/{chapter_idx}/windows/current",
             params=params,
         )
+        return resp.json(), rec
+
+    async def verify_llm_ping(self) -> tuple[dict, APIRecord]:
+        resp, rec = await self._request("POST", "/api/verify/llm-ping")
         return resp.json(), rec
 
     async def verify_metrics(self, run_id: str, scenario_id: str | None = None) -> tuple[dict, APIRecord]:

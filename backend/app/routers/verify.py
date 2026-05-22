@@ -3,8 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
 
 from ..errors import AppError
+
+
+class VerifyResetRequest(BaseModel):
+    confirm_data_dir: str = Field(..., min_length=1)
 
 router = APIRouter(tags=["verify"])
 
@@ -76,3 +81,21 @@ async def verify_metrics(request: Request, run_id: str = "") -> dict[str, Any]:
             "comment_reuse_hit_rate": None,
         },
     }
+
+
+@router.post("/verify/llm-ping")
+async def verify_llm_ping(request: Request) -> dict[str, Any]:
+    """Minimal LLM connectivity probe for system verification (S0)."""
+    _require_verify(request)
+    settings = request.app.state.settings
+    from ..services.llm_ping import ping_llm
+
+    return await ping_llm(settings.llm, timeout_s=60.0)
+
+
+@router.post("/verify/reset")
+async def verify_reset(request: Request, body: VerifyResetRequest) -> dict[str, Any]:
+    """Reset verification data directory (verify mode only)."""
+    from ..services.verify_reset import reset_verify_data
+
+    return await reset_verify_data(request, body.confirm_data_dir)

@@ -48,6 +48,18 @@ class RunManager:
         self.started_at: datetime | None = None
         self.ended_at: datetime | None = None
         self._corpus_sha256: list[str] = []
+        self._security_checks: dict[str, Any] = {}
+        self._backend_version: str | None = None
+        self._data_lifecycle: dict[str, Any] = {}
+
+    def set_security_checks(self, checks: dict[str, Any]) -> None:
+        self._security_checks = checks
+
+    def set_data_lifecycle(self, lifecycle: dict[str, Any]) -> None:
+        self._data_lifecycle = lifecycle
+
+    def set_backend_version(self, version: str | None) -> None:
+        self._backend_version = version
 
     def start(self) -> pathlib.Path:
         """Create output directories and record start time."""
@@ -73,6 +85,7 @@ class RunManager:
         """Write run_manifest.json."""
         git_commit, git_dirty = get_git_info()
         config_hash = hash_string(repr(self.config))
+        resolved_backend_version = backend_version or self._backend_version
 
         manifest: dict[str, Any] = {
             "run_id": self.run_id,
@@ -82,11 +95,14 @@ class RunManager:
             "git_dirty": git_dirty,
             "suite": self.config.run.suite,
             "target_url": self.config.target.base_url,
-            "backend_version": backend_version,
+            "backend_version": resolved_backend_version,
             "model": self.config.llm.model,
             "llm_base_url_hash": hash_string(self.config.llm.base_url) if self.config.llm.base_url else None,
             "corpus_sha256": self._corpus_sha256,
             "config_hash": config_hash,
+            "security_checks": self._security_checks,
+            "target_data_dir": str(self.config.target.data_dir),
+            "data_lifecycle": self._data_lifecycle,
         }
 
         path = self.base_dir / "run_manifest.json"

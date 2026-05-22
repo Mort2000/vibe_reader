@@ -61,6 +61,7 @@ class StepResult:
             "errors": [{"assertion": e.assertion, "message": e.message, "expected": e.expected, "actual": e.actual} for e in self.errors],
             "trace_id": self.trace_id,
             "request_id": self.request_id,
+            "failure_context": self.failure_context,
         }
 
 
@@ -234,6 +235,16 @@ class ScenarioRunner:
         step_result.duration_ms = elapsed
         step_result.assertions_total = len(step_result.errors) + (1 if step_result.status == StepStatus.PASSED else 0)
         step_result.assertions_passed = 1 if step_result.status == StepStatus.PASSED else 0
+
+        last_rec = context.get("last_api_record")
+        if last_rec is not None:
+            step_result.trace_id = getattr(last_rec, "trace_id", "") or ""
+            step_result.request_id = getattr(last_rec, "request_id", "") or ""
+            if step_result.status in (StepStatus.FAILED, StepStatus.ERROR):
+                step_result.failure_context.setdefault(
+                    "last_api_record",
+                    last_rec.to_dict() if hasattr(last_rec, "to_dict") else str(last_rec),
+                )
 
         return step_result
 
