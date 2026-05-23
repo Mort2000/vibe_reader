@@ -48,6 +48,7 @@ def stub_backend_env(session: AIMockSession, config: VerifyConfig) -> dict[str, 
     """Full env dict the backend process needs for stub verification."""
     env = session.backend_env()
     env["VIBE_READER_DATA_DIR"] = str(config.target.data_dir)
+    env["VIBE_READER_VERIFY_MODE"] = "1"
     return env
 
 
@@ -145,6 +146,20 @@ def _parse_target_host_port(target_url: str) -> tuple[str, int]:
     return host, port
 
 
+def _ensure_spawn_port_available(target_url: str, host: str, port: int) -> None:
+    url = f"{target_url.rstrip('/')}/api/health"
+    try:
+        with urllib.request.urlopen(url, timeout=1) as resp:
+            if resp.status == 200:
+                raise RuntimeError(
+                    f"{target_url} already serves a backend on {host}:{port}. "
+                    "Stop the existing process on that port before starting another "
+                    "backend, or point verification at the running instance."
+                )
+    except urllib.error.URLError:
+        return
+
+
 def _wait_backend_health(target_url: str, timeout_s: float = 30.0) -> None:
     url = f"{target_url.rstrip('/')}/api/health"
     deadline = time.monotonic() + timeout_s
@@ -163,6 +178,7 @@ def _wait_backend_health(target_url: str, timeout_s: float = 30.0) -> None:
 def spawn_backend(config: VerifyConfig, session: AIMockSession) -> BackendProcess:
     """Start backend subprocess with stub LLM env (no reload)."""
     host, port = _parse_target_host_port(config.target.base_url)
+    _ensure_spawn_port_available(config.target.base_url, host, port)
     env = {**os.environ, **stub_backend_env(session, config)}
 
     proc = subprocess.Popen(

@@ -995,14 +995,9 @@ def record_comment_metrics(  # noqa: C901
     window: dict[str, Any] | None = None,
     config: VerifyConfig | None = None,
 ) -> None:
-    for latency in trace.window_e2e_latencies_ms:
-        metrics.record(
-            "comment.e2e_latency_ms",
-            latency,
-            unit="ms",
-            scenario_id=scenario_id,
-            step_id=step_id,
-        )
+    # TODO(A2): restore comment.e2e_latency_ms once SSE window.done → comment.created
+    # timing is reliable; until then use job_queue_wait_ms, job_run_ms, and
+    # comment.agent_run_ms from verify metrics / trace summaries.
 
     total_progress = trace.progress_update_count
     dedup_hits = trace.progress_dedup_count
@@ -1340,6 +1335,230 @@ def window_covers_paragraph(window: dict[str, Any] | None, paragraph_idx: int) -
     if start is None or end is None:
         return False
     return start <= paragraph_idx <= end
+
+
+def _ai_agent_span(summary: dict[str, Any]) -> dict[str, Any] | None:
+    for span in summary.get("spans") or []:
+        name = str(span.get("name") or "")
+        if name.startswith("ai.") and name.endswith(".run"):
+            return span
+    return None
+
+
+def tokens_from_trace_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    span = _ai_agent_span(summary)
+    if not span:
+        return {}
+    tokens = span.get("tokens") or {}
+    return {
+        key: tokens.get(key)
+        for key in ("input", "output", "cached_input")
+        if tokens.get(key) is not None
+    }
+
+
+def latency_from_trace_summary(summary: dict[str, Any]) -> float | None:
+    span = _ai_agent_span(summary)
+    if not span:
+        return None
+    duration = span.get("duration_ms")
+    return float(duration) if duration is not None else None
+
+
+def trace_meta_from_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "prompt_version": summary.get("prompt_version") or "",
+        "context_hash": summary.get("context_hash") or "",
+    }
+
+
+async def fetch_trace_summaries(
+    client: TargetClient,
+    trace_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for trace_id in trace_ids:
+        if not trace_id or trace_id in summaries:
+            continue
+        body, rec = await client.verify_trace_summary(trace_id)
+        if rec.status_code >= 400:
+            logger.warning(
+                "fetch_trace_summaries: trace %s returned HTTP %s",
+                trace_id,
+                rec.status_code,
+            )
+            continue
+        summaries[trace_id] = body
+    return summaries
+
+
+async def collect_usage_by_trace(
+    client: TargetClient,
+    trace_ids: list[str],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, float],
+    dict[str, dict[str, Any]],
+]:
+    summaries = await fetch_trace_summaries(client, trace_ids)
+    tokens_by_trace: dict[str, dict[str, Any]] = {}
+    latency_by_trace: dict[str, float] = {}
+    trace_meta_by_trace_id: dict[str, dict[str, Any]] = {}
+    for trace_id, summary in summaries.items():
+        tokens = tokens_from_trace_summary(summary)
+        if tokens:
+            tokens_by_trace[trace_id] = tokens
+        latency = latency_from_trace_summary(summary)
+        if latency is not None:
+            latency_by_trace[trace_id] = latency
+        trace_meta_by_trace_id[trace_id] = trace_meta_from_summary(summary)
+    return tokens_by_trace, latency_by_trace, trace_meta_by_trace_id
+
+
+def unique_trace_ids(*sources: list[dict[str, Any]] | None) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for source in sources:
+        for item in source or []:
+            trace_id = item.get("trace_id") or ""
+            if trace_id and trace_id not in seen:
+                seen.add(trace_id)
+                ordered.append(trace_id)
+    return ordered
+
+
+async def sync_real_llm_tracker_from_verify_metrics(
+    client: TargetClient,
+    run_manager: RunManager,
+    config: VerifyConfig,
+    *,
+    scenario_id: str | None = None,
+) -> dict[str, Any]:
+    body, rec = await client.verify_metrics(
+        run_manager.run_id, scenario_id=scenario_id
+    )
+    if rec.status_code >= 400:
+        logger.warning(
+            "verify_metrics unavailable for run_id=%s: HTTP %s",
+            run_manager.run_id,
+            rec.status_code,
+        )
+        return {}
+
+    tracker = run_manager.real_llm_tracker
+    agent_tokens = (body.get("tokens") or {}).get("ParagraphCommentAgent") or {}
+    requests = int(agent_tokens.get("requests") or 0)
+    input_total = int(agent_tokens.get("input") or 0)
+    output_total = int(agent_tokens.get("output") or 0)
+    max_input = int(agent_tokens.get("max_input") or 0)
+    max_output = int(agent_tokens.get("max_output") or output_total)
+
+    if requests > 0:
+        tracker.call_count = requests
+        tracker.input_tokens = input_total
+        tracker.output_tokens = output_total
+        tracker.max_input_tokens_single = max_input
+        tracker.max_output_tokens_single = max_output
+        if config.is_real_llm:
+            tracker._check_per_call_limits(config, max_input, max_output)
+
+    return body
+
+
+def record_verify_metrics_coverage(
+    metrics: MetricsAggregator,
+    verify_metrics: dict[str, Any],
+    *,
+    scenario_id: str,
+    step_id: str,
+) -> None:
+    coverage = verify_metrics.get("comment_coverage") or {}
+    if not coverage:
+        metrics.record(
+            "comment.telemetry_available",
+            0,
+            unit="count",
+            scenario_id=scenario_id,
+            step_id=step_id,
+        )
+        return
+
+    metrics.record(
+        "comment.telemetry_available",
+        1,
+        unit="count",
+        scenario_id=scenario_id,
+        step_id=step_id,
+    )
+    mapping = {
+        "comment.tool_call_count": coverage.get("tool_call_count"),
+        "comment.candidate_lookup_count": coverage.get("candidate_lookup_count"),
+        "comment.valid_count": coverage.get("valid_count"),
+        "comment.validation_failed_count": coverage.get("validation_failed_count"),
+        "comment.discarded_count": coverage.get("discarded_count"),
+        "comment.density.actual": coverage.get("actual_density"),
+        "comment.density.soft_min": coverage.get("soft_min_density"),
+        "comment.density.stat_start_paragraph_idx": coverage.get(
+            "stat_start_paragraph_idx"
+        ),
+        "comment.density.stat_end_paragraph_idx": coverage.get(
+            "stat_end_paragraph_idx"
+        ),
+    }
+    for metric_name, value in mapping.items():
+        if value is None:
+            continue
+        unit = "ratio" if metric_name.startswith("comment.density") else "count"
+        metrics.record(
+            metric_name,
+            float(value),
+            unit=unit,
+            scenario_id=scenario_id,
+            step_id=step_id,
+        )
+
+    for reason, count in (coverage.get("discarded_by_reason") or {}).items():
+        metrics.record(
+            f"comment.discarded_by_reason.{reason}",
+            float(count),
+            unit="count",
+            scenario_id=scenario_id,
+            step_id=step_id,
+        )
+
+    agent_latency = (verify_metrics.get("latency") or {}).get("comment.agent_run_ms")
+    if isinstance(agent_latency, dict):
+        for stat in ("p50", "p90", "p95", "max"):
+            value = agent_latency.get(stat)
+            if value is not None:
+                metrics.record(
+                    f"comment.agent_run_ms.{stat}",
+                    float(value),
+                    unit="ms",
+                    scenario_id=scenario_id,
+                    step_id=step_id,
+                )
+
+    agent_tokens = (verify_metrics.get("tokens") or {}).get("ParagraphCommentAgent") or {}
+    requests = int(agent_tokens.get("requests") or 0)
+    total_tokens = int(agent_tokens.get("total") or 0)
+    if requests > 0 and total_tokens > 0:
+        metrics.record(
+            "tokens_per_comment_window",
+            total_tokens / requests,
+            unit="tokens",
+            scenario_id=scenario_id,
+            step_id=step_id,
+        )
+        valid_count = int(coverage.get("valid_count") or 0)
+        if valid_count > 0:
+            metrics.record(
+                "tokens_per_comment",
+                total_tokens / valid_count,
+                unit="tokens",
+                scenario_id=scenario_id,
+                step_id=step_id,
+            )
 
 
 async def fetch_verify_jobs(
