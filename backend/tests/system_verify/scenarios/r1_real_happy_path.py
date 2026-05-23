@@ -21,6 +21,17 @@ from ..config import (
     VerifyConfig,
     validate_real_llm_config,
 )
+from ..compaction_audit import CompactionAuditExporter
+from ..context_assertions import (
+    assert_compaction_completed,
+    assert_compaction_source_scale,
+    assert_chapter_summary_in_subsequent_context,
+    assert_token_budget,
+    find_compaction_agent_runs,
+    find_comment_agent_runs,
+    record_context_metrics_from_verify,
+    select_post_compaction_comment_runs,
+)
 from ..contract import validate_comments_response, validate_no_span_in_comments
 from ..corpus import CorpusManager
 from ..metrics_collector import MetricsAggregator
@@ -31,6 +42,7 @@ from .common import (
     ReadingSession,
     ReadingTrace,
     advance_reading,
+    advance_until_compaction,
     assert_comments_valid,
     chapter_by_idx,
     last_paragraph_idx,
@@ -39,6 +51,7 @@ from .common import (
     collect_usage_by_trace,
     ensure_imported_book,
     export_agent_audit_artifacts,
+    fetch_verify_agent_runs,
     fetch_verify_jobs,
     get_probe,
     load_chapter_paragraphs,
@@ -48,6 +61,7 @@ from .common import (
     record_comment_metrics,
     record_verify_metrics_coverage,
     resolve_happy_path_start,
+    switch_reading_session,
     sync_real_llm_tracker_from_verify_metrics,
     unique_trace_ids,
     verify_backend_runtime,
@@ -655,4 +669,370 @@ async def _step_budget_check(ctx: dict[str, Any]) -> None:
         unit="count",
         scenario_id="R1_real_happy_path",
         step_id="budget_check",
+    )
+
+
+async def run_r1_a3_compaction(
+    run_manager: RunManager,
+    config: VerifyConfig,
+    metrics: MetricsAggregator,
+    corpus: CorpusManager,
+    suite_ctx: dict[str, Any] | None = None,
+) -> None:
+    """R1 A3: real LLM comments plus chapter compaction (V-18)."""
+    if not config.is_real_llm:
+        raise RuntimeError("R1 A3 requires llm.mode=real")
+
+    config_errors = validate_real_llm_config(config)
+    if config_errors:
+        raise RuntimeError("Real LLM config invalid: " + "; ".join(config_errors))
+
+    corpus_errors = corpus.validate_happy_path_probe()
+    if corpus_errors:
+        raise RuntimeError(
+            "Corpus does not satisfy happy_path_current requirements: "
+            + "; ".join(corpus_errors)
+        )
+
+    long_flow = config.real_llm.long_flow
+    min_windows = long_flow.min_comment_windows
+    builder = ScenarioBuilder(
+        "R1_real_happy_path",
+        "Real LLM happy path — A2 comments plus A3 compaction",
+    )
+    builder.add_step(
+        "verify_runtime",
+        "Confirm verify mode, real LLM mode, model, and runtime config",
+        _step_verify_runtime,
+        timeout_s=10.0,
+    )
+    builder.add_step(
+        "setup",
+        "Import book, resolve start/end probes, and load chapter metadata",
+        _step_setup,
+        timeout_s=90.0,
+    )
+    builder.add_step(
+        "start_sse",
+        "Subscribe to window SSE at the reading start chapter",
+        _step_start_sse,
+        timeout_s=10.0,
+    )
+    builder.add_step(
+        "advance_for_comments",
+        f"Read forward until at least {min_windows} real comment windows complete",
+        _step_advance,
+        timeout_s=_advance_step_timeout_s(
+            config, READING_STOP_COMMENT_WINDOWS, min_windows
+        ),
+    )
+    builder.add_step(
+        "switch_to_long_chapter",
+        "Move to happy_path long chapter for compaction reading",
+        _step_switch_to_long_chapter,
+        timeout_s=30.0,
+    )
+    builder.add_step(
+        "advance_for_compaction",
+        "Advance within long chapter until real compaction completes",
+        _step_advance_for_compaction,
+        timeout_s=float(config.run.max_wait_compaction_s) + 180.0,
+    )
+    builder.add_step(
+        "export_compaction_audit",
+        "Export real chapter compression audit samples",
+        _step_export_compaction_audit,
+        timeout_s=60.0,
+    )
+    builder.add_step(
+        "budget_check",
+        "Verify real LLM budget guardrails including compaction",
+        _step_budget_check_a3,
+        timeout_s=10.0,
+    )
+
+    runner = ScenarioRunner(run_manager, config)
+    ctx: dict[str, Any] = {
+        "run_manager": run_manager,
+        "config": config,
+        "metrics": metrics,
+        "corpus": corpus,
+        "scenario_id": "R1_real_happy_path",
+        "reading_trace": ReadingTrace(),
+        "compaction_audit_exporter": CompactionAuditExporter(run_manager, config),
+    }
+    merge_suite_ctx(ctx, suite_ctx)
+
+    try:
+        result = await runner.run(builder, context=ctx)
+    finally:
+        session = ctx.get("reading_session")
+        if session:
+            await session.stop()
+
+    publish_suite_ctx(ctx, suite_ctx)
+
+    if result.status.value != "passed":
+        raise RuntimeError(f"R1 A3 compaction failed: {result.failure_summary}")
+
+
+async def _step_switch_to_long_chapter(ctx: dict[str, Any]) -> None:
+    probe: Any = ctx["probe"]
+    cursor: ReadingCursor = ctx["reading_cursor"]
+    session: ReadingSession | None = ctx.get("reading_session")
+
+    target_chapter = probe.chapter_idx
+    target_paragraph = probe.paragraph_idx
+
+    paragraphs = await load_chapter_paragraphs(ctx, ctx["book_id"], target_chapter)
+    assert_that.is_true(len(paragraphs) > 0, "Long chapter must contain paragraphs")
+    assert_that.gte(
+        paragraphs[-1]["paragraph_idx"],
+        target_paragraph,
+        label="long_chapter_probe_in_range",
+    )
+
+    cursor.chapter_idx = target_chapter
+    cursor.paragraph_idx = target_paragraph
+    ctx["chapter_idx"] = target_chapter
+    ctx["chapter_paragraphs"] = paragraphs
+    ctx["long_chapter_idx"] = target_chapter
+    ctx["long_chapter_start_paragraph"] = target_paragraph
+
+    session = await switch_reading_session(
+        ctx,
+        session,
+        scenario_id="R1_real_happy_path",
+        book_id=ctx["book_id"],
+        chapter_idx=target_chapter,
+    )
+    ctx["reading_session"] = session
+
+
+async def _step_advance_for_compaction(ctx: dict[str, Any]) -> None:
+    config: VerifyConfig = ctx["config"]
+    metrics: MetricsAggregator = ctx["metrics"]
+    trace: ReadingTrace = ctx["reading_trace"]
+    session: ReadingSession = ctx["reading_session"]
+    cursor: ReadingCursor = ctx["reading_cursor"]
+    chapters: list[dict[str, Any]] = ctx["chapters"]
+    long_flow = config.real_llm.long_flow
+    probe: Any = ctx["probe"]
+
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "R1_real_happy_path",
+        "advance_for_compaction",
+        context=ctx,
+    ) as client:
+        done_job, compaction_jobs, failed_job = await advance_until_compaction(
+            client,
+            ctx,
+            ctx["book_id"],
+            cursor,
+            chapters,
+            trace,
+            session,
+            scenario_id="R1_real_happy_path",
+            step_id="advance_for_compaction",
+            metrics=metrics,
+            config=config,
+        )
+
+        if failed_job and not done_job:
+            raise StepAssertionError(
+                assertion="compaction_job_failed",
+                message="Real compaction job failed before completion",
+                expected="done",
+                actual=failed_job,
+            )
+
+        agent_runs = await fetch_verify_agent_runs(
+            client,
+            ctx["run_manager"].run_id,
+            scenario_id="R1_real_happy_path",
+        )
+        compaction_runs = find_compaction_agent_runs(agent_runs)
+        assert_compaction_completed(
+            compaction_jobs=compaction_jobs,
+            compaction_runs=compaction_runs,
+            require_real=True,
+        )
+
+        min_tokens = (
+            probe.test_compaction_min_source_tokens
+            or long_flow.test_compaction_min_source_tokens
+        )
+        min_paragraphs = (
+            probe.test_compaction_min_source_paragraphs
+            or long_flow.test_compaction_min_source_paragraphs
+        )
+        if compaction_runs:
+            assert_compaction_source_scale(
+                compaction_runs[-1],
+                min_source_tokens=min_tokens,
+                min_source_paragraphs=min_paragraphs,
+            )
+            interaction = (
+                compaction_runs[-1].get("interaction") or compaction_runs[-1]
+            )
+            assert_token_budget(interaction.get("injected_context") or {}, config)
+
+        compaction_job_id = int((done_job or {}).get("id") or 0)
+        compaction_trace_ids = {
+            str(run.get("trace_id") or "")
+            for run in compaction_runs
+            if run.get("trace_id")
+        }
+        chapter = chapter_by_idx(chapters, cursor.chapter_idx)
+        assert chapter is not None
+        chapter_last = last_paragraph_idx(chapter)
+        post_end = min(
+            cursor.paragraph_idx + config.run.compaction_advance_batch_size,
+            chapter_last,
+        )
+        if post_end > cursor.paragraph_idx:
+            post_end = await advance_reading(
+                client,
+                ctx,
+                ctx["book_id"],
+                cursor.chapter_idx,
+                cursor.paragraph_idx,
+                post_end,
+                trace,
+                scenario_id="R1_real_happy_path",
+                step_id="advance_for_compaction",
+                metrics=metrics,
+                delay_ms=config.run.progress_step_delay_ms,
+            )
+            cursor.paragraph_idx = post_end
+            ctx["final_paragraph_idx"] = post_end
+            await wait_for_window_done(
+                client,
+                session,
+                ctx["book_id"],
+                cursor.chapter_idx,
+                post_end,
+                min(float(config.run.max_wait_comment_window_s), 90.0),
+                trace,
+            )
+
+        agent_runs_after = await fetch_verify_agent_runs(
+            client,
+            ctx["run_manager"].run_id,
+            scenario_id="R1_real_happy_path",
+        )
+        comment_runs_after = find_comment_agent_runs(agent_runs_after)
+        post_compaction_comments = select_post_compaction_comment_runs(
+            comment_runs_after,
+            compaction_job_id=compaction_job_id or None,
+            compaction_trace_ids=compaction_trace_ids,
+        )
+        assert_that.is_true(
+            len(post_compaction_comments) > 0,
+            "Expected a post-compaction ParagraphCommentAgent run for summary injection check",
+        )
+        post_run = post_compaction_comments[-1]
+        post_injected = (post_run.get("interaction") or post_run).get(
+            "injected_context"
+        ) or {}
+        assert_chapter_summary_in_subsequent_context(
+            post_injected,
+            compaction_run=compaction_runs[-1],
+        )
+        ctx["post_compaction_comment_run"] = post_run
+
+        verify_metrics = await sync_real_llm_tracker_from_verify_metrics(
+            client,
+            ctx["run_manager"],
+            config,
+            scenario_id="R1_real_happy_path",
+        )
+        if verify_metrics:
+            record_context_metrics_from_verify(
+                metrics,
+                verify_metrics,
+                scenario_id="R1_real_happy_path",
+                step_id="advance_for_compaction",
+            )
+
+    ctx["run_manager"].real_llm_tracker.phase_coverage["A3_compaction"] = True
+    ctx["compaction_job"] = done_job
+    ctx["compaction_jobs"] = compaction_jobs
+    ctx["compaction_failed_job"] = failed_job
+    ctx["compaction_agent_runs"] = compaction_runs
+    ctx["final_paragraph_idx"] = cursor.paragraph_idx
+
+
+async def _step_export_compaction_audit(ctx: dict[str, Any]) -> None:
+    config: VerifyConfig = ctx["config"]
+    exporter: CompactionAuditExporter = ctx["compaction_audit_exporter"]
+    compaction_runs = ctx.get("compaction_agent_runs") or []
+
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "R1_real_happy_path",
+        "export_compaction_audit",
+        context=ctx,
+    ) as client:
+        (
+            tokens_by_trace,
+            latency_by_trace,
+            trace_meta_by_trace_id,
+        ) = await collect_usage_by_trace(
+            client,
+            [
+                str(run.get("trace_id") or "")
+                for run in compaction_runs
+                if run.get("trace_id")
+            ],
+        )
+
+    for run in compaction_runs:
+        trace_id = str(run.get("trace_id") or "")
+        exporter.add_compaction_run(
+            run,
+            scenario_id="R1_real_happy_path",
+            book=ctx["book"],
+            chapter_idx=ctx.get("long_chapter_idx") or ctx["chapter_idx"],
+            model=config.effective_model() or config.real_llm.model,
+            llm_mode="real",
+            usage_source="provider" if config.metrics.collect_provider_usage else "estimate",
+            tokens=tokens_by_trace.get(trace_id, {}),
+            latency_ms=latency_by_trace.get(trace_id),
+        )
+
+    counts = exporter.export()
+    ctx["audit_export_counts"] = counts
+
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "R1_real_happy_path",
+        "export_agent_audit_compaction",
+        context=ctx,
+    ) as audit_client:
+        agent_counts = await export_agent_audit_artifacts(
+            ctx,
+            audit_client,
+            scenario_id="R1_real_happy_path",
+            step_id="export_agent_audit_compaction",
+        )
+        ctx["audit_export_counts"].update(agent_counts)
+
+
+async def _step_budget_check_a3(ctx: dict[str, Any]) -> None:
+    await _step_budget_check(ctx)
+    tracker = ctx["run_manager"].real_llm_tracker
+    compaction_runs = ctx.get("compaction_agent_runs") or []
+    assert_that.gte(
+        len(compaction_runs),
+        1,
+        label="real_compaction_agent_runs",
+    )
+    assert_that.is_true(
+        tracker.phase_coverage.get("A3_compaction", False),
+        "A3_compaction phase coverage must be marked true",
     )

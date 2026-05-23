@@ -145,6 +145,9 @@ def _build_summary_md(
 ) -> str:
     passed = all(s.get("status") == "passed" for s in scenarios) if scenarios else True
     audit_comments = _count_ndjson_lines(run_dir / "audit" / "comments.ndjson")
+    compaction_samples = _count_ndjson_lines(
+        run_dir / "audit" / "compaction_summaries.ndjson"
+    )
     real_comments = 0
     if audit_comments:
         for row in _read_ndjson(run_dir / "audit" / "comments.ndjson"):
@@ -175,6 +178,8 @@ def _build_summary_md(
         f"- progress: {_scenario_status(scenarios, 'S1')}",
         f"- comment: {_scenario_status(scenarios, 'S2')}",
         f"- scroll_jump: {_scenario_status(scenarios, 'S3')}",
+        f"- long_context: {_scenario_status(scenarios, 'S4')}",
+        f"- compaction: {_scenario_status(scenarios, 'S4')}",
         f"- real_happy_path: {_scenario_status(scenarios, 'R1')}",
         "",
         "## Latency",
@@ -208,6 +213,19 @@ def _build_summary_md(
     else:
         lines.append("| _no token metrics recorded_ | 0 | 0 | 0 | 0 | 0 |")
 
+    phase = (manifest.get("real_llm_phase_coverage") or {})
+    if phase:
+        lines.extend(
+            [
+                "",
+                "## Real LLM Phase Coverage",
+                "",
+                f"- A2_comments: {phase.get('A2_comments', False)}",
+                f"- A3_compaction: {phase.get('A3_compaction', False)}",
+                f"- A4_full_flow: {phase.get('A4_full_flow', False)}",
+            ]
+        )
+
     density = metrics_json.get("comment_density") or {}
     lines.extend(
         [
@@ -224,6 +242,7 @@ def _build_summary_md(
             "## Audit Samples",
             "",
             f"- comments: {audit_comments}",
+            f"- compaction_summaries: {compaction_samples}",
             f"- real_comments: {real_comments}",
             f"- window_status: {_count_ndjson_lines(run_dir / 'audit' / 'window_status.ndjson')}",
             f"- agent_invocations: {_count_ndjson_lines(run_dir / 'audit' / 'agent_invocations.ndjson')}",
