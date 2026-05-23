@@ -41,6 +41,7 @@ async def run_s1(
     config: VerifyConfig,
     metrics: MetricsAggregator,
     corpus: CorpusManager,
+    suite_ctx: dict[str, Any] | None = None,
 ) -> None:
     """Execute S1 scenario."""
     builder = ScenarioBuilder(
@@ -116,7 +117,29 @@ async def run_s1(
         "metrics": metrics,
         "corpus": corpus,
     }
+    if suite_ctx:
+        for key in (
+            "imported_book",
+            "book_manifest",
+            "chapters",
+            "first_chapter_paragraphs",
+            "import_stats",
+        ):
+            if key in suite_ctx:
+                ctx[key] = suite_ctx[key]
+
     result = await runner.run(builder, context=ctx)
+
+    if suite_ctx is not None:
+        for key in (
+            "imported_book",
+            "book_manifest",
+            "chapters",
+            "first_chapter_paragraphs",
+            "import_stats",
+        ):
+            if key in ctx:
+                suite_ctx[key] = ctx[key]
 
     if result.status.value != "passed":
         raise RuntimeError(f"S1 failed: {result.failure_summary}")

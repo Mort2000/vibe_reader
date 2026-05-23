@@ -58,7 +58,7 @@ set -a && source ../.env && set +a
 # 校验语料
 uv run vibe-verify prepare --corpus tests/corpus/manifest.toml
 
-# smoke：S0 连通性 + S1 导入与阅读
+# smoke / mvp：S0–S3（含评论链路 Slice 2）
 uv run vibe-verify run --suite smoke --target-url http://127.0.0.1:8000
 
 # 与 smoke 相同场景集合
@@ -92,29 +92,43 @@ uv run vibe-reader
 | `api_requests.ndjson` | HTTP 请求/响应摘要 |
 | `metrics.ndjson` | 指标采样 |
 | `traces/trace_index.ndjson` | trace 索引 |
+| `sse_events.ndjson` | SSE 事件（S2/S3 窗口与评论） |
+| `audit/comments.ndjson` | 评论审计样本（S2） |
+| `audit/samples/*.md` | 评论样本 Markdown（S2） |
 | `corpus_manifest.resolved.json` | 解析后的语料 manifest |
 
 ## 场景与套件
 
 | 套件 | 包含场景 |
 |---|---|
-| `smoke` / `mvp` | S0、S1 |
+| `smoke` / `mvp` | S0、S1、S2、S3 |
 
 | 场景 | 内容 |
 |---|---|
 | **S0_connectivity** | health / runtime / settings / verify 端点、trace 头、`llm_ping` |
 | **S1_book_import** | epub 导入、章节段落结构、计数与编号连续性、阅读进度 PUT→GET |
+| **S2_continuous_reading** | 从 early probe 推进阅读、等待评论窗口、校验评论落库与 span 约束、导出评论审计样本 |
+| **S3_fast_scroll** | 快速滚动与跳读、校验窗口与最新阅读位置一致、跳回后评论复用、dedup / stale job 指标 |
 
 S1 另含导入幂等与进度去重相关断言步骤（`import_idempotent`、`progress_dedup_identical`、`progress_skip_trivial_scroll`）。场景在 `continue_on_failure` 下会执行全部步骤并在 `scenario_results.ndjson` 中汇总结果。
 
 ## pytest
 
-`pyproject.toml` 已注册 marker `system_verify` / `system_llm`：
+系统验证场景的 pytest 入口位于 `system_verify/test_scenarios.py`，与 CLI 共用 `system_verify/suite.py` 编排逻辑。`pyproject.toml` 已注册 marker `system_verify` / `system_llm`：
 
 ```bash
 cd backend
 set -a && source ../.env && set +a
-uv run pytest tests/ -m system_verify
+
+# 全部系统验证场景
+uv run pytest tests/system_verify/ -m system_verify
+
+# 与 smoke/mvp CLI 等价的完整套件（单测入口）
+uv run pytest tests/system_verify/test_scenarios.py::test_mvp_suite -m system_llm
+
+# 仅 Slice 2（S2/S3；同 session 内会先共享 S1 的 suite_ctx）
+uv run pytest tests/system_verify/test_scenarios.py::test_s2_continuous_reading \
+  tests/system_verify/test_scenarios.py::test_s3_fast_scroll -m system_llm
 ```
 
 `.env` 由 `tests/system_verify/conftest.py` 自动加载。pytest **不**负责启动或停止后端进程。
@@ -128,7 +142,10 @@ tests/
     manifest.toml           验证语料声明
     books/                  epub 文件（gitignore，需自行放置）
   system_verify/            验证框架（vibe-verify CLI 实现）
-    scenarios/              场景实现
+    scenarios/              场景实现（S0–S3）
+    suite.py                CLI / pytest 共用的套件编排
+    test_scenarios.py       pytest 场景入口
+    conftest.py             pytest fixtures
     client.py               Target HTTP client
     contract.py             接口合同校验
     run.py                  run 目录与 manifest

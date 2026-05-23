@@ -137,6 +137,52 @@ def validate_paragraphs_response(resp_body: dict, rec: APIRecord | None = None) 
                 raise ContractError(f"Paragraph item missing '{field}'", rec)
 
 
+def validate_comments_response(resp_body: dict, rec: APIRecord | None = None) -> None:
+    """Validate chapter comments list response per spec 9.1."""
+    for field in ("book_id", "chapter_idx", "items", "total"):
+        if field not in resp_body:
+            raise ContractError(f"Comments response missing '{field}'", rec)
+    if not isinstance(resp_body["items"], list):
+        raise ContractError("'items' must be a list", rec)
+
+    for comment in resp_body["items"]:
+        for required in (
+            "id",
+            "book_id",
+            "chapter_idx",
+            "paragraph_idx",
+            "window_id",
+            "comment",
+            "comment_type",
+            "status",
+        ):
+            if required not in comment:
+                raise ContractError(f"Comment item missing '{required}'", rec)
+
+    validate_no_span_in_comments(resp_body, rec)
+    _check_no_api_key(resp_body, rec)
+
+
+def validate_window_response(resp_body: dict, rec: APIRecord | None = None) -> None:
+    """Validate current window response per spec 9.2."""
+    window = resp_body.get("window")
+    if window is None:
+        return
+    for field in (
+        "id",
+        "book_id",
+        "chapter_idx",
+        "window_seq",
+        "start_paragraph_idx",
+        "end_paragraph_idx",
+        "focus_start_paragraph_idx",
+        "focus_end_paragraph_idx",
+        "status",
+    ):
+        if field not in window:
+            raise ContractError(f"Window missing '{field}'", rec)
+
+
 def validate_no_span_in_comments(resp_body: dict, rec: APIRecord | None = None) -> None:
     """Ensure comments don't contain span fields per spec 9.1."""
     if "items" not in resp_body:

@@ -196,26 +196,15 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
 
 def _prepare_corpus(mgr, config, corpus_path: str):
-    from .corpus import CorpusManager
+    from .suite import prepare_corpus
 
-    corpus = CorpusManager(config, corpus_path)
-    corpus.load()
-    if not corpus.validate():
-        errors = "\n".join(corpus.validation_errors)
-        raise RuntimeError(f"Corpus validation failed:\n{errors}")
-
-    resolved = corpus.resolve(mgr)
-    print(f"Corpus resolved: {resolved}")
-    return corpus
+    return prepare_corpus(mgr, config, corpus_path)
 
 
 async def _run_suite(mgr, config, metrics, corpus_path: str) -> None:
-    from .scenarios.s0_connectivity import run_s0
-    from .scenarios.s1_import import run_s1
+    from .suite import run_mvp_suite
 
-    corpus = _prepare_corpus(mgr, config, corpus_path)
-    await run_s0(mgr, config, metrics)
-    await run_s1(mgr, config, metrics, corpus)
+    await run_mvp_suite(mgr, config, metrics, corpus_path)
 
 
 def _finalize_run(mgr, metrics=None) -> None:
