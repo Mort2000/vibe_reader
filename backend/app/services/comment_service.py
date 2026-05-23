@@ -12,10 +12,33 @@ from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import comments as comment_repo
 from ..repos import paragraphs as paragraph_repo
-from .agent_base import ParagraphCommentBatch, get_comment_agent
+from .agent_base import CommentDensityHint, CommentDeps, EmitCommentDraft
+from .agent_base import get_comment_agent
 from .job_runner import JobRunner
 
 logger = logging.getLogger(__name__)
+
+
+def _build_density_hint(
+    active_count: int,
+    stat_start: int,
+    stat_end: int,
+    total_target_paragraphs: int,
+    soft_min: float,
+) -> CommentDensityHint:
+    current_density = active_count / max(1, total_target_paragraphs)
+    estimated_missing = max(
+        0, int(total_target_paragraphs * soft_min) - active_count
+    )
+    return CommentDensityHint(
+        stat_start_paragraph_idx=stat_start,
+        stat_end_paragraph_idx=stat_end,
+        stat_target_paragraph_count=total_target_paragraphs,
+        active_comment_count=active_count,
+        soft_min_density=soft_min,
+        current_density=round(current_density, 4),
+        estimated_missing_comments=estimated_missing,
+    )
 
 
 def build_comment_prompt(
@@ -23,6 +46,7 @@ def build_comment_prompt(
     chapter_meta: dict[str, Any],
     window_paragraphs: list[dict[str, Any]],
     target_paragraphs: list[int],
+    density_hint: CommentDensityHint | None = None,
 ) -> str:
     lines: list[str] = []
 
@@ -44,22 +68,54 @@ def build_comment_prompt(
     lines.append("请仅为上述标有 ★ 且列在 comment_target_paragraphs 中的段落生成评论。")
     lines.append("每个目标段落生成一条评论。如果某个段落信息不足以评论，可以跳过。")
 
+    if density_hint is not None:
+        lines.append("")
+        lines.append("comment_density_hint:")
+        lines.append(f"  stat_start_paragraph_idx = {density_hint.stat_start_paragraph_idx}")
+        lines.append(f"  stat_end_paragraph_idx = {density_hint.stat_end_paragraph_idx}")
+        lines.append(
+            f"  stat_target_paragraph_count = {density_hint.stat_target_paragraph_count}"
+        )
+        lines.append(f"  active_comment_count = {density_hint.active_comment_count}")
+        lines.append(f"  soft_min_density = {density_hint.soft_min_density}")
+        lines.append(f"  current_density = {density_hint.current_density}")
+        lines.append(
+            f"  estimated_missing_comments = {density_hint.estimated_missing_comments}"
+        )
+
     return "\n".join(lines)
 
 
 def _validate_and_dedupe(
-    batch: ParagraphCommentBatch,
+    raw_payloads: list[dict[str, Any]],
     target_set: set[int],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int], int]:
     seen: set[int] = set()
     valid: list[dict[str, Any]] = []
+    discarded: list[dict[str, Any]] = []
+    discarded_by_reason: dict[str, int] = {}
+    validation_failed_count = 0
 
-    for draft in batch.comments:
+    def discard(payload: dict[str, Any], reason: str) -> None:
+        discarded.append({"payload": payload, "reason": reason})
+        discarded_by_reason[reason] = discarded_by_reason.get(reason, 0) + 1
+
+    for payload in raw_payloads:
+        try:
+            draft = EmitCommentDraft.model_validate(payload)
+        except Exception:
+            validation_failed_count += 1
+            discard(payload, "validation_failed")
+            continue
+
         if draft.paragraph_idx not in target_set:
+            discard(payload, "out_of_target")
             continue
         if not draft.comment.strip():
+            discard(payload, "empty_comment")
             continue
         if draft.paragraph_idx in seen:
+            discard(payload, "duplicate_paragraph")
             continue
         seen.add(draft.paragraph_idx)
         valid.append(
@@ -70,7 +126,7 @@ def _validate_and_dedupe(
             }
         )
 
-    return valid
+    return valid, discarded, discarded_by_reason, validation_failed_count
 
 
 async def run_comment_task(
@@ -90,6 +146,7 @@ async def run_comment_task(
     focus_end = window["focus_end_paragraph_idx"]
     start_pidx = window["start_paragraph_idx"]
     end_pidx = window["end_paragraph_idx"]
+    frontier = window["assistant_frontier_paragraph_idx"]
 
     window_paragraphs = await paragraph_repo.get_paragraphs_range(
         db, book_id, chapter_idx, start_pidx, end_pidx
@@ -103,14 +160,41 @@ async def run_comment_task(
     if not book or not chapter:
         raise ValueError(f"Book/chapter not found: {book_id}/{chapter_idx}")
 
+    wc = settings.window
+    stat_start = max(0, frontier - wc.comment_density_stat_window_paragraphs)
+    stat_end = frontier
+
+    active_count = await comment_repo.count_active_comments_in_range(
+        db, book_id, chapter_idx, stat_start, stat_end
+    )
+
+    total_in_range = await paragraph_repo.get_paragraphs_range(
+        db, book_id, chapter_idx, stat_start, stat_end
+    )
+    stat_target_count = len(total_in_range)
+
+    density_hint = _build_density_hint(
+        active_count=active_count,
+        stat_start=stat_start,
+        stat_end=stat_end,
+        total_target_paragraphs=stat_target_count,
+        soft_min=wc.comment_density_soft_min,
+    )
+
     prompt = build_comment_prompt(
         book_meta=book,
         chapter_meta=chapter,
         window_paragraphs=window_paragraphs,
         target_paragraphs=target_paragraphs,
+        density_hint=density_hint,
     )
 
     await comment_repo.delete_comments_by_window(db, window_id)
+
+    deps = CommentDeps(
+        target_paragraph_ids=target_set,
+        density_hint=density_hint,
+    )
 
     agent = get_comment_agent(settings)
     trace_id = get_trace_id()
@@ -118,6 +202,7 @@ async def run_comment_task(
     t0 = time.monotonic()
     result = await agent.run(
         prompt,
+        deps=deps,
         metadata={
             "book_id": book_id,
             "chapter_idx": chapter_idx,
@@ -128,8 +213,13 @@ async def run_comment_task(
     latency_ms = (time.monotonic() - t0) * 1000
 
     usage = result.usage()
-    batch: ParagraphCommentBatch = result.output
-    valid_comments = _validate_and_dedupe(batch, target_set)
+
+    raw_payloads = deps.raw_tool_payloads
+    valid_comments, discarded, discarded_by_reason, validation_failed_count = (
+        _validate_and_dedupe(raw_payloads, target_set)
+    )
+
+    no_call = len(raw_payloads) == 0
 
     for c in valid_comments:
         await comment_repo.create_comment(
@@ -143,23 +233,47 @@ async def run_comment_task(
             trace_id=trace_id,
         )
 
+    log_fields: dict[str, Any] = {
+        "job_id": job_id,
+        "window_id": window_id,
+        "target_count": len(target_set),
+        "tool_call_count": len(raw_payloads),
+        "valid_count": len(valid_comments),
+        "validation_failed_count": validation_failed_count,
+        "discarded_count": len(discarded),
+        "discarded_by_reason": discarded_by_reason,
+        "no_call": no_call,
+        "latency_ms": round(latency_ms, 1),
+        "request_tokens": usage.request_tokens,
+        "response_tokens": usage.response_tokens,
+        "total_tokens": (usage.request_tokens or 0) + (usage.response_tokens or 0),
+        "comment_density_actual": density_hint.current_density,
+        "comment_density_soft_min": density_hint.soft_min_density,
+        "comment_density_stat_start": density_hint.stat_start_paragraph_idx,
+        "comment_density_stat_end": density_hint.stat_end_paragraph_idx,
+    }
+
     logger.info(
         "comment_task.completed",
         extra={
             "event": "comment_task.completed",
-            "fields": {
-                "job_id": job_id,
-                "window_id": window_id,
-                "target_count": len(target_set),
-                "generated_count": len(batch.comments),
-                "saved_count": len(valid_comments),
-                "latency_ms": round(latency_ms, 1),
-                "request_tokens": usage.request_tokens,
-                "response_tokens": usage.response_tokens,
-                "total_tokens": (usage.request_tokens or 0) + (usage.response_tokens or 0),
-            },
+            "fields": log_fields,
         },
     )
+
+    if discarded:
+        logger.warning(
+            "comment_task.discarded_comments",
+            extra={
+                "event": "comment_task.discarded_comments",
+                "fields": {
+                    "window_id": window_id,
+                    "trace_id": trace_id,
+                    "discarded_count": len(discarded),
+                    "discarded_by_reason": discarded_by_reason,
+                },
+            },
+        )
 
 
 def register_with_runner(runner: JobRunner) -> None:
