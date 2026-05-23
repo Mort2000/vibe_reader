@@ -85,6 +85,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Skip post-run backend data cleanup (for cache comparison runs)",
     )
+    p_run.add_argument(
+        "--spawn-backend",
+        action="store_true",
+        help="Spawn backend subprocess with stub LLM env (stub mode only)",
+    )
 
     p_report = sub.add_parser("report", help="Generate report from a completed run")
     p_report.add_argument("--run-id", required=True, help="Run ID to report on")
@@ -159,6 +164,64 @@ def _cmd_init_run(args: argparse.Namespace) -> None:
     print(f"Manifest written to {out_dir / 'run_manifest.json'}")
 
 
+def _aimock_manifest_info(session) -> dict[str, str | bool]:
+    return {
+        "provider": "aimock",
+        "version": session.version,
+        "base_url": session.base_url,
+        "fixture_hash": session.fixture_hash,
+        "profile_hash": session.profile_hash,
+        "strict": session.strict,
+        "profile": session.profile,
+    }
+
+
+def _start_stub_sidecar(
+    config, mgr, *, spawn_backend: bool = False, dry_run: bool = False
+):
+    from .llm_stub.aimock_launcher import AIMockLaunchError, AIMockSidecar
+    from .llm_stub.env import (
+        BackendProcess,
+        assert_backend_stub_llm_ready,
+        inject_stub_backend_env,
+        print_stub_backend_env_notice,
+        spawn_backend as spawn_backend_proc,
+    )
+
+    if config.is_real_llm:
+        return None, None
+    if not config.llm_stub.aimock.enabled:
+        return None, None
+    try:
+        sidecar = AIMockSidecar(config)
+        session = sidecar.__enter__()
+    except AIMockLaunchError as exc:
+        print(f"AIMock startup failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    mgr.set_aimock_info(_aimock_manifest_info(session))
+    inject_stub_backend_env(session, config)
+    print_stub_backend_env_notice(session, config)
+
+    backend_proc: BackendProcess | None = None
+    if spawn_backend:
+        try:
+            backend_proc = spawn_backend_proc(config, session)
+            print(f"Backend spawned at {config.target.base_url}")
+        except RuntimeError as exc:
+            sidecar.__exit__(None, None, None)
+            print(f"Backend spawn failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+    elif not dry_run:
+        try:
+            assert_backend_stub_llm_ready(config, session)
+        except RuntimeError as exc:
+            print(f"Backend stub LLM check failed: {exc}", file=sys.stderr)
+            sidecar.__exit__(None, None, None)
+            sys.exit(1)
+
+    return sidecar, backend_proc
+
+
 def _cmd_run(args: argparse.Namespace) -> None:
     from .config import load_verify_config
     from .metrics_collector import MetricsAggregator
@@ -182,7 +245,19 @@ def _cmd_run(args: argparse.Namespace) -> None:
     print(f"LLM mode: {config.llm.mode}")
 
     metrics = MetricsAggregator(mgr, config)
-    run_failed, data_lifecycle = _execute_run(args, config, mgr, metrics)
+    sidecar, backend_proc = _start_stub_sidecar(
+        config,
+        mgr,
+        spawn_backend=bool(args.spawn_backend),
+        dry_run=bool(args.dry_run),
+    )
+    try:
+        run_failed, data_lifecycle = _execute_run(args, config, mgr, metrics)
+    finally:
+        if backend_proc is not None:
+            backend_proc.stop()
+        if sidecar is not None:
+            sidecar.__exit__(None, None, None)
 
     _finish_run(args, config, mgr, metrics, data_lifecycle, run_failed, out_dir)
 

@@ -47,6 +47,19 @@ uv run vibe-verify run --suite smoke --target-url http://127.0.0.1:8000
 | `VIBE_READER_DATA_DIR` | `/tmp/vibe_reader_verify` | 与后端、验证框架共用隔离目录 |
 | `VIBE_READER_VERIFY_MODE` | `1` | 启用 `/api/verify/*` |
 | `VIBE_READER_VERIFY_TARGET_URL` | `http://127.0.0.1:8000` | 被测后端地址 |
+| `VIBE_READER_LLM_BASE_URL` | `http://127.0.0.1:4010/v1` | AIMock sidecar（`vibe-verify run` 会自动启动） |
+| `VIBE_READER_LLM_API_KEY` | `aimock-test-key` | AIMock 占位 key，非真实凭据 |
+| `VIBE_READER_LLM_MODEL` | `deepseek-v4-flash` | 与 `verify.toml` 中 `[llm_stub.aimock]` 一致 |
+
+`vibe-verify run` 在 stub 模式下会自动启动 AIMock sidecar（需 Node.js ≥20，首次运行会在 `llm_stub/aimock/` 执行 `npm install`），并通过 `inject_stub_backend_env` 将 LLM env 注入 verify runner 进程。
+
+后端仍是独立进程，需用相同 env 启动，或使用一键选项：
+
+```bash
+uv run vibe-verify run --suite smoke --spawn-backend
+```
+
+pytest 同样支持 `--spawn-backend`。未使用该选项时，runner 会在 S0 之前检查 `/api/verify/runtime` 的 LLM 配置，未就绪则 fail-fast。
 
 运行 **real-happy-path** 时额外需要：
 
@@ -148,6 +161,9 @@ tests/
     verify.toml             默认验证配置（stub profile）
     books/                  epub 文件（gitignore）
   system_verify/
+    llm_stub/
+      aimock/                 AIMock sidecar（server.mjs、profiles、fixtures）
+      aimock_launcher.py      Python 启停与健康检查
     scenarios/              S0–S3、R1
     report_generator.py     V-16 报告生成
     suite.py                套件编排

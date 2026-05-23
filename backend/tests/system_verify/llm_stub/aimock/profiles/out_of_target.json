@@ -1,0 +1,18 @@
+{
+  "name": "out_of_target",
+  "seed": 20260522,
+  "comment": {
+    "mode": "out_of_target",
+    "max_comments_per_window": 1,
+    "select": "first_targets",
+    "comment_type_cycle": ["observation"],
+    "include_stub_marker": true,
+    "out_of_target_offset": 500
+  },
+  "usage": {
+    "source": "estimate",
+    "input_divisor": 2,
+    "output_divisor": 2,
+    "cached_input_tokens": 0
+  }
+}

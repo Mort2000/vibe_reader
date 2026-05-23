@@ -1,0 +1,15 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "Reply with exactly: ok" },
+      "response": {
+        "content": "ok",
+        "usage": {
+          "prompt_tokens": 4,
+          "completion_tokens": 1,
+          "total_tokens": 5
+        }
+      }
+    }
+  ]
+}

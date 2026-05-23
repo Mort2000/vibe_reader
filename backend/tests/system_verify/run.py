@@ -146,7 +146,11 @@ class RunManager:
         self._security_checks: dict[str, Any] = {}
         self._backend_version: str | None = None
         self._data_lifecycle: dict[str, Any] = {}
+        self._aimock_info: dict[str, Any] | None = None
         self.real_llm_tracker = RealLLMCallTracker()
+
+    def set_aimock_info(self, info: dict[str, Any] | None) -> None:
+        self._aimock_info = info
 
     def set_security_checks(self, checks: dict[str, Any]) -> None:
         self._security_checks = checks
@@ -186,6 +190,7 @@ class RunManager:
         tracker = self.real_llm_tracker
 
         base_url = cfg.real_llm.base_url if cfg.is_real_llm else ""
+        aimock = self._aimock_info or {}
         manifest: dict[str, Any] = {
             "run_id": self.run_id,
             "started_at": _fmt_ts(self.started_at),
@@ -197,6 +202,15 @@ class RunManager:
             "backend_version": resolved_backend_version,
             "llm_mode": cfg.llm.mode,
             "stub_profile": cfg.llm.stub_profile if not cfg.is_real_llm else None,
+            "llm_stub_provider": aimock.get("provider") if not cfg.is_real_llm else None,
+            "aimock_version": aimock.get("version") if not cfg.is_real_llm else None,
+            "aimock_base_url": aimock.get("base_url") if not cfg.is_real_llm else None,
+            "aimock_fixture_hash": aimock.get("fixture_hash")
+            if not cfg.is_real_llm
+            else None,
+            "aimock_profile_hash": aimock.get("profile_hash")
+            if not cfg.is_real_llm
+            else None,
             "real_llm": cfg.is_real_llm,
             "model": cfg.effective_model(),
             "llm_base_url_hash": hash_string(base_url) if base_url else None,

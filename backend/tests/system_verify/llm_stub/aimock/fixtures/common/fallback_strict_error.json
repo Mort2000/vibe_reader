@@ -1,0 +1,15 @@
+{
+  "fixtures": [
+    {
+      "match": {},
+      "response": {
+        "error": {
+          "message": "No AIMock fixture matched this request (strict mode)",
+          "type": "invalid_request_error",
+          "code": "fixture_not_found"
+        },
+        "status": 404
+      }
+    }
+  ]
+}

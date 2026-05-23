@@ -1,0 +1,27 @@
+{
+  "name": "mvp_default",
+  "seed": 20260522,
+  "comment": {
+    "mode": "tool_call",
+    "max_comments_per_window": 3,
+    "select": "first_targets",
+    "comment_type_cycle": ["observation", "question", "craft"],
+    "include_stub_marker": true
+  },
+  "chat": {
+    "stream": true,
+    "ttft_ms": 120,
+    "tps": 80,
+    "include_anchor_marker": true
+  },
+  "compaction": {
+    "mode": "structured_output",
+    "max_anchor_excerpts": 3
+  },
+  "usage": {
+    "source": "estimate",
+    "input_divisor": 2,
+    "output_divisor": 2,
+    "cached_input_tokens": 0
+  }
+}

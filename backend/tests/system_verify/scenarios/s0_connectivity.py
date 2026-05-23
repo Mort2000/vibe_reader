@@ -253,34 +253,21 @@ async def _step_llm_ping(ctx: dict[str, Any]) -> None:
     llm_runtime = runtime.get("llm", {})
     api_key_configured = llm_runtime.get("api_key_configured", False)
 
-    if not config.is_real_llm and not api_key_configured:
-        async with TargetClient(
-            config.target.base_url,
-            run_manager,
-            "S0_connectivity",
-            "llm_ping",
-            timeout=float(config.llm.timeout_s),
-            context=ctx,
-        ) as client:
-            body, rec = await client.verify_llm_ping()
-            if rec.status_code < 400 and body.get("ok", False):
-                _record_ping_success(metrics, body, rec)
-                return
-
-        metrics.record(
-            "llm.ping.skipped",
-            1,
-            unit="count",
-            scenario_id="S0_connectivity",
-            step_id="llm_ping",
-            tags={"reason": "stub_mode_without_backend_stub"},
-        )
-        return
-
     if config.is_real_llm and not api_key_configured:
         raise StepAssertionError(
             assertion="real_llm_api_key_missing",
             message="Real LLM mode requires configured API key",
+        )
+
+    if not config.is_real_llm and not api_key_configured:
+        raise StepAssertionError(
+            assertion="stub_llm_not_configured",
+            message=(
+                "Stub mode requires backend LLM env pointing at AIMock sidecar. "
+                "Set VIBE_READER_LLM_BASE_URL, VIBE_READER_LLM_API_KEY, "
+                "VIBE_READER_LLM_MODEL and restart backend."
+            ),
+            actual=llm_runtime,
         )
 
     async with TargetClient(
@@ -296,16 +283,6 @@ async def _step_llm_ping(ctx: dict[str, Any]) -> None:
         if rec.status_code >= 400:
             err = body.get("error", {}) if isinstance(body, dict) else {}
             code = err.get("code", "unknown") if isinstance(err, dict) else "unknown"
-            if not config.is_real_llm:
-                metrics.record(
-                    "llm.ping.skipped",
-                    1,
-                    unit="count",
-                    scenario_id="S0_connectivity",
-                    step_id="llm_ping",
-                    tags={"reason": code},
-                )
-                return
             raise StepAssertionError(
                 assertion="llm_ping_failed",
                 message=f"LLM ping failed with status {rec.status_code}: {code}",

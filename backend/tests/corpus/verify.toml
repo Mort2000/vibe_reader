@@ -5,8 +5,22 @@ data_dir = "/tmp/vibe_reader_verify"
 [llm]
 mode = "stub"
 stub_profile = "mvp_default"
-temperature = 0.4
+temperature = 0
 timeout_s = 120
+
+[llm_stub.aimock]
+enabled = true
+version = "1.27.1"
+host = "127.0.0.1"
+port = 4010
+strict = true
+metrics = true
+fixture_dir = "tests/system_verify/llm_stub/aimock/fixtures"
+profile_dir = "tests/system_verify/llm_stub/aimock/profiles"
+seed = 20260522
+startup_timeout_s = 20
+api_key = "aimock-test-key"
+model = "deepseek-v4-flash"
 
 [real_llm]
 base_url = ""

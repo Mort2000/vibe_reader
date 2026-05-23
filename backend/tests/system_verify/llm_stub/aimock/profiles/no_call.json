@@ -1,0 +1,17 @@
+{
+  "name": "no_call",
+  "seed": 20260522,
+  "comment": {
+    "mode": "no_call",
+    "max_comments_per_window": 0,
+    "select": "first_targets",
+    "comment_type_cycle": ["observation"],
+    "include_stub_marker": true
+  },
+  "usage": {
+    "source": "estimate",
+    "input_divisor": 2,
+    "output_divisor": 2,
+    "cached_input_tokens": 0
+  }
+}

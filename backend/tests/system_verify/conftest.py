@@ -4,13 +4,22 @@ On startup, loads the first ``.env`` found under the current working directory,
 ``backend/``, or the repository root (see ``.env.example``). Shell environment
 variables already set take precedence.
 
+Stub mode: the ``aimock_sidecar`` fixture starts AIMock and calls
+``inject_stub_backend_env`` so the verify runner publishes the required LLM env.
+The backend is still a separate process — restart it with the printed env, or
+pass ``--spawn-backend`` to pytest / ``vibe-verify run``.
+
 When running pytest scenarios against a live backend, start it with an isolated
 data directory and verify mode, for example:
 
-    VIBE_READER_DATA_DIR=/tmp/vibe_reader_verify VIBE_READER_VERIFY_MODE=1 python3 -m app.main
+    VIBE_READER_DATA_DIR=/tmp/vibe_reader_verify \\
+    VIBE_READER_VERIFY_MODE=1 \\
+    VIBE_READER_LLM_BASE_URL=http://127.0.0.1:4010/v1 \\
+    VIBE_READER_LLM_API_KEY=aimock-test-key \\
+    python3 -m app.main
 
 Pre/post data directory reset is handled by the vibe-verify CLI run command;
-pytest fixtures do not manage backend process lifecycle.
+pytest fixtures do not manage backend process lifecycle unless ``--spawn-backend``.
 """
 
 from __future__ import annotations
@@ -44,6 +53,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Reuse an existing verification run id",
     )
+    parser.addoption(
+        "--spawn-backend",
+        action="store_true",
+        default=False,
+        help="Spawn backend subprocess with stub LLM env (stub mode only)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -71,11 +86,58 @@ def verify_config(request: pytest.FixtureRequest) -> VerifyConfig:
 
 
 @pytest.fixture(scope="session")
-def run_manager(verify_config: VerifyConfig, request: pytest.FixtureRequest) -> RunManager:
+def aimock_sidecar(verify_config: VerifyConfig, request: pytest.FixtureRequest):
+    """Start AIMock sidecar for stub-mode pytest sessions."""
+    if verify_config.is_real_llm or not verify_config.llm_stub.aimock.enabled:
+        yield None
+        return
+
+    from .llm_stub.aimock_launcher import AIMockSidecar
+    from .llm_stub.env import (
+        BackendProcess,
+        assert_backend_stub_llm_ready,
+        inject_stub_backend_env,
+        print_stub_backend_env_notice,
+        spawn_backend,
+    )
+
+    backend_proc: BackendProcess | None = None
+    spawn = request.config.getoption("--spawn-backend")
+
+    with AIMockSidecar(verify_config) as session:
+        inject_stub_backend_env(session, verify_config)
+        print_stub_backend_env_notice(session, verify_config)
+        if spawn:
+            backend_proc = spawn_backend(verify_config, session)
+        else:
+            assert_backend_stub_llm_ready(verify_config, session)
+        yield session
+        if backend_proc is not None:
+            backend_proc.stop()
+
+
+@pytest.fixture(scope="session")
+def run_manager(
+    verify_config: VerifyConfig,
+    request: pytest.FixtureRequest,
+    aimock_sidecar,
+) -> RunManager:
     run_id = request.config.getoption("--verify-run-id") or os.environ.get(
         "VIBE_READER_VERIFY_RUN_ID"
     )
     mgr = RunManager(verify_config, run_id=run_id or None)
+    if aimock_sidecar is not None:
+        mgr.set_aimock_info(
+            {
+                "provider": "aimock",
+                "version": aimock_sidecar.version,
+                "base_url": aimock_sidecar.base_url,
+                "fixture_hash": aimock_sidecar.fixture_hash,
+                "profile_hash": aimock_sidecar.profile_hash,
+                "strict": aimock_sidecar.strict,
+                "profile": aimock_sidecar.profile,
+            }
+        )
     mgr.start()
     yield mgr
     metrics = MetricsAggregator(mgr, verify_config)

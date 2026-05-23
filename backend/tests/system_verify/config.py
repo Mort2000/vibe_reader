@@ -32,6 +32,27 @@ class LLMConfig:
 
 
 @dataclass
+class AIMockConfig:
+    enabled: bool = True
+    version: str = "1.27.1"
+    host: str = "127.0.0.1"
+    port: int = 4010
+    strict: bool = True
+    metrics: bool = True
+    fixture_dir: str = "tests/system_verify/llm_stub/aimock/fixtures"
+    profile_dir: str = "tests/system_verify/llm_stub/aimock/profiles"
+    seed: int = 20260522
+    startup_timeout_s: int = 20
+    api_key: str = "aimock-test-key"
+    model: str = "deepseek-v4-flash"
+
+
+@dataclass
+class LLMStubConfig:
+    aimock: AIMockConfig = field(default_factory=AIMockConfig)
+
+
+@dataclass
 class RealLLMLongFlowConfig:
     require_compaction: bool = True
     test_compaction_trigger_tokens: int = 24000
@@ -94,6 +115,7 @@ class CommentDensityConfig:
 class VerifyConfig:
     target: TargetConfig = field(default_factory=TargetConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    llm_stub: LLMStubConfig = field(default_factory=LLMStubConfig)
     real_llm: RealLLMConfig = field(default_factory=RealLLMConfig)
     run: RunConfig = field(default_factory=RunConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
@@ -125,7 +147,7 @@ class VerifyConfig:
     def effective_model(self) -> str | None:
         if self.is_real_llm:
             return _env("VIBE_READER_LLM_MODEL") or self.real_llm.model
-        return None
+        return self.llm_stub.aimock.model
 
 
 def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
@@ -160,6 +182,28 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
         stub_profile=llm_raw.get("stub_profile", "mvp_default"),
         temperature=llm_raw.get("temperature", 0.4),
         timeout_s=llm_raw.get("timeout_s", 120),
+    )
+
+    aimock_raw = raw.get("llm_stub", {}).get("aimock", {})
+    llm_stub = LLMStubConfig(
+        aimock=AIMockConfig(
+            enabled=aimock_raw.get("enabled", True),
+            version=aimock_raw.get("version", "1.27.1"),
+            host=aimock_raw.get("host", "127.0.0.1"),
+            port=int(aimock_raw.get("port", 4010)),
+            strict=aimock_raw.get("strict", True),
+            metrics=aimock_raw.get("metrics", True),
+            fixture_dir=aimock_raw.get(
+                "fixture_dir", "tests/system_verify/llm_stub/aimock/fixtures"
+            ),
+            profile_dir=aimock_raw.get(
+                "profile_dir", "tests/system_verify/llm_stub/aimock/profiles"
+            ),
+            seed=int(aimock_raw.get("seed", raw.get("run", {}).get("seed", 20260522))),
+            startup_timeout_s=int(aimock_raw.get("startup_timeout_s", 20)),
+            api_key=aimock_raw.get("api_key", "aimock-test-key"),
+            model=aimock_raw.get("model", "deepseek-v4-flash"),
+        )
     )
 
     real_raw = raw.get("real_llm", {})
@@ -228,6 +272,7 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
     return VerifyConfig(
         target=target,
         llm=llm,
+        llm_stub=llm_stub,
         real_llm=real_llm,
         run=run,
         metrics=metrics,
