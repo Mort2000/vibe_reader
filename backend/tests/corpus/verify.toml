@@ -74,3 +74,12 @@ include_original_excerpts = true
 [comment_density]
 soft_min = 0.25
 stat_window_paragraphs = 80
+
+[context]
+provider_context_limit_tokens = 1000000
+attention_target_input_tokens = 128000
+normal_target_input_tokens = 112000
+compression_target_input_tokens = 128000
+emergency_input_cap_tokens = 160000
+target_l2_chunk_tokens = 24000
+max_context_jump_chars = 24000

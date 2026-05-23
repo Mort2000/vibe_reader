@@ -91,6 +91,7 @@ class RunConfig:
     max_wait_compaction_s: int = 240
     max_wait_chat_s: int = 120
     progress_step_delay_ms: int = 300
+    compaction_advance_batch_size: int = 16
     seed: int = 20260522
 
 
@@ -139,6 +140,17 @@ class CommentDensityConfig:
 
 
 @dataclass
+class ContextConfig:
+    provider_context_limit_tokens: int = 1_000_000
+    attention_target_input_tokens: int = 128_000
+    normal_target_input_tokens: int = 112_000
+    compression_target_input_tokens: int = 128_000
+    emergency_input_cap_tokens: int = 160_000
+    target_l2_chunk_tokens: int = 24_000
+    max_context_jump_chars: int = 24_000
+
+
+@dataclass
 class VerifyConfig:
     target: TargetConfig = field(default_factory=TargetConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -148,6 +160,7 @@ class VerifyConfig:
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     audit: AuditConfig = field(default_factory=AuditConfig)
     comment_density: CommentDensityConfig = field(default_factory=CommentDensityConfig)
+    context: ContextConfig = field(default_factory=ContextConfig)
 
     @property
     def target_data_dir(self) -> pathlib.Path:
@@ -270,6 +283,7 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
         max_wait_compaction_s=run_raw.get("max_wait_compaction_s", 240),
         max_wait_chat_s=run_raw.get("max_wait_chat_s", 120),
         progress_step_delay_ms=run_raw.get("progress_step_delay_ms", 300),
+        compaction_advance_batch_size=run_raw.get("compaction_advance_batch_size", 16),
         seed=run_raw.get("seed", 20260522),
     )
 
@@ -322,6 +336,23 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
         stat_window_paragraphs=density_raw.get("stat_window_paragraphs", 80),
     )
 
+    context_raw = raw.get("context", {})
+    context = ContextConfig(
+        provider_context_limit_tokens=context_raw.get(
+            "provider_context_limit_tokens", 1_000_000
+        ),
+        attention_target_input_tokens=context_raw.get(
+            "attention_target_input_tokens", 128_000
+        ),
+        normal_target_input_tokens=context_raw.get("normal_target_input_tokens", 112_000),
+        compression_target_input_tokens=context_raw.get(
+            "compression_target_input_tokens", 128_000
+        ),
+        emergency_input_cap_tokens=context_raw.get("emergency_input_cap_tokens", 160_000),
+        target_l2_chunk_tokens=context_raw.get("target_l2_chunk_tokens", 24_000),
+        max_context_jump_chars=context_raw.get("max_context_jump_chars", 24_000),
+    )
+
     return VerifyConfig(
         target=target,
         llm=llm,
@@ -331,6 +362,7 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
         metrics=metrics,
         audit=audit,
         comment_density=comment_density,
+        context=context,
     )
 
 

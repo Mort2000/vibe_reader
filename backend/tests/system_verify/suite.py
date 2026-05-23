@@ -36,6 +36,7 @@ async def run_mvp_suite(
     from .scenarios.s1_import import run_s1
     from .scenarios.s2_continuous_reading import run_s2
     from .scenarios.s3_fast_scroll import run_s3
+    from .scenarios.s4_long_context import run_s4
 
     if config.is_real_llm:
         raise RuntimeError("mvp/smoke suites must run with llm.mode=stub")
@@ -46,6 +47,7 @@ async def run_mvp_suite(
     await run_s1(mgr, config, metrics, corpus, suite_ctx=ctx)
     await run_s2(mgr, config, metrics, corpus, suite_ctx=ctx)
     await run_s3(mgr, config, metrics, corpus, suite_ctx=ctx)
+    await run_s4(mgr, config, metrics, corpus, suite_ctx=ctx)
 
 
 async def run_real_happy_path_suite(
@@ -72,6 +74,12 @@ async def run_real_happy_path_suite(
         from .scenarios.r1_real_happy_path import run_r1_a2_comments
 
         await run_r1_a2_comments(mgr, config, metrics, corpus, suite_ctx=ctx)
+        return
+
+    if coverage.upper() == "A3":
+        from .scenarios.r1_real_happy_path import run_r1_a3_compaction
+
+        await run_r1_a3_compaction(mgr, config, metrics, corpus, suite_ctx=ctx)
         return
 
     raise RuntimeError(f"real-happy-path coverage '{coverage}' is not implemented yet")

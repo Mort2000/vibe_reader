@@ -355,6 +355,16 @@ class ScenarioAssertion:
             )
 
     @staticmethod
+    def lte(actual: float | int, maximum: float | int, label: str = "") -> None:
+        if actual > maximum:
+            msg = f"Expected <= {maximum}, got {actual}"
+            if label:
+                msg = f"{label}: {msg}"
+            raise StepAssertionError(
+                assertion="assert_lte", message=msg, expected=maximum, actual=actual
+            )
+
+    @staticmethod
     def contains(container: Any, item: Any, label: str = "") -> None:
         if item not in container:
             msg = f"Expected to contain {item}"

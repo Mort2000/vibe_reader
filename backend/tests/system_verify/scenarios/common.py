@@ -43,6 +43,10 @@ class ReadingTrace:
     completed_windows: list[dict[str, Any]] = field(default_factory=list)
     failed_windows: list[dict[str, Any]] = field(default_factory=list)
     comment_events: list[SSEEvent] = field(default_factory=list)
+    compaction_done_count: int = 0
+    compaction_failed_count: int = 0
+    compaction_events: list[SSEEvent] = field(default_factory=list)
+    completed_compactions: list[dict[str, Any]] = field(default_factory=list)
 
 
 def merge_suite_ctx(ctx: dict[str, Any], suite_ctx: dict[str, Any] | None) -> None:
@@ -208,30 +212,41 @@ class ReadingSession:
             if evt.chapter_idx is not None and evt.chapter_idx != self.chapter_idx:
                 continue
 
-            if evt.event_type == "window.queued":
-                trace.window_queued_count += 1
-                window_id = evt.window_id or evt.data.get("window_id")
-                if window_id is not None:
-                    trace.window_queued_at.setdefault(int(window_id), time.monotonic())
-            elif evt.event_type == "window.done":
-                trace.window_done_count += 1
-                window_id = evt.window_id or evt.data.get("window_id")
-                if window_id is not None:
-                    wid = int(window_id)
-                    started = trace.window_queued_at.get(wid)
-                    if started is not None:
-                        trace.window_e2e_latencies_ms.append(
-                            (time.monotonic() - started) * 1000
-                        )
-                    trace.completed_windows.append(evt.data)
-            elif evt.event_type == "window.failed":
-                trace.window_failed_count += 1
-                trace.failed_windows.append(evt.data)
-            elif evt.event_type == "comment.created":
-                trace.comment_created_count += 1
-                trace.comment_events.append(evt)
+            self._ingest_single_event(trace, evt)
 
         self._ingested_event_count = len(events)
+
+    def _ingest_single_event(self, trace: ReadingTrace, evt: SSEEvent) -> None:
+        if evt.event_type == "window.queued":
+            trace.window_queued_count += 1
+            window_id = evt.window_id or evt.data.get("window_id")
+            if window_id is not None:
+                trace.window_queued_at.setdefault(int(window_id), time.monotonic())
+        elif evt.event_type == "window.done":
+            trace.window_done_count += 1
+            window_id = evt.window_id or evt.data.get("window_id")
+            if window_id is not None:
+                wid = int(window_id)
+                started = trace.window_queued_at.get(wid)
+                if started is not None:
+                    trace.window_e2e_latencies_ms.append(
+                        (time.monotonic() - started) * 1000
+                    )
+                trace.completed_windows.append(evt.data)
+        elif evt.event_type == "window.failed":
+            trace.window_failed_count += 1
+            trace.failed_windows.append(evt.data)
+        elif evt.event_type == "comment.created":
+            trace.comment_created_count += 1
+            trace.comment_events.append(evt)
+        elif evt.event_type == "context.compacted":
+            trace.compaction_done_count += 1
+            trace.compaction_events.append(evt)
+            trace.completed_compactions.append(evt.data)
+        elif evt.event_type == "job.failed":
+            job_type = evt.data.get("job_type")
+            if job_type == "compact_context":
+                trace.compaction_failed_count += 1
 
     def record_comment_event_metrics(
         self,
@@ -1644,10 +1659,22 @@ async def fetch_verify_jobs(
     *,
     scenario_id: str = "",
     step_id: str = "",
+    run_id: str | None = None,
+    job_type: str | None = None,
+    status: str | None = None,
 ) -> list[dict[str, Any]]:
-    body, rec = await client.verify_jobs(
-        params={"book_id": book_id, "chapter_idx": chapter_idx, "limit": 200}
-    )
+    params: dict[str, Any] = {
+        "book_id": book_id,
+        "chapter_idx": chapter_idx,
+        "limit": 200,
+    }
+    if run_id:
+        params["run_id"] = run_id
+    if job_type:
+        params["job_type"] = job_type
+    if status:
+        params["status"] = status
+    body, rec = await client.verify_jobs(params=params)
     if rec.status_code == 404:
         logger.warning(
             "%s/%s: GET /api/verify/jobs returned 404 — verify mode likely disabled; "
@@ -1721,3 +1748,184 @@ async def assert_reading_not_blocked(
             actual=elapsed_ms,
             expected=max_duration_ms,
         )
+
+
+async def wait_for_compaction(
+    client: TargetClient,
+    session: ReadingSession,
+    book_id: int,
+    chapter_idx: int,
+    timeout_s: float,
+    trace: ReadingTrace,
+    *,
+    run_id: str | None = None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """Wait for compaction completion.
+
+    Returns ``(done_job, jobs, failed_job)``. Does not raise on failure; callers
+    decide whether a failed compaction is a hard failure.
+    """
+
+    def _chapter_filter(evt: SSEEvent) -> bool:
+        return evt.book_id == book_id and evt.chapter_idx == chapter_idx
+
+    deadline = time.monotonic() + timeout_s
+    last_job: dict[str, Any] | None = None
+    last_failed: dict[str, Any] | None = None
+
+    while time.monotonic() < deadline:
+        jobs = await fetch_verify_jobs(
+            client,
+            book_id,
+            chapter_idx,
+            job_type="compact_context",
+            run_id=run_id,
+        )
+        done_jobs = [job for job in jobs if job.get("status") == "done"]
+        if done_jobs:
+            session.ingest_events(trace)
+            return done_jobs[-1], jobs, last_failed
+
+        failed_jobs = [job for job in jobs if job.get("status") == "failed"]
+        if failed_jobs:
+            last_failed = failed_jobs[-1]
+
+        if jobs:
+            last_job = jobs[-1]
+
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            evt = await session.collector.wait_for_event(
+                "context.compacted",
+                timeout_s=min(remaining, 2.0),
+                predicate=_chapter_filter,
+            )
+            if evt:
+                session.ingest_events(trace)
+                jobs = await fetch_verify_jobs(
+                    client,
+                    book_id,
+                    chapter_idx,
+                    job_type="compact_context",
+                    run_id=run_id,
+                )
+                done_jobs = [job for job in jobs if job.get("status") == "done"]
+                if done_jobs:
+                    return done_jobs[-1], jobs, last_failed
+                failed_jobs = [job for job in jobs if job.get("status") == "failed"]
+                if failed_jobs:
+                    last_failed = failed_jobs[-1]
+                return None, jobs, last_failed
+
+        await asyncio.sleep(0.5)
+
+    session.ingest_events(trace)
+    return last_job, await fetch_verify_jobs(
+        client,
+        book_id,
+        chapter_idx,
+        job_type="compact_context",
+        run_id=run_id,
+    ), last_failed
+
+
+async def advance_until_compaction(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+    config: VerifyConfig,
+    batch_size: int | None = None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """Advance reading within the current chapter until compaction completes."""
+    if batch_size is None:
+        batch_size = config.run.compaction_advance_batch_size
+
+    chapter = chapter_by_idx(chapters, cursor.chapter_idx)
+    if chapter is None:
+        raise StepAssertionError(
+            assertion="chapter_exists",
+            message=f"Chapter {cursor.chapter_idx} not found",
+            actual={"chapter_idx": cursor.chapter_idx},
+        )
+
+    chapter_last = last_paragraph_idx(chapter)
+    next_paragraph = cursor.paragraph_idx
+    timeout_s = float(config.run.max_wait_compaction_s)
+    deadline = time.monotonic() + timeout_s
+    last_job: dict[str, Any] | None = None
+    last_failed: dict[str, Any] | None = None
+    all_jobs: list[dict[str, Any]] = []
+
+    while time.monotonic() < deadline:
+        done_job, jobs, failed_job = await wait_for_compaction(
+            client,
+            session,
+            book_id,
+            cursor.chapter_idx,
+            timeout_s=min(2.0, deadline - time.monotonic()),
+            trace=trace,
+            run_id=ctx["run_manager"].run_id,
+        )
+        all_jobs = jobs or all_jobs
+        if failed_job:
+            last_failed = failed_job
+        if done_job:
+            cursor.paragraph_idx = max(cursor.paragraph_idx, next_paragraph)
+            ctx["final_paragraph_idx"] = cursor.paragraph_idx
+            return done_job, all_jobs, last_failed
+        if jobs:
+            last_job = jobs[-1]
+
+        if next_paragraph > chapter_last:
+            break
+
+        end = min(next_paragraph + batch_size, chapter_last)
+        last = await advance_reading(
+            client,
+            ctx,
+            book_id,
+            cursor.chapter_idx,
+            next_paragraph,
+            end,
+            trace,
+            scenario_id=scenario_id,
+            step_id=step_id,
+            metrics=metrics,
+            delay_ms=config.run.progress_step_delay_ms,
+        )
+        cursor.paragraph_idx = last
+        ctx["final_paragraph_idx"] = last
+        next_paragraph = last + 1
+
+    return last_job, all_jobs, last_failed
+
+
+async def collect_latest_injected_contexts(
+    client: TargetClient,
+    run_manager: RunManager,
+    *,
+    scenario_id: str | None = None,
+) -> list[dict[str, Any]]:
+    from ..context_assertions import find_comment_agent_runs, find_compaction_agent_runs
+
+    agent_runs = await fetch_verify_agent_runs(
+        client,
+        run_manager.run_id,
+        scenario_id=scenario_id,
+    )
+    contexts: list[dict[str, Any]] = []
+    for run in find_comment_agent_runs(agent_runs) + find_compaction_agent_runs(agent_runs):
+        interaction = run.get("interaction") or run
+        injected = interaction.get("injected_context")
+        if isinstance(injected, dict):
+            contexts.append(injected)
+    return contexts
+
