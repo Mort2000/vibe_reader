@@ -55,27 +55,27 @@ async def _compute_window_bounds(
 
     while (
         start_pidx > 0
-        and len(window_paragraphs) < wc.min_window_paragraphs
+        and len(window_paragraphs) < wc.min_focus_paragraphs
     ):
         start_pidx -= 1
         p = await paragraph_repo.get_paragraph(db, book_id, chapter_idx, start_pidx)
         if p:
             window_paragraphs.insert(0, p)
             token_sum += p.get("token_estimate", 0)
-        if token_sum > wc.max_window_tokens:
+        if token_sum > wc.focus_max_tokens:
             window_paragraphs.pop(0)
             start_pidx += 1
             break
 
-    if token_sum > wc.max_window_tokens:
-        while token_sum > wc.max_window_tokens and end_pidx > focus_start:
+    if token_sum > wc.focus_max_tokens:
+        while token_sum > wc.focus_max_tokens and end_pidx > focus_start:
             removed = window_paragraphs.pop()
             token_sum -= removed.get("token_estimate", 0)
             end_pidx = removed["paragraph_idx"] - 1
         token_sum = sum(p.get("token_estimate", 0) for p in window_paragraphs)
 
-    if len(window_paragraphs) > wc.max_window_paragraphs:
-        window_paragraphs = window_paragraphs[: wc.max_window_paragraphs]
+    if len(window_paragraphs) > wc.max_focus_paragraphs:
+        window_paragraphs = window_paragraphs[: wc.max_focus_paragraphs]
         end_pidx = window_paragraphs[-1]["paragraph_idx"]
 
     return window_paragraphs, start_pidx, end_pidx
@@ -94,7 +94,7 @@ async def get_or_create_window(
 
     latest_window = await window_repo.find_latest_window(db, book_id, chapter_idx)
 
-    wc = settings.window
+    wc = settings.window_l1
 
     if latest_window is not None:
         start = latest_window["start_paragraph_idx"]

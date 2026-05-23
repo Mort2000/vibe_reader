@@ -87,20 +87,65 @@ CREATE TABLE IF NOT EXISTS paragraph_comments (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS rolling_context_snapshots (
+CREATE TABLE IF NOT EXISTS original_text_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
     chapter_idx INTEGER NOT NULL,
-    up_to_paragraph_idx INTEGER NOT NULL,
-    source_window_id INTEGER REFERENCES reading_windows(id),
+    chunk_seq INTEGER NOT NULL,
+    start_paragraph_idx INTEGER NOT NULL,
+    end_paragraph_idx INTEGER NOT NULL,
+    token_estimate INTEGER NOT NULL DEFAULT 0,
+    char_count INTEGER NOT NULL DEFAULT 0,
+    text_hash TEXT NOT NULL DEFAULT '',
+    rendered_hash TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    reclaimed_by_summary_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(book_id, chapter_idx, chunk_seq)
+);
+
+CREATE TABLE IF NOT EXISTS chapter_compressed_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    chapter_idx INTEGER NOT NULL,
+    covered_start_paragraph_idx INTEGER NOT NULL,
+    covered_end_paragraph_idx INTEGER NOT NULL,
+    source_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_text_hash TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL DEFAULT '',
-    comment_digest TEXT NOT NULL DEFAULT '',
-    chat_digest TEXT NOT NULL DEFAULT '',
     anchor_excerpts_json TEXT NOT NULL DEFAULT '[]',
-    open_questions_json TEXT NOT NULL DEFAULT '[]',
     token_estimate INTEGER NOT NULL DEFAULT 0,
     context_version INTEGER NOT NULL DEFAULT 1,
+    compaction_epoch INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS book_context_states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL UNIQUE REFERENCES books(id) ON DELETE CASCADE,
+    active_chapter_idx INTEGER NOT NULL DEFAULT 0,
+    reading_paragraph_idx INTEGER NOT NULL DEFAULT 0,
+    assistant_frontier_chapter_idx INTEGER NOT NULL DEFAULT 0,
+    assistant_frontier_paragraph_idx INTEGER NOT NULL DEFAULT 0,
+    context_frontier_chapter_idx INTEGER NOT NULL DEFAULT 0,
+    context_frontier_paragraph_idx INTEGER NOT NULL DEFAULT 0,
+    latest_summary_id INTEGER,
+    live_l2_chunk_ids_json TEXT,
+    compaction_epoch INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'idle',
+    running_job_id INTEGER,
+    pending_chapter_idx INTEGER,
+    pending_paragraph_idx INTEGER,
+    pending_scroll_pct REAL,
+    pending_assistant_frontier_chapter_idx INTEGER,
+    pending_assistant_frontier_paragraph_idx INTEGER,
+    pending_context_jump_chars INTEGER,
+    pending_updated_at TEXT,
+    emergency_overflow_used INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -156,8 +201,14 @@ CREATE INDEX IF NOT EXISTS idx_paragraph_comments_book_chapter
 CREATE INDEX IF NOT EXISTS idx_reading_windows_book_chapter
     ON reading_windows(book_id, chapter_idx);
 
-CREATE INDEX IF NOT EXISTS idx_rolling_snapshots_book_chapter
-    ON rolling_context_snapshots(book_id, chapter_idx, up_to_paragraph_idx);
+CREATE INDEX IF NOT EXISTS idx_original_text_chunks_book_chapter
+    ON original_text_chunks(book_id, chapter_idx);
+
+CREATE INDEX IF NOT EXISTS idx_chapter_summaries_book_chapter
+    ON chapter_compressed_summaries(book_id, chapter_idx, covered_end_paragraph_idx);
+
+CREATE INDEX IF NOT EXISTS idx_book_context_states_book
+    ON book_context_states(book_id);
 
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_book_chapter
     ON chat_sessions(book_id, chapter_idx);
@@ -222,6 +273,7 @@ _MIGRATIONS = [
     ("verify_agent_runs", "invocation_id", "TEXT NOT NULL DEFAULT ''"),
     ("verify_agent_runs", "interaction_json", "TEXT NOT NULL DEFAULT ''"),
     ("verify_agent_runs", "interaction_path", "TEXT NOT NULL DEFAULT ''"),
+    ("book_context_states", "emergency_overflow_used", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

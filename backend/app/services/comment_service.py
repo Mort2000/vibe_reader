@@ -16,10 +16,12 @@ from ..observability import (
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import comments as comment_repo
+from ..repos import context_state
 from ..repos import paragraphs as paragraph_repo
 from .agent_audit import build_comment_interaction_packet, make_invocation_id
 from .agent_audit_store import persist_interaction_packet
 from .agent_base import CommentDensityHint, CommentDeps, EmitCommentDraft, get_comment_agent
+from .context_builder import build_context
 from .job_runner import JobRunner
 
 logger = logging.getLogger(__name__)
@@ -45,51 +47,6 @@ def _build_density_hint(
         current_density=round(current_density, 4),
         estimated_missing_comments=estimated_missing,
     )
-
-
-def build_comment_prompt(
-    book_meta: dict[str, Any],
-    chapter_meta: dict[str, Any],
-    window_paragraphs: list[dict[str, Any]],
-    target_paragraphs: list[int],
-    density_hint: CommentDensityHint | None = None,
-) -> str:
-    lines: list[str] = []
-
-    lines.append(f"书籍：{book_meta.get('title', '未知')}")
-    chapter_title = chapter_meta.get("title", f"第{chapter_meta.get('idx', 0)}章")
-    lines.append(f"章节：{chapter_title}")
-    lines.append("")
-
-    lines.append("<CURRENT_WINDOW>")
-    for p in window_paragraphs:
-        idx = p["paragraph_idx"]
-        marker = " ★" if idx in target_paragraphs else ""
-        lines.append(f"[P{idx}]{marker} {p['text']}")
-    lines.append("</CURRENT_WINDOW>")
-    lines.append("")
-
-    target_str = ", ".join(str(i) for i in sorted(target_paragraphs))
-    lines.append(f"comment_target_paragraphs = [{target_str}]")
-    lines.append("请仅为上述标有 ★ 且列在 comment_target_paragraphs 中的段落生成评论。")
-    lines.append("每个目标段落生成一条评论。如果某个段落信息不足以评论，可以跳过。")
-
-    if density_hint is not None:
-        lines.append("")
-        lines.append("comment_density_hint:")
-        lines.append(f"  stat_start_paragraph_idx = {density_hint.stat_start_paragraph_idx}")
-        lines.append(f"  stat_end_paragraph_idx = {density_hint.stat_end_paragraph_idx}")
-        lines.append(
-            f"  stat_target_paragraph_count = {density_hint.stat_target_paragraph_count}"
-        )
-        lines.append(f"  active_comment_count = {density_hint.active_comment_count}")
-        lines.append(f"  soft_min_density = {density_hint.soft_min_density}")
-        lines.append(f"  current_density = {density_hint.current_density}")
-        lines.append(
-            f"  estimated_missing_comments = {density_hint.estimated_missing_comments}"
-        )
-
-    return "\n".join(lines)
 
 
 def _validate_and_dedupe(
@@ -151,22 +108,22 @@ async def run_comment_task(
     focus_start = window["focus_start_paragraph_idx"]
     focus_end = window["focus_end_paragraph_idx"]
     start_pidx = window["start_paragraph_idx"]
-    end_pidx = window["end_paragraph_idx"]
     frontier = window["assistant_frontier_paragraph_idx"]
-
-    window_paragraphs = await paragraph_repo.get_paragraphs_range(
-        db, book_id, chapter_idx, start_pidx, end_pidx
-    )
 
     target_paragraphs = list(range(focus_start, focus_end + 1))
     target_set = set(target_paragraphs)
+
+    window_paragraphs = await paragraph_repo.get_paragraphs_range(
+        db, book_id, chapter_idx, start_pidx,
+        window["end_paragraph_idx"],
+    )
 
     book = await book_repo.get_book(db, book_id)
     chapter = await chapter_repo.get_chapter(db, book_id, chapter_idx)
     if not book or not chapter:
         raise ValueError(f"Book/chapter not found: {book_id}/{chapter_idx}")
 
-    wc = settings.window
+    wc = settings.window_l1
     stat_start = max(0, frontier - wc.comment_density_stat_window_paragraphs)
     stat_end = frontier
 
@@ -187,13 +144,51 @@ async def run_comment_task(
         soft_min=wc.comment_density_soft_min,
     )
 
-    prompt = build_comment_prompt(
-        book_meta=book,
-        chapter_meta=chapter,
-        window_paragraphs=window_paragraphs,
+    # Use the window's frontier to derive the reading position, ensuring
+    # build_context computes a frontier >= the window's own frontier.
+    # start_pidx includes overlap and is earlier than the reading position,
+    # which would cause build_context to underestimate the frontier.
+    reading_pidx = max(
+        start_pidx,
+        frontier - settings.reader.lookahead_paragraphs,
+    )
+
+    book_state = await context_state.get_or_create(db, book_id)
+    overflow_used = bool(book_state.get("emergency_overflow_used", 0))
+
+    ctx_result = await build_context(
+        db,
+        book_id=book_id,
+        chapter_idx=chapter_idx,
+        reading_pidx=reading_pidx,
+        settings=settings,
+        task_type="comment",
+        focus_start=focus_start,
+        focus_end=focus_end,
         target_paragraphs=target_paragraphs,
         density_hint=density_hint,
+        book_title=book.get("title"),
+        chapter_title=chapter.get("title"),
+        overflow_already_used=overflow_used,
     )
+    prompt = ctx_result.prompt
+
+    if ctx_result.emergency_overflow_used and not overflow_used:
+        await context_state.update_state(
+            db, book_id, emergency_overflow_used=1,
+        )
+
+    if ctx_result.preflight_triggered:
+        logger.info(
+            "comment_task.preflight_compaction",
+            extra={
+                "event": "comment_task.preflight_compaction",
+                "fields": {
+                    "job_id": job_id,
+                    "estimated_tokens": ctx_result.estimated_tokens,
+                },
+            },
+        )
 
     await comment_repo.delete_comments_by_window(db, window_id)
 
@@ -260,6 +255,8 @@ async def run_comment_task(
         "comment_density_soft_min": density_hint.soft_min_density,
         "comment_density_stat_start": density_hint.stat_start_paragraph_idx,
         "comment_density_stat_end": density_hint.stat_end_paragraph_idx,
+        "context_estimated_tokens": ctx_result.estimated_tokens,
+        "context_hash": ctx_result.context_hash,
     }
 
     logger.info(
@@ -345,13 +342,16 @@ async def run_comment_task(
         "discarded_count": len(discarded),
         "discarded_by_reason": discarded_by_reason,
         "candidate_lookup_count": len(target_set),
-        "context_hash": window.get("context_hash") or "",
+        "context_hash": ctx_result.context_hash,
         "comment_density_actual": density_hint.current_density,
         "comment_density_soft_min": density_hint.soft_min_density,
         "density_stat_start": density_hint.stat_start_paragraph_idx,
         "density_stat_end": density_hint.stat_end_paragraph_idx,
         "invocation_id": invocation_id,
         "interaction_path": interaction_path,
+        "context_estimated_tokens": ctx_result.estimated_tokens,
+        "preflight_triggered": ctx_result.preflight_triggered,
+        "prompt_manifest": ctx_result.prompt_manifest,
     }
 
 

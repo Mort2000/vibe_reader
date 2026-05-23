@@ -51,7 +51,9 @@ async def import_book(request: Request, file: UploadFile = File(...)) -> dict[st
     try:
         from ..services.import_service import import_epub
 
-        result = await import_epub(db, tmp_path, settings.books_dir)
+        result = await import_epub(
+            db, tmp_path, settings.books_dir, l2_config=settings.context_l2
+        )
     finally:
         os.unlink(tmp_path)
 

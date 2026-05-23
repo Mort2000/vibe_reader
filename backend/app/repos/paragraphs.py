@@ -111,3 +111,20 @@ async def get_paragraphs_range(
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
+
+
+async def count_chars_in_range(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    start_idx: int,
+    end_idx: int,
+) -> int:
+    cur = await db.execute(
+        "SELECT COALESCE(SUM(char_count), 0) FROM paragraphs "
+        "WHERE book_id = ? AND chapter_idx = ? "
+        "AND paragraph_idx > ? AND paragraph_idx <= ?",
+        (book_id, chapter_idx, start_idx, end_idx),
+    )
+    row = await cur.fetchone()
+    return row[0] if row else 0

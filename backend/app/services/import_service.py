@@ -15,6 +15,7 @@ from ebooklib import epub
 
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
+from ..repos import chunks as chunk_repo
 from ..repos import paragraphs as paragraph_repo
 from ..repos import progress as progress_repo
 
@@ -123,6 +124,7 @@ async def import_epub(
     db: aiosqlite.Connection,
     epub_path: str,
     books_dir: Path,
+    l2_config: Any | None = None,
 ) -> dict[str, Any]:
     start_ms = time.time() * 1000
 
@@ -219,6 +221,19 @@ async def import_epub(
         total_paragraphs += ch["paragraph_count"]
         total_chars += sum(p["char_count"] for p in ch["paragraphs"])
         total_tokens += ch["token_estimate"]
+
+    for ch in parsed_chapters:
+        if l2_config:
+            await chunk_repo.create_chunks_for_chapter(
+                db, book_id, ch["idx"],
+                target_tokens=l2_config.target_chunk_tokens,
+                min_tokens=l2_config.min_chunk_tokens,
+                max_tokens=l2_config.max_chunk_tokens,
+            )
+        else:
+            await chunk_repo.create_chunks_for_chapter(
+                db, book_id, ch["idx"]
+            )
 
     duration_ms = time.time() * 1000 - start_ms
 

@@ -57,12 +57,26 @@ class AnchorExcerpt(BaseModel):
     reason: str
 
 
-class RollingContextSnapshotOutput(BaseModel):
+class ChapterCompressedSummaryOutput(BaseModel):
     summary: str
-    comment_digest: str
-    chat_digest: str
     anchor_excerpts: list[AnchorExcerpt] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
+
+
+COMPACTION_INSTRUCTIONS = """\
+你是一位中文小说阅读助手，负责将已读章节原文压缩成结构化摘要。
+
+输入：
+- 上一份章节压缩摘要（可以为空）
+- 最早的一个完整原文 chunk
+
+输出规则：
+- 压缩结果必须短于输入。
+- 保留关键情节、人物动作、场景变化和重要对话。
+- anchor_excerpts 保留原文中关键的锚点片段，每个不超过 120 tokens。
+- 不要编造文中没有的内容。
+- 不要输出完整人物关系图或时间线。
+- 不要输出 comment digest 或 chat digest。
+- summary 和 anchor_excerpts 都以 JSON 结构化输出。"""
 
 
 _model: OpenAIChatModel | None = None
@@ -115,3 +129,31 @@ def get_comment_agent(settings: Settings) -> Agent[CommentDeps, str | None]:
         return "accepted"
 
     return _comment_agent
+
+
+@dataclass
+class CompactionDeps:
+    previous_summary: str | None = None
+    chunk_text: str = ""
+
+
+_compaction_agent: Agent[CompactionDeps, ChapterCompressedSummaryOutput] | None = None
+
+
+def get_compaction_agent(
+    settings: Settings,
+) -> Agent[CompactionDeps, ChapterCompressedSummaryOutput]:
+    global _compaction_agent
+    if _compaction_agent is not None:
+        return _compaction_agent
+    model = get_llm_model(settings)
+    _compaction_agent = Agent(
+        model,
+        deps_type=CompactionDeps,
+        output_type=ChapterCompressedSummaryOutput,
+        instructions=COMPACTION_INSTRUCTIONS,
+        name="ContextCompactionAgent",
+        description="将已读原文 chunk 压缩成章节摘要",
+        retries={"output": 2},
+    )
+    return _compaction_agent

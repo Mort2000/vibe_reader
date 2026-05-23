@@ -54,12 +54,13 @@ async def get_settings(request: Request) -> dict:
             "model": settings.llm.model,
         },
         "context": {
-            "effective_input_budget": settings.context.effective_input_budget,
-            "hard_input_cap": settings.context.hard_input_cap,
+            "provider_context_limit_tokens": settings.context.provider_context_limit_tokens,
+            "attention_target_input_tokens": settings.context.attention_target_input_tokens,
+            "emergency_input_cap_tokens": settings.context.emergency_input_cap_tokens,
         },
-        "window": {
+        "window_l1": {
             "lookahead_paragraphs": settings.reader.lookahead_paragraphs,
-            "target_window_tokens": settings.window.target_window_tokens,
-            "max_window_tokens": settings.window.max_window_tokens,
+            "focus_target_tokens": settings.window_l1.focus_target_tokens,
+            "focus_max_tokens": settings.window_l1.focus_max_tokens,
         },
     }
