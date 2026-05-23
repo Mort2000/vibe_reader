@@ -69,6 +69,22 @@ async def list_paragraphs(
     return [dict(r) for r in rows], total
 
 
+async def get_paragraph(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    paragraph_idx: int,
+) -> dict[str, Any] | None:
+    cur = await db.execute(
+        "SELECT * FROM paragraphs WHERE book_id = ? AND chapter_idx = ? AND paragraph_idx = ?",
+        (book_id, chapter_idx, paragraph_idx),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
 async def get_last_paragraph_idx(
     db: aiosqlite.Connection,
     book_id: int,

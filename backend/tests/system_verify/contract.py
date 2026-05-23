@@ -98,10 +98,22 @@ def validate_progress_response(resp_body: dict, rec: APIRecord | None = None) ->
     if "progress" not in resp_body:
         raise ContractError("Progress response missing 'progress'", rec)
 
-    progress = resp_body["progress"]
-    for field in ("book_id", "chapter_idx", "paragraph_idx", "updated_at"):
+    validate_reading_progress(resp_body["progress"], rec, require_updated_at=True)
+
+
+def validate_reading_progress(
+    progress: dict,
+    rec: APIRecord | None = None,
+    *,
+    require_updated_at: bool = False,
+) -> None:
+    """Validate a reading progress record from GET or nested PUT response."""
+    for field in ("book_id", "chapter_idx", "paragraph_idx", "scroll_pct"):
         if field not in progress:
-            raise ContractError(f"Progress missing '{field}'", rec)
+            raise ContractError(f"Reading progress missing '{field}'", rec)
+
+    if require_updated_at and progress.get("updated_at") is None:
+        raise ContractError("Reading progress missing 'updated_at'", rec)
 
 
 def validate_chapters_response(resp_body: dict, rec: APIRecord | None = None) -> None:

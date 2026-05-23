@@ -107,6 +107,7 @@ class ScenarioBuilder:
         self.scenario_id = scenario_id
         self.description = description
         self._steps: list[Step] = []
+        self.continue_on_failure = False
 
     def step(
         self,
@@ -170,14 +171,25 @@ class ScenarioRunner:
             started_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
+        failed_steps: list[str] = []
+
         for step_def in builder.steps:
             step_result = await self._run_step(step_def, ctx)
             result.steps.append(step_result)
 
             if step_result.status in (StepStatus.FAILED, StepStatus.ERROR):
                 result.status = ScenarioStatus.FAILED
-                result.failure_summary = f"Step '{step_result.step_id}' failed: {step_result.description}"
-                break
+                failed_steps.append(step_result.step_id)
+                if not builder.continue_on_failure:
+                    result.failure_summary = f"Step '{step_result.step_id}' failed: {step_result.description}"
+                    break
+
+        if failed_steps and builder.continue_on_failure:
+            result.failure_summary = f"Failed steps: {', '.join(failed_steps)}"
+        elif result.status == ScenarioStatus.FAILED and not result.failure_summary:
+            last = failed_steps[-1] if failed_steps else ""
+            step_desc = next((s.description for s in builder.steps if s.step_id == last), last)
+            result.failure_summary = f"Step '{last}' failed: {step_desc}"
 
         if result.status == ScenarioStatus.RUNNING:
             result.status = ScenarioStatus.PASSED

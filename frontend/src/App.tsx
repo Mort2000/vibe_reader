@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { BookSummary, ChapterSummary, Paragraph, ImportResult } from './types';
 import * as api from './api/client';
 import BookList from './components/BookList';
 import ChapterNav from './components/ChapterNav';
 import ReaderView from './components/ReaderView';
+import type { ReaderViewHandle } from './components/ReaderView';
 import ImportDropZone from './components/ImportDropZone';
 import './App.css';
 
@@ -18,6 +19,7 @@ export default function App() {
   const [paragraphs, setParagraphs] = useState<Paragraph[]>([]);
   const [progressParagraphIdx, setProgressParagraphIdx] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const readerRef = useRef<ReaderViewHandle>(null);
 
   const refreshBooks = useCallback(async () => {
     const result = await api.getBooks();
@@ -70,6 +72,7 @@ export default function App() {
   const handleChapterSelect = useCallback(
     (idx: number) => {
       if (!currentBook) return;
+      readerRef.current?.flush();
       loadChapter(currentBook.id, idx);
       setProgressParagraphIdx(null);
     },
@@ -77,18 +80,19 @@ export default function App() {
   );
 
   const handleProgressChange = useCallback(
-    async (paragraphIdx: number, scrollPct: number) => {
+    async (chapterIdx: number, paragraphIdx: number, scrollPct: number) => {
       if (!currentBook) return;
       try {
-        await api.updateProgress(currentBook.id, currentChapterIdx, paragraphIdx, scrollPct);
+        await api.updateProgress(currentBook.id, chapterIdx, paragraphIdx, scrollPct);
       } catch {
         // silently ignore progress update failures
       }
     },
-    [currentBook, currentChapterIdx]
+    [currentBook]
   );
 
   const handleBack = useCallback(() => {
+    readerRef.current?.flush();
     setView('library');
     setCurrentBook(null);
     setChapters([]);
@@ -109,7 +113,6 @@ export default function App() {
           books={books}
           onSelect={openBook}
           onImported={handleImported}
-          onRefresh={refreshBooks}
         />
       </div>
     );
@@ -136,7 +139,7 @@ export default function App() {
             <div className="loading">Loading...</div>
           ) : (
             <ReaderView
-              bookId={currentBook!.id}
+              ref={readerRef}
               chapterIdx={currentChapterIdx}
               paragraphs={paragraphs}
               initialParagraphIdx={progressParagraphIdx}

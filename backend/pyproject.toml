@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "vibe-reader-backend"
 version = "0.1.0"
@@ -30,6 +34,9 @@ dev = [
 [project.scripts]
 vibe-reader = "app.main:cli"
 vibe-verify = "tests.system_verify.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app", "tests"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

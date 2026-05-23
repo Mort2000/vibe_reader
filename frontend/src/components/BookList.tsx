@@ -6,10 +6,9 @@ interface Props {
   books: BookSummary[];
   onSelect: (book: BookSummary) => void;
   onImported: (result: ImportResult) => void;
-  onRefresh: () => void;
 }
 
-export default function BookList({ books, onSelect, onImported, onRefresh }: Props) {
+export default function BookList({ books, onSelect, onImported }: Props) {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);

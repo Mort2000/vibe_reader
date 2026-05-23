@@ -41,6 +41,14 @@ async def create_book(
     }
 
 
+async def get_book_by_hash(db: aiosqlite.Connection, file_hash: str) -> dict[str, Any] | None:
+    cur = await db.execute("SELECT * FROM books WHERE file_hash = ?", (file_hash,))
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
 async def get_book(db: aiosqlite.Connection, book_id: int) -> dict[str, Any] | None:
     cur = await db.execute("SELECT * FROM books WHERE id = ?", (book_id,))
     row = await cur.fetchone()

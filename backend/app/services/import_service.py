@@ -19,6 +19,7 @@ from ebooklib import epub
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import paragraphs as paragraph_repo
+from ..repos import progress as progress_repo
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,35 @@ async def import_epub(
     author_str = author[0][0] if author else None
 
     file_hash = hashlib.sha256(Path(epub_path).read_bytes()).hexdigest()[:16]
+
+    existing = await book_repo.get_book_by_hash(db, file_hash)
+    if existing is not None:
+        logger.info("book.import.duplicate", extra={"event": "book.import.duplicate", "fields": {"book_id": existing["id"], "file_hash": file_hash}})
+        prog = await progress_repo.get_progress(db, existing["id"])
+        lp = prog if prog.get("updated_at") else None
+        return {
+            "book": {
+                "id": existing["id"],
+                "title": existing["title"],
+                "author": existing.get("author"),
+                "cover_url": f"/api/books/{existing['id']}/cover" if existing.get("cover_path") else None,
+                "total_chapters": existing["total_chapters"],
+                "imported_at": existing.get("imported_at", ""),
+                "updated_at": existing["updated_at"],
+                "last_progress": lp,
+            },
+            "first_chapter": None,
+            "import_stats": {
+                "duplicate": True,
+                "existing_book_id": existing["id"],
+                "chapter_count": existing["total_chapters"],
+                "paragraph_count": 0,
+                "char_count": 0,
+                "token_estimate": 0,
+                "duration_ms": 0,
+            },
+        }
+
     dest_dir = books_dir / file_hash
     dest_dir.mkdir(parents=True, exist_ok=True)
 
