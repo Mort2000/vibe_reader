@@ -131,7 +131,7 @@ uv run vibe-verify run --suite smoke --keep-data
 | **S1_book_import** | epub 导入、进度、happy_path_current probe | A1 |
 | **S2_continuous_reading** | 连续阅读、评论/no-call 窗口、密度与校验指标、审计样本 | A2 |
 | **S3_fast_scroll** | 快速滚动与跳读、窗口对齐、评论复用 | A2 |
-| **R1_real_happy_path** | 真实 LLM 至少 2 个评论窗口、成本护栏、真实审计样本 | A2（real） |
+| **R1_real_happy_path** | 从书目起点跨章连续阅读、真实 LLM 至少 2 个评论窗口、成本护栏、真实审计样本 | A2（real） |
 
 ## pytest
 

@@ -328,6 +328,388 @@ async def advance_reading(
     return last
 
 
+@dataclass
+class ReadingCursor:
+    """Tracks reading position while advancing across chapter boundaries."""
+
+    chapter_idx: int
+    paragraph_idx: int
+    chapters_crossed: int = 0
+    visited_chapters: list[int] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.chapter_idx not in self.visited_chapters:
+            self.visited_chapters.append(self.chapter_idx)
+
+
+def resolve_happy_path_start(probe: ProbeConfig, fallback: ProbeConfig) -> tuple[int, int]:
+    """Return the start chapter/paragraph for real happy-path reading."""
+    chapter_idx = (
+        probe.start_chapter_idx
+        if probe.start_chapter_idx is not None
+        else fallback.chapter_idx
+    )
+    paragraph_idx = (
+        probe.start_paragraph_idx
+        if probe.start_paragraph_idx is not None
+        else fallback.paragraph_idx
+    )
+    return chapter_idx, paragraph_idx
+
+
+async def load_chapters(
+    ctx: dict[str, Any],
+    book_id: int,
+    *,
+    client: TargetClient | None = None,
+) -> list[dict[str, Any]]:
+    if ctx.get("chapters"):
+        return ctx["chapters"]
+
+    run_manager: RunManager = ctx["run_manager"]
+    config: VerifyConfig = ctx["config"]
+
+    if client is None:
+        async with TargetClient(
+            config.target.base_url,
+            run_manager,
+            ctx.get("scenario_id", "setup"),
+            "load_chapters",
+            context=ctx,
+        ) as owned_client:
+            body, _ = await owned_client.list_chapters(book_id)
+            chapters = body.get("items") or []
+    else:
+        body, _ = await client.list_chapters(book_id)
+        chapters = body.get("items") or []
+
+    ctx["chapters"] = chapters
+    return chapters
+
+
+def chapter_by_idx(chapters: list[dict[str, Any]], chapter_idx: int) -> dict[str, Any] | None:
+    for chapter in chapters:
+        if chapter.get("idx") == chapter_idx:
+            return chapter
+    return None
+
+
+def last_paragraph_idx(chapter: dict[str, Any]) -> int:
+    count = int(chapter.get("paragraph_count") or 0)
+    return max(0, count - 1)
+
+
+def next_chapter_idx(chapters: list[dict[str, Any]], current_idx: int) -> int | None:
+    ordered = sorted(int(ch["idx"]) for ch in chapters)
+    try:
+        pos = ordered.index(current_idx)
+    except ValueError:
+        return None
+    if pos + 1 >= len(ordered):
+        return None
+    return ordered[pos + 1]
+
+
+async def switch_reading_session(
+    ctx: dict[str, Any],
+    session: ReadingSession | None,
+    *,
+    scenario_id: str,
+    book_id: int,
+    chapter_idx: int,
+) -> ReadingSession:
+    config: VerifyConfig = ctx["config"]
+    if session is not None:
+        await session.stop()
+    new_session = ReadingSession(
+        config.target.base_url,
+        ctx["run_manager"],
+        scenario_id,
+        book_id,
+        chapter_idx,
+    )
+    await new_session.start()
+    return new_session
+
+
+def _move_cursor_to_next_chapter(
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+) -> bool:
+    next_idx = next_chapter_idx(chapters, cursor.chapter_idx)
+    if next_idx is None:
+        return False
+    previous_chapter = cursor.chapter_idx
+    cursor.chapter_idx = next_idx
+    cursor.paragraph_idx = 0
+    if previous_chapter != next_idx:
+        cursor.chapters_crossed += 1
+    if next_idx not in cursor.visited_chapters:
+        cursor.visited_chapters.append(next_idx)
+    return True
+
+
+async def _cross_reading_chapter(
+    ctx: dict[str, Any],
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    book_id: int,
+) -> tuple[ReadingSession, bool]:
+    if not _move_cursor_to_next_chapter(cursor, chapters):
+        return session, False
+    new_session = await switch_reading_session(
+        ctx,
+        session,
+        scenario_id=scenario_id,
+        book_id=book_id,
+        chapter_idx=cursor.chapter_idx,
+    )
+    return new_session, True
+
+
+async def advance_reading_cross_chapter(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    paragraph_steps: int,
+    trace: ReadingTrace,
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+    delay_ms: int = 300,
+) -> ReadingSession:
+    """Advance *paragraph_steps* forward, crossing chapter boundaries as needed."""
+    if paragraph_steps <= 0:
+        return session
+
+    remaining = paragraph_steps
+    active_session = session
+
+    while remaining > 0:
+        chapter = chapter_by_idx(chapters, cursor.chapter_idx)
+        if chapter is None:
+            raise StepAssertionError(
+                assertion="chapter_exists",
+                message=f"Chapter {cursor.chapter_idx} not found in book metadata",
+                actual={"chapter_idx": cursor.chapter_idx},
+            )
+
+        chapter_last = last_paragraph_idx(chapter)
+        if chapter.get("paragraph_count", 0) <= 0 or cursor.paragraph_idx > chapter_last:
+            active_session, moved = await _cross_reading_chapter(
+                ctx,
+                cursor,
+                chapters,
+                active_session,
+                scenario_id=scenario_id,
+                book_id=book_id,
+            )
+            if not moved:
+                break
+            continue
+
+        step_end = min(cursor.paragraph_idx + remaining, chapter_last)
+        if step_end == cursor.paragraph_idx:
+            active_session, moved = await _cross_reading_chapter(
+                ctx,
+                cursor,
+                chapters,
+                active_session,
+                scenario_id=scenario_id,
+                book_id=book_id,
+            )
+            if not moved:
+                break
+            continue
+
+        await advance_reading(
+            client,
+            ctx,
+            book_id,
+            cursor.chapter_idx,
+            cursor.paragraph_idx,
+            step_end,
+            trace,
+            scenario_id=scenario_id,
+            step_id=step_id,
+            metrics=metrics,
+            delay_ms=delay_ms,
+        )
+        consumed = step_end - cursor.paragraph_idx
+        cursor.paragraph_idx = step_end
+        remaining -= consumed
+
+        if remaining <= 0 or cursor.paragraph_idx < chapter_last:
+            break
+
+        active_session, moved = await _cross_reading_chapter(
+            ctx,
+            cursor,
+            chapters,
+            active_session,
+            scenario_id=scenario_id,
+            book_id=book_id,
+        )
+        if not moved:
+            break
+
+    return active_session
+
+
+async def advance_until_chapter_crossed(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+    delay_ms: int = 300,
+    batch_size: int = 24,
+) -> ReadingSession:
+    """Keep reading forward until at least one chapter boundary is crossed."""
+    active_session = session
+    while cursor.chapters_crossed < 1:
+        active_session = await advance_reading_cross_chapter(
+            client,
+            ctx,
+            book_id,
+            cursor,
+            chapters,
+            batch_size,
+            trace,
+            active_session,
+            scenario_id=scenario_id,
+            step_id=step_id,
+            metrics=metrics,
+            delay_ms=delay_ms,
+        )
+        if cursor.chapters_crossed >= 1:
+            break
+        if next_chapter_idx(chapters, cursor.chapter_idx) is None:
+            raise StepAssertionError(
+                assertion="cross_chapter_reading",
+                message="Book ended before a second chapter could be reached",
+                actual={
+                    "chapter_idx": cursor.chapter_idx,
+                    "paragraph_idx": cursor.paragraph_idx,
+                },
+            )
+    return active_session
+
+
+async def cross_to_next_chapter(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+) -> ReadingSession:
+    """Jump reading progress to the next chapter and restart SSE subscription."""
+    next_idx = next_chapter_idx(chapters, cursor.chapter_idx)
+    if next_idx is None:
+        raise StepAssertionError(
+            assertion="cross_chapter_reading",
+            message="No next chapter available for cross-chapter reading",
+            actual={
+                "chapter_idx": cursor.chapter_idx,
+                "paragraph_idx": cursor.paragraph_idx,
+            },
+        )
+
+    await update_progress(
+        client,
+        ctx,
+        book_id,
+        next_idx,
+        0,
+        0.0,
+        trace,
+        scenario_id=scenario_id,
+        step_id=step_id,
+        metrics=metrics,
+    )
+
+    previous_chapter = cursor.chapter_idx
+    cursor.chapter_idx = next_idx
+    cursor.paragraph_idx = 0
+    if previous_chapter != next_idx:
+        cursor.chapters_crossed += 1
+    if next_idx not in cursor.visited_chapters:
+        cursor.visited_chapters.append(next_idx)
+
+    return await switch_reading_session(
+        ctx,
+        session,
+        scenario_id=scenario_id,
+        book_id=book_id,
+        chapter_idx=next_idx,
+    )
+
+
+async def read_from_start_then_cross_chapter(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+    warmup_paragraphs: int = 24,
+    delay_ms: int = 300,
+) -> ReadingSession:
+    """Read from the start probe, then explicitly switch to the next chapter."""
+    active_session = await advance_reading_cross_chapter(
+        client,
+        ctx,
+        book_id,
+        cursor,
+        chapters,
+        warmup_paragraphs,
+        trace,
+        session,
+        scenario_id=scenario_id,
+        step_id=step_id,
+        metrics=metrics,
+        delay_ms=delay_ms,
+    )
+    if cursor.chapters_crossed >= 1:
+        return active_session
+    return await cross_to_next_chapter(
+        client,
+        ctx,
+        book_id,
+        cursor,
+        chapters,
+        trace,
+        active_session,
+        scenario_id=scenario_id,
+        step_id=step_id,
+        metrics=metrics,
+    )
+
+
 async def wait_for_window_done(
     client: TargetClient,
     session: ReadingSession,

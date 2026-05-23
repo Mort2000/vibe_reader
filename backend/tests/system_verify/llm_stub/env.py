@@ -29,7 +29,7 @@ from .aimock_launcher import AIMockSession
 class BackendProcess:
     """Optional backend subprocess started with stub LLM env."""
 
-    _proc: subprocess.Popen[str] | None = field(default=None, repr=False)
+    _proc: subprocess.Popen[bytes] | None = field(default=None, repr=False)
 
     def stop(self) -> None:
         proc = self._proc
@@ -179,16 +179,18 @@ def spawn_backend(config: VerifyConfig, session: AIMockSession) -> BackendProces
         ],
         cwd=_backend_root(),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
         _wait_backend_health(config.target.base_url)
-    except RuntimeError:
+    except RuntimeError as exc:
         proc.terminate()
-        stdout = proc.stdout.read() if proc.stdout else ""
-        raise RuntimeError(f"Failed to spawn backend: {stdout.strip()}") from None
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        raise RuntimeError(f"Failed to spawn backend: {exc}") from None
 
     assert_backend_stub_llm_ready(config, session)
     return BackendProcess(_proc=proc)

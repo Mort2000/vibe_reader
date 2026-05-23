@@ -29,14 +29,17 @@ paragraph_idx = 120
 
 [[books.probes]]
 name = "long_context"
-chapter_idx = 12
-paragraph_idx = 900
+chapter_idx = 88
+paragraph_idx = 275
 requires_context_tokens_gte = 100000
 
 [[books.probes]]
 name = "happy_path_current"
-chapter_idx = 12
-paragraph_idx = 900
+# Start reading from chapter 1; end probe reserved for future long-flow targets.
+start_chapter_idx = 1
+start_paragraph_idx = 0
+chapter_idx = 88
+paragraph_idx = 275
 real_llm = true
 requires_compaction = true
 requires_context_tokens_gte = 100000

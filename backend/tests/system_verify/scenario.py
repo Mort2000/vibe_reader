@@ -99,6 +99,12 @@ class ScenarioResult:
 StepFunc = Callable[..., Awaitable[None]]
 
 
+def _step_failure_detail(step_result: StepResult) -> str:
+    if step_result.errors:
+        return step_result.errors[0].message
+    return step_result.description
+
+
 @dataclass
 class Step:
     step_id: str
@@ -198,17 +204,25 @@ class ScenarioRunner:
                 result.status = ScenarioStatus.FAILED
                 failed_steps.append(step_result.step_id)
                 if not builder.continue_on_failure:
-                    result.failure_summary = f"Step '{step_result.step_id}' failed: {step_result.description}"
+                    detail = _step_failure_detail(step_result)
+                    result.failure_summary = (
+                        f"Step '{step_result.step_id}' failed: {detail}"
+                    )
                     break
 
         if failed_steps and builder.continue_on_failure:
             result.failure_summary = f"Failed steps: {', '.join(failed_steps)}"
         elif result.status == ScenarioStatus.FAILED and not result.failure_summary:
             last = failed_steps[-1] if failed_steps else ""
-            step_desc = next(
-                (s.description for s in builder.steps if s.step_id == last), last
+            failed_step = next(
+                (s for s in result.steps if s.step_id == last), None
             )
-            result.failure_summary = f"Step '{last}' failed: {step_desc}"
+            detail = (
+                _step_failure_detail(failed_step)
+                if failed_step is not None
+                else last
+            )
+            result.failure_summary = f"Step '{last}' failed: {detail}"
 
         if result.status == ScenarioStatus.RUNNING:
             result.status = ScenarioStatus.PASSED

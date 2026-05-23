@@ -253,13 +253,12 @@ def _cmd_run(args: argparse.Namespace) -> None:
     )
     try:
         run_failed, data_lifecycle = _execute_run(args, config, mgr, metrics)
+        _finish_run(args, config, mgr, metrics, data_lifecycle, run_failed, out_dir)
     finally:
         if backend_proc is not None:
             backend_proc.stop()
         if sidecar is not None:
             sidecar.__exit__(None, None, None)
-
-    _finish_run(args, config, mgr, metrics, data_lifecycle, run_failed, out_dir)
 
 
 def _execute_run(args, config, mgr, metrics) -> tuple[bool, dict]:

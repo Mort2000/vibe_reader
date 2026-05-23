@@ -24,6 +24,8 @@ class ProbeConfig:
     name: str
     chapter_idx: int = 0
     paragraph_idx: int = 0
+    start_chapter_idx: int | None = None
+    start_paragraph_idx: int | None = None
     requires_context_tokens_gte: int | None = None
     real_llm: bool = False
     requires_compaction: bool = False
@@ -71,6 +73,8 @@ class CorpusManager:
                     name=p.get("name", "unnamed"),
                     chapter_idx=p.get("chapter_idx", 0),
                     paragraph_idx=p.get("paragraph_idx", 0),
+                    start_chapter_idx=p.get("start_chapter_idx"),
+                    start_paragraph_idx=p.get("start_paragraph_idx"),
                     requires_context_tokens_gte=p.get("requires_context_tokens_gte"),
                     real_llm=bool(p.get("real_llm", False)),
                     requires_compaction=bool(p.get("requires_compaction", False)),
@@ -272,6 +276,10 @@ def _probe_dict(probe: ProbeConfig) -> dict[str, Any]:
         "paragraph_idx": probe.paragraph_idx,
         "requires_context_tokens_gte": probe.requires_context_tokens_gte,
     }
+    if probe.start_chapter_idx is not None:
+        data["start_chapter_idx"] = probe.start_chapter_idx
+    if probe.start_paragraph_idx is not None:
+        data["start_paragraph_idx"] = probe.start_paragraph_idx
     if probe.real_llm:
         data["real_llm"] = True
     if probe.requires_compaction:
