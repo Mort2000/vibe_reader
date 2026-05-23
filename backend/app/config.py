@@ -46,6 +46,8 @@ class WindowConfig:
     max_window_paragraphs: int = 40
     overlap_paragraphs: int = 4
     trigger_advance_ratio: float = 0.70
+    comment_density_soft_min: float = 0.25
+    comment_density_stat_window_paragraphs: int = 80
 
 
 @dataclass
@@ -127,6 +129,10 @@ def load_settings() -> Settings:
         max_window_paragraphs=win_raw.get("max_window_paragraphs", 40),
         overlap_paragraphs=win_raw.get("overlap_paragraphs", 4),
         trigger_advance_ratio=win_raw.get("trigger_advance_ratio", 0.70),
+        comment_density_soft_min=win_raw.get("comment_density_soft_min", 0.25),
+        comment_density_stat_window_paragraphs=win_raw.get(
+            "comment_density_stat_window_paragraphs", 80
+        ),
     )
 
     obs_raw = raw.get("observability", {})

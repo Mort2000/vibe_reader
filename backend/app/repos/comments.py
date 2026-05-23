@@ -116,3 +116,20 @@ async def get_comments_by_paragraph(
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
+
+
+async def count_active_comments_in_range(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    start_pidx: int,
+    end_pidx: int,
+) -> int:
+    cur = await db.execute(
+        "SELECT COUNT(DISTINCT paragraph_idx) FROM paragraph_comments "
+        "WHERE book_id = ? AND chapter_idx = ? "
+        "AND paragraph_idx >= ? AND paragraph_idx <= ? AND status = 'active'",
+        (book_id, chapter_idx, start_pidx, end_pidx),
+    )
+    row = await cur.fetchone()
+    return row[0] if row else 0
