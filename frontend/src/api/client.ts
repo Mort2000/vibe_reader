@@ -2,10 +2,13 @@ import type {
   BookSummary,
   ChapterSummary,
   ImportResult,
+  JobInfo,
   ListResponse,
+  ParagraphComment,
   ParagraphsResponse,
   ProgressUpdateResponse,
   ReadingProgress,
+  WindowInfo,
 } from '../types';
 
 const BASE = '/api';
@@ -78,4 +81,61 @@ export async function updateProgress(
       scroll_pct: scrollPct,
     }),
   });
+}
+
+export async function getCurrentWindow(
+  bookId: number,
+  chapterIdx: number,
+): Promise<{ window: WindowInfo; comments_ready_count: number; comments_target_count: number }> {
+  return request(`/books/${bookId}/chapters/${chapterIdx}/windows/current`);
+}
+
+export async function getChapterComments(
+  bookId: number,
+  chapterIdx: number,
+  start?: number,
+  end?: number,
+): Promise<ListResponse<ParagraphComment>> {
+  const params = new URLSearchParams();
+  if (start !== undefined) params.set('start', String(start));
+  if (end !== undefined) params.set('end', String(end));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return request(`/books/${bookId}/chapters/${chapterIdx}/comments${qs}`);
+}
+
+export async function retryWindow(
+  windowId: number,
+): Promise<{ window: WindowInfo; job: JobInfo }> {
+  return request(`/windows/${windowId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'manual_retry' }),
+  });
+}
+
+export function createEventSource(
+  bookId: number,
+  chapterIdx: number,
+  onEvent: (event: string, data: Record<string, unknown>) => void,
+): EventSource {
+  const params = new URLSearchParams({
+    book_id: String(bookId),
+    chapter_idx: String(chapterIdx),
+  });
+  const es = new EventSource(`${BASE}/events?${params.toString()}`);
+  const handler = (e: MessageEvent) => {
+    try {
+      const data = JSON.parse(e.data as string);
+      onEvent(e.type || data.event || 'message', data);
+    } catch {
+      // ignore malformed events
+    }
+  };
+  es.addEventListener('window.queued', handler);
+  es.addEventListener('window.running', handler);
+  es.addEventListener('window.done', handler);
+  es.addEventListener('window.failed', handler);
+  es.addEventListener('comment.created', handler);
+  es.addEventListener('job.failed', handler);
+  return es;
 }

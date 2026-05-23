@@ -1,11 +1,13 @@
 import { useEffect, useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
-import type { Paragraph, ParagraphComment } from '../types';
+import type { Paragraph, ParagraphComment, WindowInfo } from '../types';
 
 interface Props {
   chapterIdx: number;
   paragraphs: Paragraph[];
   initialParagraphIdx: number | null;
   onProgressChange: (chapterIdx: number, paragraphIdx: number, scrollPct: number) => void;
+  currentWindow: WindowInfo | null;
+  onRetryWindow: (windowId: number) => void;
 }
 
 export interface ReaderViewHandle {
@@ -45,7 +47,7 @@ function findCenterParagraph(container: HTMLElement): { idx: number; scrollPct: 
 }
 
 const ReaderView = forwardRef<ReaderViewHandle, Props>(function ReaderView(
-  { chapterIdx, paragraphs, initialParagraphIdx, onProgressChange },
+  { chapterIdx, paragraphs, initialParagraphIdx, onProgressChange, currentWindow, onRetryWindow },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -53,7 +55,10 @@ const ReaderView = forwardRef<ReaderViewHandle, Props>(function ReaderView(
   const pendingReport = useRef<{ chapterIdx: number; paragraphIdx: number; scrollPct: number } | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chapterIdxRef = useRef(chapterIdx);
-  chapterIdxRef.current = chapterIdx;
+
+  useEffect(() => {
+    chapterIdxRef.current = chapterIdx;
+  }, [chapterIdx]);
 
   const reportProgress = useCallback(() => {
     const container = containerRef.current;
@@ -132,6 +137,9 @@ const ReaderView = forwardRef<ReaderViewHandle, Props>(function ReaderView(
 
   return (
     <div className="reader-view" ref={containerRef}>
+      {currentWindow && currentWindow.status !== 'done' && (
+        <WindowStatusBar window={currentWindow} onRetry={onRetryWindow} />
+      )}
       {paragraphs.map((p) => (
         <div
           key={p.paragraph_idx}
@@ -163,10 +171,48 @@ const ReaderView = forwardRef<ReaderViewHandle, Props>(function ReaderView(
 
 export default ReaderView;
 
+function WindowStatusBar({
+  window: win,
+  onRetry,
+}: {
+  window: WindowInfo;
+  onRetry: (windowId: number) => void;
+}) {
+  if (win.status === 'pending') {
+    return (
+      <div className="window-status status-pending">
+        <span className="status-indicator" />
+        Preparing comments...
+      </div>
+    );
+  }
+  if (win.status === 'running') {
+    return (
+      <div className="window-status status-running">
+        <span className="status-indicator spinning" />
+        Generating comments...
+      </div>
+    );
+  }
+  if (win.status === 'failed') {
+    return (
+      <div className="window-status status-failed">
+        Comment generation failed
+        <button className="retry-btn" onClick={() => onRetry(win.id)}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+  return null;
+}
+
 function CommentBubble({ comment }: { comment: ParagraphComment }) {
   return (
     <div className={`comment-bubble type-${comment.comment_type}`}>
-      <span className="comment-type-badge">{comment.comment_type}</span>
+      <span className={`comment-type-badge type-${comment.comment_type}`}>
+        {comment.comment_type}
+      </span>
       <span className="comment-text">{comment.comment}</span>
     </div>
   );

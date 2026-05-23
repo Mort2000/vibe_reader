@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { BookSummary, ChapterSummary, Paragraph, ImportResult } from './types';
+import type { BookSummary, ChapterSummary, Paragraph, ImportResult, WindowInfo } from './types';
 import * as api from './api/client';
 import BookList from './components/BookList';
 import ChapterNav from './components/ChapterNav';
@@ -19,7 +19,9 @@ export default function App() {
   const [paragraphs, setParagraphs] = useState<Paragraph[]>([]);
   const [progressParagraphIdx, setProgressParagraphIdx] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [currentWindow, setCurrentWindow] = useState<WindowInfo | null>(null);
   const readerRef = useRef<ReaderViewHandle>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const refreshBooks = useCallback(async () => {
     const result = await api.getBooks();
@@ -27,8 +29,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refreshBooks();
-  }, [refreshBooks]);
+    api.getBooks().then((result) => setBooks(result.items));
+  }, []);
 
   const loadChapter = useCallback(async (bookId: number, chapterIdx: number) => {
     setLoading(true);
@@ -40,6 +42,18 @@ export default function App() {
       setLoading(false);
     }
   }, []);
+
+  const handleRetryWindow = useCallback(
+    async (windowId: number) => {
+      if (!currentBook) return;
+      try {
+        await api.retryWindow(windowId);
+      } catch {
+        // retry failure handled by SSE state
+      }
+    },
+    [currentBook],
+  );
 
   const openBook = useCallback(
     async (book: BookSummary) => {
@@ -54,11 +68,20 @@ export default function App() {
       if (chResult.items.length > 0) {
         const chapter = chResult.items.find((c) => c.idx === startIdx) || chResult.items[0];
         await loadChapter(book.id, chapter.idx);
+
+        try {
+          const winResp = await api.getCurrentWindow(book.id, chapter.idx);
+          if (winResp.window && winResp.window.status !== 'done') {
+            setCurrentWindow(winResp.window);
+          }
+        } catch {
+          // window may not exist yet — that's fine
+        }
       }
 
       setView('reader');
     },
-    [loadChapter]
+    [loadChapter],
   );
 
   const handleImported = useCallback(
@@ -66,37 +89,106 @@ export default function App() {
       await refreshBooks();
       openBook(result.book);
     },
-    [refreshBooks, openBook]
+    [refreshBooks, openBook],
   );
 
   const handleChapterSelect = useCallback(
     (idx: number) => {
       if (!currentBook) return;
       readerRef.current?.flush();
+      setCurrentWindow(null);
       loadChapter(currentBook.id, idx);
       setProgressParagraphIdx(null);
     },
-    [currentBook, loadChapter]
+    [currentBook, loadChapter],
   );
 
   const handleProgressChange = useCallback(
     async (chapterIdx: number, paragraphIdx: number, scrollPct: number) => {
       if (!currentBook) return;
       try {
-        await api.updateProgress(currentBook.id, chapterIdx, paragraphIdx, scrollPct);
+        const resp = await api.updateProgress(currentBook.id, chapterIdx, paragraphIdx, scrollPct);
+        if (resp.current_window) {
+          setCurrentWindow(resp.current_window);
+        }
       } catch {
         // silently ignore progress update failures
       }
     },
-    [currentBook]
+    [currentBook],
   );
+
+  // SSE connection for real-time window/comment updates
+  useEffect(() => {
+    if (view !== 'reader' || !currentBook) return;
+
+    const es = api.createEventSource(
+      currentBook.id,
+      currentChapterIdx,
+      (event, data) => {
+        if (event === 'window.queued') {
+          setCurrentWindow((prev) =>
+            prev
+              ? { ...prev, status: 'pending' }
+              : {
+                  id: (data.window_id as number) ?? 0,
+                  book_id: currentBook.id,
+                  chapter_idx: currentChapterIdx,
+                  window_seq: 0,
+                  start_paragraph_idx: 0,
+                  end_paragraph_idx: 0,
+                  focus_start_paragraph_idx: 0,
+                  focus_end_paragraph_idx: 0,
+                  assistant_frontier_paragraph_idx: 0,
+                  text_hash: '',
+                  context_hash: '',
+                  status: 'pending',
+                  error: null,
+                  created_at: '',
+                  updated_at: '',
+                  completed_at: null,
+                },
+          );
+        }
+        if (event === 'window.running') {
+          setCurrentWindow((prev) =>
+            prev ? { ...prev, status: 'running' } : prev,
+          );
+        }
+        if (event === 'window.done') {
+          setCurrentWindow((prev) =>
+            prev ? { ...prev, status: 'done' } : prev,
+          );
+          loadChapter(currentBook.id, currentChapterIdx);
+        }
+        if (event === 'window.failed') {
+          setCurrentWindow((prev) =>
+            prev
+              ? { ...prev, status: 'failed', error: (data.error as string) || null }
+              : prev,
+          );
+        }
+      },
+    );
+    eventSourceRef.current = es;
+
+    return () => {
+      es.close();
+      eventSourceRef.current = null;
+    };
+  }, [view, currentBook, currentChapterIdx, loadChapter]);
 
   const handleBack = useCallback(() => {
     readerRef.current?.flush();
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
     setView('library');
     setCurrentBook(null);
     setChapters([]);
     setParagraphs([]);
+    setCurrentWindow(null);
     refreshBooks();
   }, [refreshBooks]);
 
@@ -144,6 +236,8 @@ export default function App() {
               paragraphs={paragraphs}
               initialParagraphIdx={progressParagraphIdx}
               onProgressChange={handleProgressChange}
+              currentWindow={currentWindow}
+              onRetryWindow={handleRetryWindow}
             />
           )}
         </main>

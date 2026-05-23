@@ -12,6 +12,8 @@ from .db import init_db
 from .errors import AppError, app_error_handler, generic_error_handler
 from .middleware import RequestContextMiddleware
 from .observability import setup_logging
+from .services.comment_service import register_with_runner as register_comment_handler
+from .services.job_runner import JobRunner
 
 _settings: Settings | None = None
 
@@ -34,6 +36,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title="vibe-reader-mini", version="0.1.0")
     app.state.settings = settings
 
+    job_runner = JobRunner(max_concurrent=2)
+    register_comment_handler(job_runner)
+    app.state.job_runner = job_runner
+
     app.add_middleware(RequestContextMiddleware)
     app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, generic_error_handler)  # type: ignore[arg-type]
@@ -44,6 +50,7 @@ def create_app() -> FastAPI:
     from .routers.progress import router as progress_router
     from .routers.events import router as events_router
     from .routers.verify import router as verify_router
+    from .routers.windows import router as windows_router
 
     app.include_router(health_router, prefix="/api")
     app.include_router(books_router, prefix="/api")
@@ -51,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(progress_router, prefix="/api")
     app.include_router(events_router, prefix="/api")
     app.include_router(verify_router, prefix="/api")
+    app.include_router(windows_router, prefix="/api")
 
     frontend_dist = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
     if frontend_dist.is_dir():
@@ -62,9 +70,12 @@ def create_app() -> FastAPI:
     async def startup() -> None:
         db = await init_db(settings.db_path)
         app.state.db = db
+        await job_runner.start()
+        await job_runner.recover_jobs(db)
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        await job_runner.stop()
         db: object | None = getattr(app.state, "db", None)
         if db is not None:
             with contextlib.suppress(Exception):

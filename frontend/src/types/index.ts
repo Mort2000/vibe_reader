@@ -51,6 +51,41 @@ export interface ParagraphComment {
   updated_at: string;
 }
 
+export interface WindowInfo {
+  id: number;
+  book_id: number;
+  chapter_idx: number;
+  window_seq: number;
+  start_paragraph_idx: number;
+  end_paragraph_idx: number;
+  focus_start_paragraph_idx: number;
+  focus_end_paragraph_idx: number;
+  assistant_frontier_paragraph_idx: number;
+  text_hash: string;
+  context_hash: string;
+  status: string;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface JobInfo {
+  id: number;
+  job_type: string;
+  book_id: number;
+  chapter_idx: number;
+  window_id: number | null;
+  status: string;
+  attempt_count: number;
+  error: string | null;
+  trace_id: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
 export interface ImportResult {
   book: BookSummary;
   first_chapter: ChapterSummary | null;
@@ -78,6 +113,6 @@ export interface ParagraphsResponse {
 export interface ProgressUpdateResponse {
   progress: ReadingProgress;
   assistant_frontier_paragraph_idx: number;
-  current_window: unknown | null;
-  jobs: unknown[];
+  current_window: WindowInfo | null;
+  jobs: JobInfo[];
 }

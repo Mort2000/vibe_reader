@@ -21,6 +21,8 @@ dependencies = [
     "opentelemetry-api>=1.29",
     "opentelemetry-sdk>=1.29",
     "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "pydantic-ai-slim[openai,logfire]>=1.100,<2",
+    "openai>=2.29",
 ]
 
 [project.optional-dependencies]

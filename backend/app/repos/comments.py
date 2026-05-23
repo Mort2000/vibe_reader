@@ -92,6 +92,18 @@ async def list_comments(
     return [dict(r) for r in rows], total
 
 
+async def delete_comments_by_window(
+    db: aiosqlite.Connection,
+    window_id: int,
+) -> int:
+    cur = await db.execute(
+        "DELETE FROM paragraph_comments WHERE window_id = ?",
+        (window_id,),
+    )
+    await db.commit()
+    return cur.rowcount
+
+
 async def get_comments_by_paragraph(
     db: aiosqlite.Connection,
     book_id: int,

@@ -9,8 +9,9 @@ from pydantic import BaseModel, Field
 from ..errors import AppError
 from ..repos import paragraphs as paragraph_repo
 from ..repos import progress as progress_repo
-from ..repos import windows as window_repo
 from ..repos import chapters as chapter_repo
+from ..repos import jobs as job_repo
+from ..services import window_service
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +69,30 @@ async def _validate_progress_position(
 
 async def _progress_response_fields(
     db: Any,
+    request: Request,
     book_id: int,
     chapter_idx: int,
     paragraph_idx: int,
-    last_p: int,
     settings: Any,
 ) -> tuple[int, dict[str, Any] | None, list[dict[str, Any]]]:
-    frontier = min(
-        paragraph_idx + settings.reader.lookahead_paragraphs,
-        last_p,
+    window, is_new = await window_service.get_or_create_window(
+        db, book_id, chapter_idx, paragraph_idx, settings
     )
-    latest_window = await window_repo.find_latest_window(db, book_id, chapter_idx)
-    current_window: dict[str, Any] | None = latest_window if latest_window else None
-    return frontier, current_window, []
+
+    jobs: list[dict[str, Any]] = []
+
+    if is_new:
+        job_runner = request.app.state.job_runner
+        await job_runner.submit_job(
+            db, "comment_window", book_id, chapter_idx, window_id=window["id"]
+        )
+
+    jobs, _ = await job_repo.list_jobs(
+        db, book_id=book_id, chapter_idx=chapter_idx, limit=5
+    )
+
+    frontier = window["assistant_frontier_paragraph_idx"]
+    return frontier, window, jobs
 
 
 @router.get("/books/{book_id}/progress")
@@ -115,7 +127,7 @@ async def update_progress(
             details={"book_id": book_id, "chapter_idx": body.chapter_idx},
         )
 
-    last_p = await _validate_progress_position(
+    await _validate_progress_position(
         db, book_id, body.chapter_idx, body.paragraph_idx
     )
 
@@ -129,10 +141,10 @@ async def update_progress(
     ):
         frontier, current_window, jobs = await _progress_response_fields(
             db,
+            request,
             book_id,
             body.chapter_idx,
             body.paragraph_idx,
-            last_p,
             settings,
         )
         logger.info(
@@ -164,10 +176,10 @@ async def update_progress(
 
     frontier, current_window, jobs = await _progress_response_fields(
         db,
+        request,
         book_id,
         body.chapter_idx,
         body.paragraph_idx,
-        last_p,
         settings,
     )
 
