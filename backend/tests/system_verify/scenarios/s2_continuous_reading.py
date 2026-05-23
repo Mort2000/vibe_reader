@@ -29,14 +29,17 @@ from .common import (
     assert_comments_valid,
     assert_reading_not_blocked,
     collect_validation_failures,
+    collect_usage_by_trace,
     ensure_imported_book,
+    fetch_verify_jobs,
     get_probe,
     load_chapter_paragraphs,
-    fetch_verify_jobs,
     merge_suite_ctx,
     progress_update_was_deduped,
     publish_suite_ctx,
     record_comment_metrics,
+    record_verify_metrics_coverage,
+    unique_trace_ids,
     wait_for_comments,
     wait_for_window_done,
     window_is_no_call,
@@ -365,12 +368,24 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
     window = ctx.get("completed_window")
 
     model = config.effective_model() or config.real_llm.model
+    jobs = ctx.get("verify_jobs") or []
+    trace_ids = unique_trace_ids(comments, jobs)
+
+    tokens_by_trace: dict[str, dict[str, Any]] = {}
     latency_by_trace: dict[str, float] = {}
-    trace: ReadingTrace = ctx["reading_trace"]
-    if trace.window_e2e_latencies_ms and comments:
-        latency_by_trace[comments[0].get("trace_id", "") or ""] = (
-            trace.window_e2e_latencies_ms[-1]
-        )
+    trace_meta_by_trace_id: dict[str, dict[str, Any]] = {}
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "S2_continuous_reading",
+        "export_audit_samples",
+        context=ctx,
+    ) as client:
+        (
+            tokens_by_trace,
+            latency_by_trace,
+            trace_meta_by_trace_id,
+        ) = await collect_usage_by_trace(client, trace_ids)
 
     exporter.add_comments_from_window(
         comments,
@@ -384,6 +399,8 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
         stub_profile=config.llm.stub_profile if not config.is_real_llm else None,
         usage_source=config.usage_source,
         latency_by_trace=latency_by_trace,
+        tokens_by_trace=tokens_by_trace,
+        trace_meta_by_trace_id=trace_meta_by_trace_id,
     )
 
     validation_failures = ctx.get("validation_failures") or collect_validation_failures(
@@ -432,6 +449,7 @@ async def _step_record_metrics(ctx: dict[str, Any]) -> None:
     config: VerifyConfig = ctx["config"]
 
     jobs: list[dict[str, Any]] = []
+    verify_metrics: dict[str, Any] = {}
     async with TargetClient(
         config.target.base_url,
         ctx["run_manager"],
@@ -446,6 +464,9 @@ async def _step_record_metrics(ctx: dict[str, Any]) -> None:
             scenario_id="S2_continuous_reading",
             step_id="record_metrics",
         )
+        body, rec = await client.verify_metrics(ctx["run_manager"].run_id)
+        if rec.status_code < 400:
+            verify_metrics = body
 
     record_comment_metrics(
         metrics,
@@ -457,3 +478,10 @@ async def _step_record_metrics(ctx: dict[str, Any]) -> None:
         window=ctx.get("completed_window"),
         config=config,
     )
+    if verify_metrics:
+        record_verify_metrics_coverage(
+            metrics,
+            verify_metrics,
+            scenario_id="S2_continuous_reading",
+            step_id="record_metrics",
+        )

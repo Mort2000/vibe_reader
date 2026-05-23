@@ -25,6 +25,7 @@ from .common import (
     assert_comments_valid,
     read_from_start_then_cross_chapter,
     collect_validation_failures,
+    collect_usage_by_trace,
     ensure_imported_book,
     fetch_verify_jobs,
     get_probe,
@@ -33,7 +34,10 @@ from .common import (
     merge_suite_ctx,
     publish_suite_ctx,
     record_comment_metrics,
+    record_verify_metrics_coverage,
     resolve_happy_path_start,
+    sync_real_llm_tracker_from_verify_metrics,
+    unique_trace_ids,
     verify_backend_runtime,
     wait_for_comments,
     wait_for_window_done,
@@ -264,12 +268,6 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
             )
             if window and window.get("status") == "done":
                 completed_windows.append(window)
-                ctx["run_manager"].real_llm_tracker.record_call(
-                    input_tokens=int(window.get("input_tokens") or 0),
-                    output_tokens=int(window.get("output_tokens") or 0),
-                    cost_usd=window.get("cost_usd"),
-                    config=config,
-                )
 
             if len(completed_windows) >= min_windows:
                 break
@@ -362,6 +360,24 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
     exporter: CommentAuditExporter = ctx["comment_audit_exporter"]
     comments = ctx.get("comments") or []
     windows = ctx.get("completed_windows") or []
+    jobs = ctx.get("verify_jobs") or []
+
+    trace_ids = unique_trace_ids(comments, jobs)
+    tokens_by_trace: dict[str, dict[str, Any]] = {}
+    latency_by_trace: dict[str, float] = {}
+    trace_meta_by_trace_id: dict[str, dict[str, Any]] = {}
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "R1_real_happy_path",
+        "export_audit_samples",
+        context=ctx,
+    ) as client:
+        (
+            tokens_by_trace,
+            latency_by_trace,
+            trace_meta_by_trace_id,
+        ) = await collect_usage_by_trace(client, trace_ids)
 
     for window in windows[: config.real_llm.long_flow.min_comment_windows]:
         chapter_idx = int(window.get("chapter_idx") or ctx["chapter_idx"])
@@ -382,14 +398,17 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
             llm_mode="real",
             stub_profile=None,
             usage_source="provider" if config.metrics.collect_provider_usage else "estimate",
+            latency_by_trace=latency_by_trace,
+            tokens_by_trace=tokens_by_trace,
+            trace_meta_by_trace_id=trace_meta_by_trace_id,
         )
-        if not window_comments and window_is_no_call(window, window_comments):
+        if not window_comments:
             exporter.record_window_status(
                 scenario_id="R1_real_happy_path",
                 book=ctx["book"],
                 chapter_idx=chapter_idx,
                 window=window,
-                no_call=True,
+                no_call=window_is_no_call(window, window_comments),
                 validation_failures=collect_validation_failures(window_comments, window),
             )
 
@@ -402,6 +421,28 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
 
 async def _step_budget_check(ctx: dict[str, Any]) -> None:
     config: VerifyConfig = ctx["config"]
+    metrics: MetricsAggregator = ctx["metrics"]
+
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "R1_real_happy_path",
+        "budget_check",
+        context=ctx,
+    ) as client:
+        verify_metrics = await sync_real_llm_tracker_from_verify_metrics(
+            client,
+            ctx["run_manager"],
+            config,
+        )
+        if verify_metrics:
+            record_verify_metrics_coverage(
+                metrics,
+                verify_metrics,
+                scenario_id="R1_real_happy_path",
+                step_id="budget_check",
+            )
+
     tracker = ctx["run_manager"].real_llm_tracker
     tracker.check_budget(config)
     if tracker.budget_exceeded:
@@ -418,7 +459,6 @@ async def _step_budget_check(ctx: dict[str, Any]) -> None:
             },
         )
 
-    metrics: MetricsAggregator = ctx["metrics"]
     metrics.record(
         "real_llm.call_count",
         tracker.call_count,
