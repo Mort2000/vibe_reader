@@ -7,7 +7,7 @@ from typing import Any
 import aiosqlite
 
 from ..config import Settings
-from ..observability import get_trace_id
+from ..observability import ensure_trace_id
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import comments as comment_repo
@@ -134,7 +134,7 @@ async def run_comment_task(
     job_id: int,
     window: dict[str, Any] | None,
     settings: Settings,
-) -> None:
+) -> dict[str, Any] | None:
     if window is None:
         raise ValueError(f"Window not found for job {job_id}")
 
@@ -197,7 +197,7 @@ async def run_comment_task(
     )
 
     agent = get_comment_agent(settings)
-    trace_id = get_trace_id()
+    trace_id = ensure_trace_id()
 
     t0 = time.monotonic()
     result = await agent.run(
@@ -274,6 +274,33 @@ async def run_comment_task(
                 },
             },
         )
+
+    # PydanticAI RunUsage exposes both legacy (request/response_tokens) and
+    # current (input/output_tokens) names; prefer legacy when set.
+    usage_input = usage.request_tokens if usage.request_tokens is not None else usage.input_tokens
+    usage_output = (
+        usage.response_tokens if usage.response_tokens is not None else usage.output_tokens
+    )
+
+    return {
+        "agent_name": "ParagraphCommentAgent",
+        "duration_ms": round(latency_ms, 1),
+        "input_tokens": usage_input,
+        "output_tokens": usage_output,
+        "cached_input_tokens": usage.cache_read_tokens or None,
+        "no_call": no_call,
+        "tool_call_count": len(raw_payloads),
+        "valid_count": len(valid_comments),
+        "validation_failed_count": validation_failed_count,
+        "discarded_count": len(discarded),
+        "discarded_by_reason": discarded_by_reason,
+        "candidate_lookup_count": len(target_set),
+        "context_hash": window.get("context_hash") or "",
+        "comment_density_actual": density_hint.current_density,
+        "comment_density_soft_min": density_hint.soft_min_density,
+        "density_stat_start": density_hint.stat_start_paragraph_idx,
+        "density_stat_end": density_hint.stat_end_paragraph_idx,
+    }
 
 
 def register_with_runner(runner: JobRunner) -> None:

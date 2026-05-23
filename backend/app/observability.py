@@ -54,6 +54,19 @@ def get_verify_step_id() -> str:
     return _verify_step_id_var.get()
 
 
+def ensure_trace_id() -> str:
+    """Return current trace_id, creating one if absent.
+
+    Only for background jobs that lack HTTP request context.
+    Request handlers should use get_trace_id() instead.
+    """
+    trace_id = get_trace_id()
+    if not trace_id:
+        trace_id = new_trace_id()
+        _trace_id_var.set(trace_id)
+    return trace_id
+
+
 def set_request_context(
     request_id: str | None = None,
     trace_id: str | None = None,

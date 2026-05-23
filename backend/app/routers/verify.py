@@ -57,12 +57,18 @@ async def verify_list_jobs(
     job_type: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
+    """List jobs for system verification.
+
+    ``run_id`` scopes results to jobs linked to that verify run via
+    ``verify_agent_runs`` (jobs without telemetry for the run are omitted).
+    """
     _require_verify(request)
     from ..repos import jobs as job_repo
 
     db = request.app.state.db
     items, total = await job_repo.list_jobs(
         db,
+        run_id=run_id,
         book_id=book_id,
         chapter_idx=chapter_idx,
         status=status,
@@ -73,20 +79,35 @@ async def verify_list_jobs(
 
 
 @router.get("/verify/metrics")
-async def verify_metrics(request: Request, run_id: str = "") -> dict[str, Any]:
+async def verify_metrics(
+    request: Request,
+    run_id: str = "",
+    scenario_id: str | None = None,
+) -> dict[str, Any]:
     _require_verify(request)
-    return {
-        "run_id": run_id,
-        "latency": {},
-        "tokens": {},
-        "cache": {
-            "llm_prompt_cache_hit_rate": None,
-            "llm_prompt_cache_hit_rate_available": False,
-            "context_cache_hit_rate": None,
-            "window_dedup_hit_rate": None,
-            "comment_reuse_hit_rate": None,
-        },
-    }
+    from ..services.verify_telemetry import aggregate_metrics
+
+    db = request.app.state.db
+    return await aggregate_metrics(db, run_id=run_id, scenario_id=scenario_id)
+
+
+@router.get("/verify/traces/{trace_id}/summary")
+async def verify_trace_summary(
+    request: Request,
+    trace_id: str,
+) -> dict[str, Any]:
+    _require_verify(request)
+    from ..services.verify_telemetry import get_trace_summary
+
+    db = request.app.state.db
+    summary = await get_trace_summary(db, trace_id)
+    if summary is None:
+        raise AppError(
+            "trace_not_found",
+            f"Trace summary not found for trace_id={trace_id}",
+            status=404,
+        )
+    return summary
 
 
 @router.post("/verify/llm-ping")

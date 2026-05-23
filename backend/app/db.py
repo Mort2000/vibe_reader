@@ -170,6 +170,49 @@ CREATE INDEX IF NOT EXISTS idx_ai_jobs_status
 
 CREATE INDEX IF NOT EXISTS idx_ai_jobs_book_chapter
     ON ai_jobs(book_id, chapter_idx);
+
+CREATE INDEX IF NOT EXISTS idx_ai_jobs_trace_id
+    ON ai_jobs(trace_id);
+
+CREATE TABLE IF NOT EXISTS verify_agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT NOT NULL UNIQUE,
+    request_id TEXT NOT NULL DEFAULT '',
+    verify_run_id TEXT NOT NULL DEFAULT '',
+    verify_scenario_id TEXT NOT NULL DEFAULT '',
+    verify_step_id TEXT NOT NULL DEFAULT '',
+    job_id INTEGER,
+    window_id INTEGER,
+    book_id INTEGER,
+    chapter_idx INTEGER,
+    agent_name TEXT NOT NULL,
+    duration_ms REAL NOT NULL DEFAULT 0,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cached_input_tokens INTEGER,
+    no_call INTEGER NOT NULL DEFAULT 0,
+    tool_call_count INTEGER NOT NULL DEFAULT 0,
+    valid_count INTEGER NOT NULL DEFAULT 0,
+    validation_failed_count INTEGER NOT NULL DEFAULT 0,
+    discarded_count INTEGER NOT NULL DEFAULT 0,
+    discarded_by_reason_json TEXT NOT NULL DEFAULT '{}',
+    candidate_lookup_count INTEGER,
+    prompt_version TEXT NOT NULL DEFAULT '',
+    context_hash TEXT NOT NULL DEFAULT '',
+    comment_density_actual REAL,
+    comment_density_soft_min REAL,
+    density_stat_start INTEGER,
+    density_stat_end INTEGER,
+    status TEXT NOT NULL DEFAULT 'ok',
+    error TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_verify_agent_runs_run_id
+    ON verify_agent_runs(verify_run_id);
+
+CREATE INDEX IF NOT EXISTS idx_verify_agent_runs_scenario
+    ON verify_agent_runs(verify_run_id, verify_scenario_id);
 """
 
 

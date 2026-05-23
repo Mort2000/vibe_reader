@@ -7,7 +7,7 @@ from typing import Any
 
 import aiosqlite
 
-from ..observability import get_trace_id
+from ..observability import ensure_trace_id
 from ..repos import jobs as job_repo
 from ..repos import windows as window_repo
 from ..routers.events import publish_event
@@ -15,7 +15,8 @@ from ..routers.events import publish_event
 logger = logging.getLogger(__name__)
 
 JobHandler = Callable[
-    [aiosqlite.Connection, int, dict[str, Any], Any], Awaitable[None]
+    [aiosqlite.Connection, int, dict[str, Any], Any],
+    Awaitable[dict[str, Any] | None],
 ]
 
 
@@ -210,7 +211,7 @@ class JobRunner:
             )
             return
 
-        trace_id = get_trace_id()
+        trace_id = ensure_trace_id()
 
         await job_repo.update_job_status(
             db, job_id, "running", trace_id=trace_id
@@ -239,7 +240,20 @@ class JobRunner:
 
             settings = load_settings()
 
-            await handler(db, job_id, window, settings)
+            telemetry = await handler(db, job_id, window, settings)
+
+            if telemetry and settings.verify_mode:
+                from ..services.verify_telemetry import persist_agent_run
+
+                await persist_agent_run(
+                    db,
+                    trace_id=trace_id,
+                    job_id=job_id,
+                    book_id=book_id,
+                    chapter_idx=chapter_idx,
+                    window_id=window_id,
+                    payload=telemetry,
+                )
 
             await job_repo.update_job_status(db, job_id, "done")
 
