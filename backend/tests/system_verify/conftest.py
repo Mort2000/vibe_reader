@@ -27,29 +27,58 @@ from .corpus import CorpusManager
 from .env_file import load_project_dotenv
 from .metrics_collector import MetricsAggregator
 from .run import RunManager
+from .suite import finalize_reports
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--llm-mode",
+        action="store",
+        default=None,
+        choices=["stub", "real"],
+        help="Override verification LLM mode (default: stub)",
+    )
+    parser.addoption(
+        "--verify-run-id",
+        action="store",
+        default=None,
+        help="Reuse an existing verification run id",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     load_project_dotenv()
     config.addinivalue_line(
         "markers",
-        "system_llm: system verification tests requiring real backend and LLM",
+        "system: default stub-based system verification scenarios",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_llm: real LLM happy path scenarios (explicit opt-in)",
     )
     config.addinivalue_line("markers", "system_verify: all system verification tests")
 
 
 @pytest.fixture(scope="session")
-def verify_config() -> VerifyConfig:
-    return load_verify_config()
+def verify_config(request: pytest.FixtureRequest) -> VerifyConfig:
+    cfg = load_verify_config()
+    llm_mode = request.config.getoption("--llm-mode")
+    if llm_mode:
+        cfg.llm.mode = llm_mode
+        if llm_mode == "real":
+            cfg.metrics.collect_provider_usage = True
+    return cfg
 
 
 @pytest.fixture(scope="session")
-def run_manager(verify_config: VerifyConfig) -> RunManager:
-    run_id = os.environ.get("VIBE_READER_VERIFY_RUN_ID") or None
-    mgr = RunManager(verify_config, run_id=run_id)
+def run_manager(verify_config: VerifyConfig, request: pytest.FixtureRequest) -> RunManager:
+    run_id = request.config.getoption("--verify-run-id") or os.environ.get(
+        "VIBE_READER_VERIFY_RUN_ID"
+    )
+    mgr = RunManager(verify_config, run_id=run_id or None)
     mgr.start()
     yield mgr
-    metrics = MetricsAggregator(mgr)
+    metrics = MetricsAggregator(mgr, verify_config)
     findings = metrics.check_no_api_key_in_outputs()
     mgr.set_security_checks(
         {
@@ -62,11 +91,12 @@ def run_manager(verify_config: VerifyConfig) -> RunManager:
     )
     mgr.finish()
     mgr.write_manifest()
+    finalize_reports(mgr)
 
 
 @pytest.fixture(scope="session")
-def metrics(run_manager: RunManager) -> MetricsAggregator:
-    return MetricsAggregator(run_manager)
+def metrics(run_manager: RunManager, verify_config: VerifyConfig) -> MetricsAggregator:
+    return MetricsAggregator(run_manager, verify_config)
 
 
 @pytest.fixture(scope="session")

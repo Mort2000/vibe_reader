@@ -4,6 +4,7 @@ Usage:
     python -m tests.system_verify prepare --corpus tests/corpus/manifest.toml
     python -m tests.system_verify init-run [--corpus tests/corpus/manifest.toml]
     python -m tests.system_verify run --suite mvp --target-url http://127.0.0.1:8000
+    python -m tests.system_verify run --suite real-happy-path --llm-mode real
     python -m tests.system_verify run --dry-run
     python -m tests.system_verify report --run-id <run_id>
 
@@ -31,14 +32,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub = parser.add_subparsers(dest="command")
 
-    # prepare
     p_prepare = sub.add_parser("prepare", help="Validate corpus manifest")
     p_prepare.add_argument(
         "--corpus", default=DEFAULT_CORPUS, help="Corpus manifest path"
     )
     p_prepare.add_argument("--config", default=None, help="Verify config TOML")
 
-    # init-run
     p_init = sub.add_parser("init-run", help="Create an empty verification run")
     p_init.add_argument(
         "--corpus",
@@ -48,11 +47,29 @@ def main(argv: list[str] | None = None) -> None:
     p_init.add_argument("--run-id", default=None, help="Reuse an existing run ID")
     p_init.add_argument("--target-url", default=None, help="Backend base URL")
     p_init.add_argument("--config", default=None, help="Verify config TOML")
+    p_init.add_argument(
+        "--llm-mode",
+        choices=["stub", "real"],
+        default=None,
+        help="LLM mode for this run",
+    )
 
-    # run
     p_run = sub.add_parser("run", help="Run verification scenarios")
     p_run.add_argument(
-        "--suite", default="mvp", choices=["smoke", "mvp", "cache", "judge"]
+        "--suite",
+        default="mvp",
+        choices=["smoke", "mvp", "real-happy-path", "cache", "judge"],
+    )
+    p_run.add_argument(
+        "--llm-mode",
+        choices=["stub", "real"],
+        default=None,
+        help="LLM mode (default: stub)",
+    )
+    p_run.add_argument(
+        "--real-coverage",
+        default="A2",
+        help="real-happy-path coverage phase (A2, A3, A4)",
     )
     p_run.add_argument("--target-url", default=None, help="Backend base URL")
     p_run.add_argument("--run-id", default=None, help="Reuse an existing run ID")
@@ -69,7 +86,6 @@ def main(argv: list[str] | None = None) -> None:
         help="Skip post-run backend data cleanup (for cache comparison runs)",
     )
 
-    # report
     p_report = sub.add_parser("report", help="Generate report from a completed run")
     p_report.add_argument("--run-id", required=True, help="Run ID to report on")
     p_report.add_argument("--config", default=None, help="Verify config TOML")
@@ -89,6 +105,14 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
 
+def _apply_llm_mode(config, llm_mode: str | None) -> None:
+    if not llm_mode:
+        return
+    config.llm.mode = llm_mode
+    if llm_mode == "real":
+        config.metrics.collect_provider_usage = True
+
+
 def _cmd_prepare(args: argparse.Namespace) -> None:
     from .config import load_verify_config
     from .corpus import CorpusManager
@@ -96,10 +120,15 @@ def _cmd_prepare(args: argparse.Namespace) -> None:
     config = load_verify_config(args.config)
     cm = CorpusManager(config, args.corpus)
     ok = cm.validate()
+    happy_errors = cm.validate_happy_path_probe()
     if ok:
         print("Corpus validation passed.")
         resolved = cm.resolve()
         print(f"Resolved manifest: {resolved}")
+        if happy_errors:
+            print("happy_path_current warnings:")
+            for err in happy_errors:
+                print(f"  - {err}")
     else:
         for err in cm.validation_errors:
             print(err, file=sys.stderr)
@@ -113,6 +142,7 @@ def _cmd_init_run(args: argparse.Namespace) -> None:
     from .run import RunManager
 
     config = load_verify_config(args.config)
+    _apply_llm_mode(config, args.llm_mode)
     if args.target_url:
         config.target.base_url = args.target_url
 
@@ -121,7 +151,7 @@ def _cmd_init_run(args: argparse.Namespace) -> None:
     print(f"Run ID: {mgr.run_id}")
     print(f"Output: {out_dir}")
 
-    metrics = MetricsAggregator(mgr)
+    metrics = MetricsAggregator(mgr, config)
     if args.corpus:
         _prepare_corpus(mgr, config, args.corpus)
 
@@ -130,24 +160,38 @@ def _cmd_init_run(args: argparse.Namespace) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
-    import asyncio
     from .config import load_verify_config
-    from .data_lifecycle import DataDirError, prepare_run_data_dir
     from .metrics_collector import MetricsAggregator
     from .run import RunManager
 
     config = load_verify_config(args.config)
+    _apply_llm_mode(config, args.llm_mode)
     if args.target_url:
         config.target.base_url = args.target_url
     if args.suite:
         config.run.suite = args.suite
 
+    if config.run.suite == "real-happy-path" and not config.is_real_llm:
+        print("real-happy-path requires --llm-mode real", file=sys.stderr)
+        sys.exit(1)
+
     mgr = RunManager(config, run_id=args.run_id)
     out_dir = mgr.start()
     print(f"Run ID: {mgr.run_id}")
     print(f"Output: {out_dir}")
+    print(f"LLM mode: {config.llm.mode}")
 
-    metrics = MetricsAggregator(mgr)
+    metrics = MetricsAggregator(mgr, config)
+    run_failed, data_lifecycle = _execute_run(args, config, mgr, metrics)
+
+    _finish_run(args, config, mgr, metrics, data_lifecycle, run_failed, out_dir)
+
+
+def _execute_run(args, config, mgr, metrics) -> tuple[bool, dict]:
+    import asyncio
+
+    from .data_lifecycle import DataDirError, prepare_run_data_dir
+
     run_failed = False
     data_lifecycle = {
         "pre_reset": False,
@@ -164,8 +208,20 @@ def _cmd_run(args: argparse.Namespace) -> None:
             asyncio.run(prepare_run_data_dir(config, mgr, phase="pre"))
             data_lifecycle["pre_reset"] = True
             print(f"Pre-run reset: {config.target.data_dir}")
-
             asyncio.run(_run_suite(mgr, config, metrics, args.corpus))
+        elif config.run.suite == "real-happy-path":
+            asyncio.run(prepare_run_data_dir(config, mgr, phase="pre"))
+            data_lifecycle["pre_reset"] = True
+            print(f"Pre-run reset: {config.target.data_dir}")
+            asyncio.run(
+                _run_real_suite(
+                    mgr,
+                    config,
+                    metrics,
+                    args.corpus,
+                    coverage=args.real_coverage,
+                )
+            )
         else:
             print(f"Suite '{config.run.suite}' not yet implemented.", file=sys.stderr)
             run_failed = True
@@ -175,24 +231,32 @@ def _cmd_run(args: argparse.Namespace) -> None:
     except Exception as exc:
         print(f"Run failed: {exc}", file=sys.stderr)
         run_failed = True
-    finally:
-        if data_lifecycle["pre_reset"] and (run_failed or args.keep_data):
-            data_lifecycle["preserved_on_failure"] = run_failed
-            print(f"Data dir preserved: {config.target.data_dir}")
-        elif data_lifecycle["pre_reset"] and not run_failed:
-            try:
-                asyncio.run(prepare_run_data_dir(config, mgr, phase="post"))
-                data_lifecycle["post_reset"] = True
-                print(f"Post-run reset: {config.target.data_dir}")
-            except DataDirError as exc:
-                print(f"Post-run reset failed: {exc}", file=sys.stderr)
-                run_failed = True
 
-        mgr.set_data_lifecycle(data_lifecycle)
-        _finalize_run(mgr, metrics)
-        print(f"Manifest written to {out_dir / 'run_manifest.json'}")
-        if run_failed:
-            sys.exit(1)
+    return run_failed, data_lifecycle
+
+
+def _finish_run(args, config, mgr, metrics, data_lifecycle, run_failed, out_dir) -> None:
+    import asyncio
+
+    from .data_lifecycle import DataDirError, prepare_run_data_dir
+
+    if data_lifecycle["pre_reset"] and (run_failed or args.keep_data):
+        data_lifecycle["preserved_on_failure"] = run_failed
+        print(f"Data dir preserved: {config.target.data_dir}")
+    elif data_lifecycle["pre_reset"] and not run_failed:
+        try:
+            asyncio.run(prepare_run_data_dir(config, mgr, phase="post"))
+            data_lifecycle["post_reset"] = True
+            print(f"Post-run reset: {config.target.data_dir}")
+        except DataDirError as exc:
+            print(f"Post-run reset failed: {exc}", file=sys.stderr)
+            run_failed = True
+
+    mgr.set_data_lifecycle(data_lifecycle)
+    _finalize_run(mgr, metrics)
+    print(f"Manifest written to {out_dir / 'run_manifest.json'}")
+    if run_failed:
+        sys.exit(1)
 
 
 def _prepare_corpus(mgr, config, corpus_path: str):
@@ -207,7 +271,21 @@ async def _run_suite(mgr, config, metrics, corpus_path: str) -> None:
     await run_mvp_suite(mgr, config, metrics, corpus_path)
 
 
+async def _run_real_suite(mgr, config, metrics, corpus_path: str, *, coverage: str) -> None:
+    from .suite import run_real_happy_path_suite
+
+    await run_real_happy_path_suite(
+        mgr,
+        config,
+        metrics,
+        corpus_path,
+        coverage=coverage,
+    )
+
+
 def _finalize_run(mgr, metrics=None) -> None:
+    from .suite import finalize_reports
+
     findings: list[str] = []
     if metrics is not None:
         findings = metrics.check_no_api_key_in_outputs()
@@ -223,10 +301,21 @@ def _finalize_run(mgr, metrics=None) -> None:
     )
     mgr.finish()
     mgr.write_manifest()
+    finalize_reports(mgr)
 
 
 def _cmd_report(args: argparse.Namespace) -> None:
-    print(f"Report generation for run {args.run_id} - not yet implemented.")
+    from pathlib import Path
+
+    from .report_generator import generate_reports
+
+    run_dir = Path("verify_runs") / args.run_id
+    if not run_dir.exists():
+        print(f"Run directory not found: {run_dir}", file=sys.stderr)
+        sys.exit(1)
+    paths = generate_reports(run_dir)
+    for name, path in paths.items():
+        print(f"{name}: {path}")
 
 
 if __name__ == "__main__":

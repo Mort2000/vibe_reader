@@ -105,15 +105,16 @@ class SSEEventCollector:
 
     async def wait_for_event(
         self,
-        event_type: str,
+        event_type: str | tuple[str, ...] | list[str],
         timeout_s: float = 60.0,
         predicate: Any = None,
     ) -> SSEEvent | None:
         """Wait until a matching event is collected, or timeout."""
+        types = (event_type,) if isinstance(event_type, str) else tuple(event_type)
         deadline = asyncio.get_event_loop().time() + timeout_s
         while asyncio.get_event_loop().time() < deadline:
             for evt in reversed(self._events):
-                if evt.event_type == event_type:
+                if evt.event_type in types:
                     if predicate is None or predicate(evt):
                         return evt
             await asyncio.sleep(0.2)

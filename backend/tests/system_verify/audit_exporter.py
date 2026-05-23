@@ -31,6 +31,9 @@ class CommentSampleDraft:
     latency_ms: float | None = None
     rolling_snapshot_excerpt: str = ""
     recent_comment_digest: str = ""
+    llm_mode: str = "stub"
+    stub_profile: str | None = "mvp_default"
+    usage_source: str = "estimate"
 
 
 class CommentAuditExporter:
@@ -65,6 +68,9 @@ class CommentAuditExporter:
         latency_by_trace: dict[str, float] | None = None,
         tokens_by_trace: dict[str, dict[str, Any]] | None = None,
         trace_meta_by_trace_id: dict[str, dict[str, Any]] | None = None,
+        llm_mode: str = "stub",
+        stub_profile: str | None = "mvp_default",
+        usage_source: str = "estimate",
     ) -> list[str]:
         """Sample up to ``sample_comments_per_window`` comments from one window."""
         if not comments:
@@ -117,8 +123,40 @@ class CommentAuditExporter:
                 latency_ms=(latency_by_trace or {}).get(trace_id),
                 tokens=(tokens_by_trace or {}).get(trace_id, {}),
             )
+            draft.llm_mode = llm_mode
+            draft.stub_profile = stub_profile
+            draft.usage_source = usage_source
             sample_ids.append(self.add_comment(draft))
         return sample_ids
+
+    def record_window_status(
+        self,
+        *,
+        scenario_id: str,
+        book: dict[str, Any],
+        chapter_idx: int,
+        window: dict[str, Any] | None,
+        no_call: bool = False,
+        validation_failures: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Record a window with no audit comments (no-call or validation-only)."""
+        record = {
+            "run_id": self.run_manager.run_id,
+            "scenario_id": scenario_id,
+            "book": {"id": book.get("id"), "title": book.get("title")},
+            "chapter_idx": chapter_idx,
+            "window": _window_payload(window),
+            "no_call": no_call,
+            "llm_mode": self.config.llm.mode,
+            "stub_profile": self.config.llm.stub_profile
+            if not self.config.is_real_llm
+            else None,
+            "usage_source": self.config.usage_source,
+            "validation_failures": validation_failures or [],
+        }
+        audit_dir = self.run_manager.base_dir / "audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        self.run_manager.write_ndjson("audit/window_status.ndjson", [record])
 
     def export(self) -> tuple[int, int]:
         """Write ``audit/comments.ndjson`` and markdown samples."""
@@ -163,10 +201,13 @@ class CommentAuditExporter:
             "recent_comment_digest": draft.recent_comment_digest,
             "ai_comment": comment.get("comment", ""),
             "comment_type": comment.get("comment_type"),
+            "llm_mode": draft.llm_mode,
+            "stub_profile": draft.stub_profile,
             "model": draft.model,
             "trace_id": draft.trace_id,
             "prompt_version": draft.prompt_version,
             "context_hash": draft.context_hash,
+            "usage_source": draft.usage_source,
             "tokens": draft.tokens,
             "latency_ms": draft.latency_ms,
             "created_at": comment.get("created_at")
@@ -222,6 +263,8 @@ def _render_markdown(record: dict[str, Any]) -> str:
         f"- **Book**: {record['book'].get('title')} (id={record['book'].get('id')})",
         f"- **Location**: chapter {record['chapter_idx']}, paragraph {record['paragraph_idx']}",
         f"- **Model**: {record.get('model') or 'unknown'}",
+        f"- **LLM mode**: {record.get('llm_mode') or 'unknown'}",
+        f"- **Usage source**: {record.get('usage_source') or 'unknown'}",
         f"- **Trace**: {record.get('trace_id') or 'n/a'}",
         "",
         "## Target Paragraph",

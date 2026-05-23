@@ -55,7 +55,8 @@ max-statements = 60
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
-    "system_llm: system verification tests requiring real backend and LLM",
+    "system: default stub-based system verification scenarios",
+    "real_llm: real LLM happy path scenarios (explicit opt-in)",
     "system_verify: all system verification tests",
 ]
 testpaths = ["tests"]
