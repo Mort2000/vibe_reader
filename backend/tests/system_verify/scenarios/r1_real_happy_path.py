@@ -1,8 +1,12 @@
 """R1: Real LLM happy path — A2 comments coverage (V-18).
 
 Runs only with explicit ``--suite real-happy-path --llm-mode real``.
-Reads from the corpus start probe forward across chapter boundaries until at
-least two real comment windows complete.
+Reading stop behavior is controlled by ``real_llm.long_flow.reading_stop_mode``:
+
+- ``cross_chapter``: read from the corpus start probe forward until a chapter
+  boundary is crossed, then stop.
+- ``comment_windows`` (default): advance within the start chapter from the probe
+  until at least ``min_comment_windows`` real comment windows complete.
 """
 
 from __future__ import annotations
@@ -11,7 +15,12 @@ from typing import Any
 
 from ..audit_exporter import CommentAuditExporter
 from ..client import TargetClient
-from ..config import VerifyConfig, validate_real_llm_config
+from ..config import (
+    READING_STOP_COMMENT_WINDOWS,
+    READING_STOP_CROSS_CHAPTER,
+    VerifyConfig,
+    validate_real_llm_config,
+)
 from ..contract import validate_comments_response, validate_no_span_in_comments
 from ..corpus import CorpusManager
 from ..metrics_collector import MetricsAggregator
@@ -21,8 +30,10 @@ from .common import (
     ReadingCursor,
     ReadingSession,
     ReadingTrace,
-    advance_reading_cross_chapter,
+    advance_reading,
     assert_comments_valid,
+    chapter_by_idx,
+    last_paragraph_idx,
     read_from_start_then_cross_chapter,
     collect_validation_failures,
     collect_usage_by_trace,
@@ -43,6 +54,22 @@ from .common import (
     wait_for_window_done,
     window_is_no_call,
 )
+
+
+def _advance_step_description(stop_mode: str, min_windows: int) -> str:
+    if stop_mode == READING_STOP_CROSS_CHAPTER:
+        return "Read forward from book start until a chapter boundary is crossed"
+    return (
+        f"Read forward from probe within the start chapter until at least "
+        f"{min_windows} comment windows complete"
+    )
+
+
+def _advance_step_timeout_s(config: VerifyConfig, stop_mode: str, min_windows: int) -> float:
+    max_wait = float(config.run.max_wait_comment_window_s)
+    if stop_mode == READING_STOP_CROSS_CHAPTER:
+        return max_wait + 240.0
+    return max_wait * min_windows + 240.0
 
 
 async def run_r1_a2_comments(
@@ -66,10 +93,12 @@ async def run_r1_a2_comments(
             + "; ".join(corpus_errors)
         )
 
-    min_windows = config.real_llm.long_flow.min_comment_windows
+    long_flow = config.real_llm.long_flow
+    stop_mode = long_flow.reading_stop_mode
+    min_windows = long_flow.min_comment_windows
     builder = ScenarioBuilder(
         "R1_real_happy_path",
-        "Real LLM happy path — cross-chapter reading with A2 comments",
+        "Real LLM happy path — configurable A2 comments reading flow",
     )
     builder.add_step(
         "verify_runtime",
@@ -91,9 +120,9 @@ async def run_r1_a2_comments(
     )
     builder.add_step(
         "advance_for_comments",
-        "Read forward from book start across chapters to trigger comment windows",
+        _advance_step_description(stop_mode, min_windows),
         _step_advance,
-        timeout_s=float(config.run.max_wait_comment_window_s) * min_windows + 240.0,
+        timeout_s=_advance_step_timeout_s(config, stop_mode, min_windows),
     )
     builder.add_step(
         "export_audit",
@@ -198,6 +227,184 @@ async def _step_start_sse(ctx: dict[str, Any]) -> None:
     ctx["reading_session"] = session
 
 
+async def _advance_until_cross_chapter(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    *,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    metrics: MetricsAggregator,
+    config: VerifyConfig,
+) -> ReadingSession:
+    session = await read_from_start_then_cross_chapter(
+        client,
+        ctx,
+        ctx["book_id"],
+        cursor,
+        chapters,
+        trace,
+        session,
+        scenario_id="R1_real_happy_path",
+        step_id="advance_for_comments",
+        metrics=metrics,
+        warmup_paragraphs=24,
+        delay_ms=config.run.progress_step_delay_ms,
+    )
+    ctx["reading_session"] = session
+    ctx["final_paragraph_idx"] = cursor.paragraph_idx
+    ctx["chapter_idx"] = cursor.chapter_idx
+    return session
+
+
+async def _advance_in_chapter_batch(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    *,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    metrics: MetricsAggregator,
+    config: VerifyConfig,
+    next_paragraph: int,
+    batch_size: int,
+) -> int:
+    """Advance up to *batch_size* paragraphs within the cursor's current chapter."""
+    chapter = chapter_by_idx(chapters, cursor.chapter_idx)
+    if chapter is None:
+        raise StepAssertionError(
+            assertion="chapter_exists",
+            message=f"Chapter {cursor.chapter_idx} not found in book metadata",
+            actual={"chapter_idx": cursor.chapter_idx},
+        )
+
+    chapter_last = last_paragraph_idx(chapter)
+    if next_paragraph > chapter_last:
+        raise StepAssertionError(
+            assertion="same_chapter_reading",
+            message="Reached chapter end before min_comment_windows completed",
+            actual={
+                "chapter_idx": cursor.chapter_idx,
+                "paragraph_idx": cursor.paragraph_idx,
+                "chapter_last_paragraph_idx": chapter_last,
+            },
+        )
+
+    end = min(next_paragraph + batch_size, chapter_last)
+    last = await advance_reading(
+        client,
+        ctx,
+        ctx["book_id"],
+        cursor.chapter_idx,
+        next_paragraph,
+        end,
+        trace,
+        scenario_id="R1_real_happy_path",
+        step_id="advance_for_comments",
+        metrics=metrics,
+        delay_ms=config.run.progress_step_delay_ms,
+    )
+    cursor.paragraph_idx = last
+    ctx["final_paragraph_idx"] = last
+    ctx["chapter_idx"] = cursor.chapter_idx
+    return last + 1
+
+
+async def _advance_until_comment_windows(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    *,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    metrics: MetricsAggregator,
+    config: VerifyConfig,
+    min_windows: int,
+) -> list[dict[str, Any]]:
+    initial_batch = max(12, min_windows * 12)
+    followup_batch = 12
+    completed_windows: list[dict[str, Any]] = []
+    next_paragraph = cursor.paragraph_idx
+
+    next_paragraph = await _advance_in_chapter_batch(
+        client,
+        ctx,
+        cursor=cursor,
+        chapters=chapters,
+        trace=trace,
+        metrics=metrics,
+        config=config,
+        next_paragraph=next_paragraph,
+        batch_size=initial_batch,
+    )
+
+    while len(completed_windows) < min_windows:
+        window = await wait_for_window_done(
+            client,
+            session,
+            ctx["book_id"],
+            cursor.chapter_idx,
+            cursor.paragraph_idx,
+            float(config.run.max_wait_comment_window_s),
+            trace,
+        )
+        if window and window.get("status") == "done":
+            completed_windows.append(window)
+
+        if len(completed_windows) >= min_windows:
+            break
+
+        next_paragraph = await _advance_in_chapter_batch(
+            client,
+            ctx,
+            cursor=cursor,
+            chapters=chapters,
+            trace=trace,
+            metrics=metrics,
+            config=config,
+            next_paragraph=next_paragraph,
+            batch_size=followup_batch,
+        )
+
+    return completed_windows
+
+
+async def _collect_chapter_comments_and_jobs(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    *,
+    cursor: ReadingCursor,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    all_comments: list[dict[str, Any]] = []
+    jobs: list[dict[str, Any]] = []
+
+    for chapter_idx in cursor.visited_chapters:
+        comments = await wait_for_comments(
+            client,
+            ctx["book_id"],
+            chapter_idx,
+            min_count=0,
+            timeout_s=30.0,
+        )
+        body, rec = await client.list_comments(ctx["book_id"], chapter_idx)
+        validate_comments_response(body, rec)
+        validate_no_span_in_comments(body, rec)
+        all_comments.extend(comments)
+
+        chapter_jobs = await fetch_verify_jobs(
+            client,
+            ctx["book_id"],
+            chapter_idx,
+            scenario_id="R1_real_happy_path",
+            step_id="advance_for_comments",
+        )
+        jobs.extend(chapter_jobs)
+
+    return all_comments, jobs
+
+
 async def _step_advance(ctx: dict[str, Any]) -> None:
     config: VerifyConfig = ctx["config"]
     metrics: MetricsAggregator = ctx["metrics"]
@@ -205,9 +412,9 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
     session: ReadingSession = ctx["reading_session"]
     cursor: ReadingCursor = ctx["reading_cursor"]
     chapters: list[dict[str, Any]] = ctx["chapters"]
-    min_windows = config.real_llm.long_flow.min_comment_windows
-    initial_batch = max(40, min_windows * 18)
-    followup_batch = 12
+    long_flow = config.real_llm.long_flow
+    stop_mode = long_flow.reading_stop_mode
+    min_windows = long_flow.min_comment_windows
 
     completed_windows: list[dict[str, Any]] = []
     all_comments: list[dict[str, Any]] = []
@@ -220,108 +427,54 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
         "advance_for_comments",
         context=ctx,
     ) as client:
-        session = await read_from_start_then_cross_chapter(
-            client,
-            ctx,
-            ctx["book_id"],
-            cursor,
-            chapters,
-            trace,
-            session,
-            scenario_id="R1_real_happy_path",
-            step_id="advance_for_comments",
-            metrics=metrics,
-            warmup_paragraphs=24,
-            delay_ms=config.run.progress_step_delay_ms,
-        )
-        ctx["reading_session"] = session
-        ctx["final_paragraph_idx"] = cursor.paragraph_idx
-        ctx["chapter_idx"] = cursor.chapter_idx
-
-        session = await advance_reading_cross_chapter(
-            client,
-            ctx,
-            ctx["book_id"],
-            cursor,
-            chapters,
-            initial_batch,
-            trace,
-            session,
-            scenario_id="R1_real_happy_path",
-            step_id="advance_for_comments",
-            metrics=metrics,
-            delay_ms=config.run.progress_step_delay_ms,
-        )
-        ctx["reading_session"] = session
-        ctx["final_paragraph_idx"] = cursor.paragraph_idx
-        ctx["chapter_idx"] = cursor.chapter_idx
-
-        while len(completed_windows) < min_windows:
-            window = await wait_for_window_done(
-                client,
-                session,
-                ctx["book_id"],
-                cursor.chapter_idx,
-                cursor.paragraph_idx,
-                float(config.run.max_wait_comment_window_s),
-                trace,
-            )
-            if window and window.get("status") == "done":
-                completed_windows.append(window)
-
-            if len(completed_windows) >= min_windows:
-                break
-
-            session = await advance_reading_cross_chapter(
+        if stop_mode == READING_STOP_CROSS_CHAPTER:
+            session = await _advance_until_cross_chapter(
                 client,
                 ctx,
-                ctx["book_id"],
-                cursor,
-                chapters,
-                followup_batch,
-                trace,
-                session,
-                scenario_id="R1_real_happy_path",
-                step_id="advance_for_comments",
+                cursor=cursor,
+                chapters=chapters,
+                trace=trace,
+                session=session,
                 metrics=metrics,
-                delay_ms=config.run.progress_step_delay_ms,
+                config=config,
             )
-            ctx["reading_session"] = session
-            ctx["final_paragraph_idx"] = cursor.paragraph_idx
-            ctx["chapter_idx"] = cursor.chapter_idx
-
-        for chapter_idx in cursor.visited_chapters:
-            comments = await wait_for_comments(
+        elif stop_mode == READING_STOP_COMMENT_WINDOWS:
+            completed_windows = await _advance_until_comment_windows(
                 client,
-                ctx["book_id"],
-                chapter_idx,
-                min_count=0,
-                timeout_s=30.0,
+                ctx,
+                cursor=cursor,
+                chapters=chapters,
+                trace=trace,
+                session=session,
+                metrics=metrics,
+                config=config,
+                min_windows=min_windows,
             )
-            body, rec = await client.list_comments(ctx["book_id"], chapter_idx)
-            validate_comments_response(body, rec)
-            validate_no_span_in_comments(body, rec)
-            all_comments.extend(comments)
-
-            chapter_jobs = await fetch_verify_jobs(
-                client,
-                ctx["book_id"],
-                chapter_idx,
-                scenario_id="R1_real_happy_path",
-                step_id="advance_for_comments",
+        else:
+            raise StepAssertionError(
+                assertion="reading_stop_mode",
+                message="Unsupported real_llm.long_flow.reading_stop_mode",
+                actual={"reading_stop_mode": stop_mode},
             )
-            jobs.extend(chapter_jobs)
 
-    assert_that.gte(
-        cursor.chapters_crossed,
-        1,
-        label="cross_chapter_reading",
-    )
-    assert_that.gte(
-        len(completed_windows),
-        min_windows,
-        label="real_comment_windows_completed",
-    )
+        all_comments, jobs = await _collect_chapter_comments_and_jobs(
+            client,
+            ctx,
+            cursor=cursor,
+        )
+
+    if stop_mode == READING_STOP_CROSS_CHAPTER:
+        assert_that.gte(
+            cursor.chapters_crossed,
+            1,
+            label="cross_chapter_reading",
+        )
+    elif stop_mode == READING_STOP_COMMENT_WINDOWS:
+        assert_that.gte(
+            len(completed_windows),
+            min_windows,
+            label="real_comment_windows_completed",
+        )
 
     for window in completed_windows:
         window_comments = [
@@ -341,6 +494,7 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
     ctx["verify_jobs"] = jobs
     ctx["chapters_crossed"] = cursor.chapters_crossed
     ctx["visited_chapters"] = list(cursor.visited_chapters)
+    ctx["reading_stop_mode"] = stop_mode
     ctx["run_manager"].real_llm_tracker.phase_coverage["A2_comments"] = True
 
     record_comment_metrics(
@@ -361,6 +515,11 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
     comments = ctx.get("comments") or []
     windows = ctx.get("completed_windows") or []
     jobs = ctx.get("verify_jobs") or []
+    audit_window_limit = (
+        config.real_llm.long_flow.min_comment_windows
+        if ctx.get("reading_stop_mode") == READING_STOP_COMMENT_WINDOWS
+        else len(windows)
+    )
 
     trace_ids = unique_trace_ids(comments, jobs)
     tokens_by_trace: dict[str, dict[str, Any]] = {}
@@ -379,7 +538,7 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
             trace_meta_by_trace_id,
         ) = await collect_usage_by_trace(client, trace_ids)
 
-    for window in windows[: config.real_llm.long_flow.min_comment_windows]:
+    for window in windows[:audit_window_limit]:
         chapter_idx = int(window.get("chapter_idx") or ctx["chapter_idx"])
         paragraphs = await load_chapter_paragraphs(ctx, ctx["book_id"], chapter_idx)
         window_comments = [

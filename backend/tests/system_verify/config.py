@@ -52,6 +52,11 @@ class LLMStubConfig:
     aimock: AIMockConfig = field(default_factory=AIMockConfig)
 
 
+READING_STOP_CROSS_CHAPTER = "cross_chapter"
+READING_STOP_COMMENT_WINDOWS = "comment_windows"
+READING_STOP_MODES = frozenset({READING_STOP_CROSS_CHAPTER, READING_STOP_COMMENT_WINDOWS})
+
+
 @dataclass
 class RealLLMLongFlowConfig:
     require_compaction: bool = True
@@ -60,6 +65,7 @@ class RealLLMLongFlowConfig:
     test_compaction_min_source_paragraphs: int = 120
     min_comment_windows: int = 2
     min_chat_turns: int = 1
+    reading_stop_mode: str = READING_STOP_COMMENT_WINDOWS
 
 
 @dataclass
@@ -67,7 +73,7 @@ class RealLLMConfig:
     base_url: str = ""
     api_key_env: str = "VIBE_READER_LLM_API_KEY"
     model: str = "deepseek-v4-flash"
-    max_calls: int = 8
+    max_calls: int = 16
     max_input_tokens_per_call: int = 64000
     max_output_tokens_per_call: int = 1200
     max_total_cost_usd: float = 3.00
@@ -213,7 +219,7 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
         api_key_env=real_raw.get("api_key_env", "VIBE_READER_LLM_API_KEY"),
         model=_env("VIBE_READER_LLM_MODEL")
         or real_raw.get("model", "deepseek-v4-flash"),
-        max_calls=real_raw.get("max_calls", 8),
+        max_calls=real_raw.get("max_calls", 16),
         max_input_tokens_per_call=real_raw.get("max_input_tokens_per_call", 64000),
         max_output_tokens_per_call=real_raw.get("max_output_tokens_per_call", 1200),
         max_total_cost_usd=real_raw.get("max_total_cost_usd", 3.00),
@@ -230,6 +236,9 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
             ),
             min_comment_windows=long_flow_raw.get("min_comment_windows", 2),
             min_chat_turns=long_flow_raw.get("min_chat_turns", 1),
+            reading_stop_mode=long_flow_raw.get(
+                "reading_stop_mode", READING_STOP_COMMENT_WINDOWS
+            ),
         ),
     )
 
@@ -296,4 +305,10 @@ def validate_real_llm_config(config: VerifyConfig) -> list[str]:
         )
     if not config.real_llm.model:
         errors.append("real_llm.model is required when llm.mode=real")
+    stop_mode = config.real_llm.long_flow.reading_stop_mode
+    if stop_mode not in READING_STOP_MODES:
+        errors.append(
+            "real_llm.long_flow.reading_stop_mode must be one of "
+            f"{sorted(READING_STOP_MODES)}; got {stop_mode!r}"
+        )
     return errors
