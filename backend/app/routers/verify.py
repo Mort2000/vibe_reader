@@ -78,6 +78,28 @@ async def verify_list_jobs(
     return {"items": items, "total": total}
 
 
+@router.get("/verify/agent-runs")
+async def verify_agent_runs(
+    request: Request,
+    run_id: str = "",
+    scenario_id: str | None = None,
+    include_interaction: bool = True,
+) -> dict[str, Any]:
+    _require_verify(request)
+    from ..services.verify_telemetry import list_agent_run_records
+
+    db = request.app.state.db
+    settings = request.app.state.settings
+    items = await list_agent_run_records(
+        db,
+        run_id=run_id,
+        scenario_id=scenario_id,
+        include_interaction=include_interaction,
+        data_dir=settings.data_dir,
+    )
+    return {"items": items, "total": len(items)}
+
+
 @router.get("/verify/metrics")
 async def verify_metrics(
     request: Request,

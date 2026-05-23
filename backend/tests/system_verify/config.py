@@ -104,6 +104,27 @@ class MetricsConfig:
 
 @dataclass
 class AuditConfig:
+    enabled: bool = True
+    level: str = "agent_interaction"
+    include_agent_invocations: bool = True
+    include_prompt_messages: bool = True
+    include_injected_context: bool = True
+    include_model_request: bool = True
+    include_model_response: bool = True
+    include_thinking: bool = True
+    include_tool_calls: bool = True
+    include_tool_results: bool = True
+    include_validation_events: bool = True
+    include_sse_summary: bool = True
+    write_markdown_report: bool = True
+    markdown_report_dir: str = "audit/agent_reports"
+    include_usage_timing_summary: bool = True
+    markdown_original_text_mode: str = "range_edge_excerpt"
+    edge_paragraph_max_chars: int = 800
+    paragraph_hash_algorithm: str = "sha256"
+    redact_secrets: bool = True
+    write_prompt_markdown: bool = True
+    write_context_sidecars: bool = True
     sample_comments_per_window: int = 3
     sample_chat_turns_per_probe: int = 2
     include_prompt_manifest: bool = True
@@ -265,6 +286,29 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
 
     audit_raw = raw.get("audit", {})
     audit = AuditConfig(
+        enabled=audit_raw.get("enabled", True),
+        level=audit_raw.get("level", "agent_interaction"),
+        include_agent_invocations=audit_raw.get("include_agent_invocations", True),
+        include_prompt_messages=audit_raw.get("include_prompt_messages", True),
+        include_injected_context=audit_raw.get("include_injected_context", True),
+        include_model_request=audit_raw.get("include_model_request", True),
+        include_model_response=audit_raw.get("include_model_response", True),
+        include_thinking=audit_raw.get("include_thinking", True),
+        include_tool_calls=audit_raw.get("include_tool_calls", True),
+        include_tool_results=audit_raw.get("include_tool_results", True),
+        include_validation_events=audit_raw.get("include_validation_events", True),
+        include_sse_summary=audit_raw.get("include_sse_summary", True),
+        write_markdown_report=audit_raw.get("write_markdown_report", True),
+        markdown_report_dir=audit_raw.get("markdown_report_dir", "audit/agent_reports"),
+        include_usage_timing_summary=audit_raw.get("include_usage_timing_summary", True),
+        markdown_original_text_mode=audit_raw.get(
+            "markdown_original_text_mode", "range_edge_excerpt"
+        ),
+        edge_paragraph_max_chars=int(audit_raw.get("edge_paragraph_max_chars", 800)),
+        paragraph_hash_algorithm=audit_raw.get("paragraph_hash_algorithm", "sha256"),
+        redact_secrets=audit_raw.get("redact_secrets", True),
+        write_prompt_markdown=audit_raw.get("write_prompt_markdown", True),
+        write_context_sidecars=audit_raw.get("write_context_sidecars", True),
         sample_comments_per_window=audit_raw.get("sample_comments_per_window", 3),
         sample_chat_turns_per_probe=audit_raw.get("sample_chat_turns_per_probe", 2),
         include_prompt_manifest=audit_raw.get("include_prompt_manifest", True),

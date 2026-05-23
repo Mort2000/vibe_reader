@@ -43,6 +43,8 @@ async def record_agent_run(
     density_stat_end: int | None,
     status: str = "ok",
     error: str | None = None,
+    invocation_id: str = "",
+    interaction_path: str = "",
 ) -> None:
     await db.execute(
         """INSERT INTO verify_agent_runs (
@@ -52,8 +54,9 @@ async def record_agent_run(
                tool_call_count, valid_count, validation_failed_count, discarded_count,
                discarded_by_reason_json, candidate_lookup_count, prompt_version,
                context_hash, comment_density_actual, comment_density_soft_min,
-               density_stat_start, density_stat_end, status, error, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               density_stat_start, density_stat_end, status, error,
+               invocation_id, interaction_path, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(trace_id) DO UPDATE SET
                request_id = excluded.request_id,
                verify_run_id = excluded.verify_run_id,
@@ -83,6 +86,8 @@ async def record_agent_run(
                density_stat_end = excluded.density_stat_end,
                status = excluded.status,
                error = excluded.error,
+               invocation_id = excluded.invocation_id,
+               interaction_path = excluded.interaction_path,
                created_at = excluded.created_at""",
         (
             trace_id,
@@ -114,6 +119,8 @@ async def record_agent_run(
             density_stat_end,
             status,
             error,
+            invocation_id,
+            interaction_path,
             _now(),
         ),
     )

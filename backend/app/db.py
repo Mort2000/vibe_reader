@@ -219,6 +219,9 @@ CREATE INDEX IF NOT EXISTS idx_verify_agent_runs_scenario
 _MIGRATIONS = [
     ("books", "author", "TEXT"),
     ("chapters", "token_estimate", "INTEGER NOT NULL DEFAULT 0"),
+    ("verify_agent_runs", "invocation_id", "TEXT NOT NULL DEFAULT ''"),
+    ("verify_agent_runs", "interaction_json", "TEXT NOT NULL DEFAULT ''"),
+    ("verify_agent_runs", "interaction_path", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

@@ -226,6 +226,9 @@ def _build_summary_md(
             f"- comments: {audit_comments}",
             f"- real_comments: {real_comments}",
             f"- window_status: {_count_ndjson_lines(run_dir / 'audit' / 'window_status.ndjson')}",
+            f"- agent_invocations: {_count_ndjson_lines(run_dir / 'audit' / 'agent_invocations.ndjson')}",
+            f"- agent_reports: {_count_markdown_files(run_dir / 'audit' / 'agent_reports')}",
+            f"- audit_safety: {_count_ndjson_lines(run_dir / 'audit' / 'audit_safety_report.ndjson')}",
             "",
             "## Failures",
             "",
@@ -320,6 +323,12 @@ def _count_ndjson_lines(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _count_markdown_files(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(1 for item in path.glob("*.md") if item.name != "index.md")
 
 
 def _percentile(sorted_values: list[float], p: float) -> float:

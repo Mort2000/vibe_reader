@@ -31,6 +31,7 @@ from .common import (
     collect_validation_failures,
     collect_usage_by_trace,
     ensure_imported_book,
+    export_agent_audit_artifacts,
     fetch_verify_jobs,
     get_probe,
     load_chapter_paragraphs,
@@ -432,6 +433,21 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
         "comment_markdown": md_count,
         "no_call_window": ctx.get("window_no_call", False),
     }
+
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "S2_continuous_reading",
+        "export_agent_audit",
+        context=ctx,
+    ) as audit_client:
+        agent_counts = await export_agent_audit_artifacts(
+            ctx,
+            audit_client,
+            scenario_id="S2_continuous_reading",
+            step_id="export_agent_audit",
+        )
+        ctx["audit_export_counts"].update(agent_counts)
 
     metrics: MetricsAggregator = ctx["metrics"]
     metrics.record(

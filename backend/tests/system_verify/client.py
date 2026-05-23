@@ -347,6 +347,21 @@ class TargetClient:
         resp, rec = await self._request("GET", "/api/verify/metrics", params=params)
         return resp.json(), rec
 
+    async def verify_agent_runs(
+        self,
+        run_id: str,
+        scenario_id: str | None = None,
+        include_interaction: bool = True,
+    ) -> tuple[dict, APIRecord]:
+        params: dict[str, Any] = {
+            "run_id": run_id,
+            "include_interaction": include_interaction,
+        }
+        if scenario_id:
+            params["scenario_id"] = scenario_id
+        resp, rec = await self._request("GET", "/api/verify/agent-runs", params=params)
+        return resp.json(), rec
+
     async def verify_jobs(self, params: dict | None = None) -> tuple[dict, APIRecord]:
         resp, rec = await self._request("GET", "/api/verify/jobs", params=params)
         return resp.json(), rec

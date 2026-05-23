@@ -7,13 +7,19 @@ from typing import Any
 import aiosqlite
 
 from ..config import Settings
-from ..observability import ensure_trace_id
+from ..observability import (
+    ensure_trace_id,
+    get_verify_run_id,
+    get_verify_scenario_id,
+    get_verify_step_id,
+)
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import comments as comment_repo
 from ..repos import paragraphs as paragraph_repo
-from .agent_base import CommentDensityHint, CommentDeps, EmitCommentDraft
-from .agent_base import get_comment_agent
+from .agent_audit import build_comment_interaction_packet, make_invocation_id
+from .agent_audit_store import persist_interaction_packet
+from .agent_base import CommentDensityHint, CommentDeps, EmitCommentDraft, get_comment_agent
 from .job_runner import JobRunner
 
 logger = logging.getLogger(__name__)
@@ -221,8 +227,9 @@ async def run_comment_task(
 
     no_call = len(raw_payloads) == 0
 
+    persisted_comments: list[dict[str, Any]] = []
     for c in valid_comments:
-        await comment_repo.create_comment(
+        created = await comment_repo.create_comment(
             db,
             book_id=book_id,
             chapter_idx=chapter_idx,
@@ -232,6 +239,8 @@ async def run_comment_task(
             comment_type=c["comment_type"],
             trace_id=trace_id,
         )
+        persisted = {**c, "comment_id": created.get("id")}
+        persisted_comments.append(persisted)
 
     log_fields: dict[str, Any] = {
         "job_id": job_id,
@@ -282,6 +291,47 @@ async def run_comment_task(
         usage.response_tokens if usage.response_tokens is not None else usage.output_tokens
     )
 
+    invocation_id = make_invocation_id(
+        "ParagraphCommentAgent",
+        get_verify_scenario_id(),
+        job_id,
+    )
+    interaction_path = ""
+    if settings.verify_mode:
+        interaction = build_comment_interaction_packet(
+            invocation_id=invocation_id,
+            trace_id=trace_id,
+            verify_run_id=get_verify_run_id(),
+            verify_scenario_id=get_verify_scenario_id(),
+            verify_step_id=get_verify_step_id(),
+            job_id=job_id,
+            book=book,
+            chapter_idx=chapter_idx,
+            window=window,
+            window_paragraphs=window_paragraphs,
+            target_paragraphs=target_paragraphs,
+            density_hint=density_hint,
+            prompt=prompt,
+            agent_result=result,
+            settings=settings,
+            duration_ms=round(latency_ms, 1),
+            input_tokens=usage_input,
+            output_tokens=usage_output,
+            cached_input_tokens=usage.cache_read_tokens or None,
+            raw_payloads=raw_payloads,
+            valid_comments=persisted_comments,
+            discarded=discarded,
+            validation_failed_count=validation_failed_count,
+            no_call=no_call,
+            usage_source="estimate",
+        )
+        interaction_path = persist_interaction_packet(
+            settings.data_dir,
+            verify_run_id=get_verify_run_id(),
+            invocation_id=invocation_id,
+            packet=interaction,
+        )
+
     return {
         "agent_name": "ParagraphCommentAgent",
         "duration_ms": round(latency_ms, 1),
@@ -300,6 +350,8 @@ async def run_comment_task(
         "comment_density_soft_min": density_hint.soft_min_density,
         "density_stat_start": density_hint.stat_start_paragraph_idx,
         "density_stat_end": density_hint.stat_end_paragraph_idx,
+        "invocation_id": invocation_id,
+        "interaction_path": interaction_path,
     }
 
 

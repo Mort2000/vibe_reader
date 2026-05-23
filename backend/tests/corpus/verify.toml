@@ -57,6 +57,14 @@ collect_sse_events = true
 collect_provider_usage = false
 
 [audit]
+enabled = true
+level = "agent_interaction"
+write_markdown_report = true
+markdown_original_text_mode = "range_edge_excerpt"
+edge_paragraph_max_chars = 800
+write_prompt_markdown = true
+write_context_sidecars = true
+redact_secrets = true
 sample_comments_per_window = 3
 sample_chat_turns_per_probe = 2
 include_prompt_manifest = true

@@ -38,6 +38,7 @@ from .common import (
     collect_validation_failures,
     collect_usage_by_trace,
     ensure_imported_book,
+    export_agent_audit_artifacts,
     fetch_verify_jobs,
     get_probe,
     load_chapter_paragraphs,
@@ -576,6 +577,21 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
         "comments_ndjson": ndjson_count,
         "comment_markdown": md_count,
     }
+
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "R1_real_happy_path",
+        "export_agent_audit",
+        context=ctx,
+    ) as audit_client:
+        agent_counts = await export_agent_audit_artifacts(
+            ctx,
+            audit_client,
+            scenario_id="R1_real_happy_path",
+            step_id="export_agent_audit",
+        )
+        ctx["audit_export_counts"].update(agent_counts)
 
 
 async def _step_budget_check(ctx: dict[str, Any]) -> None:

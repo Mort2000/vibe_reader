@@ -168,6 +168,10 @@ class RunManager:
             self.base_dir,
             self.base_dir / "traces",
             self.base_dir / "audit" / "samples",
+            self.base_dir / "audit" / "agent_interactions",
+            self.base_dir / "audit" / "agent_reports",
+            self.base_dir / "audit" / "prompts",
+            self.base_dir / "audit" / "contexts",
             self.base_dir / "judge",
             self.base_dir / "reports",
         ]

@@ -1561,6 +1561,82 @@ def record_verify_metrics_coverage(
             )
 
 
+async def fetch_verify_agent_runs(
+    client: TargetClient,
+    run_id: str,
+    *,
+    scenario_id: str | None = None,
+    step_id: str = "",
+) -> list[dict[str, Any]]:
+    body, rec = await client.verify_agent_runs(run_id, scenario_id=scenario_id)
+    if rec.status_code == 404:
+        logger.warning(
+            "%s: GET /api/verify/agent-runs returned 404 — verify mode likely disabled",
+            step_id or "fetch_verify_agent_runs",
+        )
+        return []
+    if rec.status_code >= 400:
+        logger.warning(
+            "%s: GET /api/verify/agent-runs returned HTTP %s for run_id=%s",
+            step_id or "fetch_verify_agent_runs",
+            rec.status_code,
+            run_id,
+        )
+        return []
+    return body.get("items") or []
+
+
+async def export_agent_audit_artifacts(
+    ctx: dict[str, Any],
+    client: TargetClient,
+    *,
+    scenario_id: str,
+    step_id: str,
+) -> dict[str, int]:
+    from ..agent_audit_exporter import (
+        AgentAuditExporter,
+        assert_agent_audit_artifacts,
+        enrich_comment_records_with_agent_refs,
+    )
+
+    config: VerifyConfig = ctx["config"]
+    run_manager: RunManager = ctx["run_manager"]
+    if not config.audit.enabled:
+        return {}
+
+    agent_runs = await fetch_verify_agent_runs(
+        client,
+        run_manager.run_id,
+        scenario_id=scenario_id,
+        step_id=step_id,
+    )
+    if not agent_runs:
+        agent_runs = await fetch_verify_agent_runs(
+            client,
+            run_manager.run_id,
+            scenario_id=None,
+            step_id=step_id,
+        )
+
+    exporter = AgentAuditExporter(run_manager, config)
+    counts = exporter.export_from_agent_runs(agent_runs)
+
+    comments_path = run_manager.base_dir / "audit" / "comments.ndjson"
+    enrich_comment_records_with_agent_refs(comments_path, exporter.trace_to_invocation)
+
+    failures = assert_agent_audit_artifacts(run_manager.base_dir)
+    if failures and config.audit.write_markdown_report:
+        raise StepAssertionError(
+            assertion="agent_audit",
+            message="; ".join(failures[:3]),
+            expected="complete agent audit artifacts",
+            actual={"failures": failures},
+        )
+
+    ctx["agent_audit_counts"] = counts
+    return counts
+
+
 async def fetch_verify_jobs(
     client: TargetClient,
     book_id: int,
