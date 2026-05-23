@@ -1,0 +1,51 @@
+[target]
+base_url = "http://127.0.0.1:8000"
+data_dir = "/tmp/vibe_reader_verify"
+
+[llm]
+mode = "stub"
+stub_profile = "mvp_default"
+temperature = 0.4
+timeout_s = 120
+
+[real_llm]
+base_url = ""
+api_key_env = "VIBE_READER_LLM_API_KEY"
+model = "deepseek-v4-flash"
+max_calls = 8
+max_input_tokens_per_call = 64000
+max_output_tokens_per_call = 1200
+max_total_cost_usd = 3.00
+
+[real_llm.long_flow]
+require_compaction = true
+test_compaction_trigger_tokens = 24000
+test_compaction_min_source_tokens = 16000
+test_compaction_min_source_paragraphs = 120
+min_comment_windows = 2
+min_chat_turns = 1
+
+[run]
+suite = "mvp"
+max_wait_comment_window_s = 180
+max_wait_compaction_s = 240
+max_wait_chat_s = 120
+progress_step_delay_ms = 300
+seed = 20260522
+
+[metrics]
+collect_otel = true
+collect_logfire = true
+collect_sse_events = true
+collect_provider_usage = false
+
+[audit]
+sample_comments_per_window = 3
+sample_chat_turns_per_probe = 2
+include_prompt_manifest = true
+include_full_prompt = false
+include_original_excerpts = true
+
+[comment_density]
+soft_min = 0.25
+stat_window_paragraphs = 80

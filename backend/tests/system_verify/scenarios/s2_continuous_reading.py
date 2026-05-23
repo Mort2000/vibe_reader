@@ -28,6 +28,7 @@ from .common import (
     advance_reading,
     assert_comments_valid,
     assert_reading_not_blocked,
+    collect_validation_failures,
     ensure_imported_book,
     get_probe,
     load_chapter_paragraphs,
@@ -38,6 +39,7 @@ from .common import (
     record_comment_metrics,
     wait_for_comments,
     wait_for_window_done,
+    window_is_no_call,
 )
 
 
@@ -252,15 +254,22 @@ async def _step_verify_comments(ctx: dict[str, Any]) -> None:
             client,
             ctx["book_id"],
             ctx["chapter_idx"],
-            min_count=1,
+            min_count=0,
             timeout_s=float(config.run.max_wait_comment_window_s),
         )
 
         body, rec = await client.list_comments(ctx["book_id"], ctx["chapter_idx"])
         validate_comments_response(body, rec)
         validate_no_span_in_comments(body, rec)
-        assert_comments_valid(comments, window=ctx.get("completed_window"))
-
+        window = ctx.get("completed_window")
+        validation_failures = assert_comments_valid(
+            comments,
+            window=window,
+            allow_no_call=True,
+            config=config,
+        )
+        ctx["window_no_call"] = window_is_no_call(window, comments)
+        ctx["validation_failures"] = validation_failures
         ctx["comments"] = comments
 
         if session:
@@ -359,7 +368,7 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
     comments = ctx.get("comments") or []
     window = ctx.get("completed_window")
 
-    model = config.llm.model
+    model = config.effective_model() or config.real_llm.model
     latency_by_trace: dict[str, float] = {}
     trace: ReadingTrace = ctx["reading_trace"]
     if trace.window_e2e_latencies_ms and comments:
@@ -374,14 +383,41 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
         chapter_idx=ctx["chapter_idx"],
         window=window,
         paragraphs=ctx["chapter_paragraphs"],
-        model=model,
+        model=model or "",
+        llm_mode=config.llm.mode,
+        stub_profile=config.llm.stub_profile if not config.is_real_llm else None,
+        usage_source=config.usage_source,
         latency_by_trace=latency_by_trace,
     )
+
+    validation_failures = ctx.get("validation_failures") or collect_validation_failures(
+        comments, window
+    )
+
+    if not comments:
+        exporter.record_window_status(
+            scenario_id="S2_continuous_reading",
+            book=ctx["book"],
+            chapter_idx=ctx["chapter_idx"],
+            window=window,
+            no_call=ctx.get("window_no_call", False),
+            validation_failures=validation_failures,
+        )
+    elif validation_failures:
+        exporter.record_window_status(
+            scenario_id="S2_continuous_reading",
+            book=ctx["book"],
+            chapter_idx=ctx["chapter_idx"],
+            window=window,
+            no_call=False,
+            validation_failures=validation_failures,
+        )
 
     ndjson_count, md_count = exporter.export()
     ctx["audit_export_counts"] = {
         "comments_ndjson": ndjson_count,
         "comment_markdown": md_count,
+        "no_call_window": ctx.get("window_no_call", False),
     }
 
     metrics: MetricsAggregator = ctx["metrics"]
@@ -422,4 +458,6 @@ async def _step_record_metrics(ctx: dict[str, Any]) -> None:
         step_id="record_metrics",
         jobs=jobs,
         comments=ctx.get("comments") or [],
+        window=ctx.get("completed_window"),
+        config=config,
     )

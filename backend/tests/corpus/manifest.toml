@@ -18,7 +18,8 @@ expected_min_chars = 500000
 
 [[books.probes]]
 name = "early"
-chapter_idx = 0
+# chapter 0 is front matter (cover/copyright) with no readable paragraphs
+chapter_idx = 1
 paragraph_idx = 20
 
 [[books.probes]]
@@ -31,3 +32,15 @@ name = "long_context"
 chapter_idx = 12
 paragraph_idx = 900
 requires_context_tokens_gte = 100000
+
+[[books.probes]]
+name = "happy_path_current"
+chapter_idx = 12
+paragraph_idx = 900
+real_llm = true
+requires_compaction = true
+requires_context_tokens_gte = 100000
+test_compaction_trigger_tokens = 24000
+test_compaction_min_source_tokens = 16000
+test_compaction_min_source_paragraphs = 120
+max_real_input_tokens = 64000

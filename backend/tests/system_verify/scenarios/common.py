@@ -33,6 +33,7 @@ class ReadingTrace:
     progress_dedup_count: int = 0
     window_queued_count: int = 0
     window_done_count: int = 0
+    window_failed_count: int = 0
     comment_created_count: int = 0
     stale_job_ignored_count: int = 0
     window_resolution_count: int = 0
@@ -40,6 +41,7 @@ class ReadingTrace:
     window_e2e_latencies_ms: list[float] = field(default_factory=list)
     window_queued_at: dict[int, float] = field(default_factory=dict)
     completed_windows: list[dict[str, Any]] = field(default_factory=list)
+    failed_windows: list[dict[str, Any]] = field(default_factory=list)
     comment_events: list[SSEEvent] = field(default_factory=list)
 
 
@@ -222,6 +224,9 @@ class ReadingSession:
                             (time.monotonic() - started) * 1000
                         )
                     trace.completed_windows.append(evt.data)
+            elif evt.event_type == "window.failed":
+                trace.window_failed_count += 1
+                trace.failed_windows.append(evt.data)
             elif evt.event_type == "comment.created":
                 trace.comment_created_count += 1
                 trace.comment_events.append(evt)
@@ -332,13 +337,20 @@ async def wait_for_window_done(
     timeout_s: float,
     trace: ReadingTrace,
 ) -> dict[str, Any] | None:
+    """Wait for a terminal window state: done (success/no-call) or failed."""
+
+    def _book_filter(evt: SSEEvent) -> bool:
+        return evt.book_id == book_id and evt.chapter_idx == chapter_idx
+
     evt = await session.collector.wait_for_event(
-        "window.done",
+        ("window.done", "window.failed"),
         timeout_s=min(timeout_s, 30.0),
-        predicate=lambda e: e.book_id == book_id and e.chapter_idx == chapter_idx,
+        predicate=_book_filter,
     )
     if evt:
         session.ingest_events(trace)
+        if evt.event_type == "window.failed":
+            raise_window_failed(evt.data)
         return evt.data
 
     deadline = time.monotonic() + timeout_s
@@ -351,10 +363,174 @@ async def wait_for_window_done(
         window = body.get("window")
         if window:
             last_window = window
-            if window.get("status") == "done":
+            status = window.get("status")
+            if status == "done":
                 return window
+            if status == "failed":
+                raise_window_failed(window)
         await asyncio.sleep(1.0)
     return last_window
+
+
+def raise_window_failed(window: dict[str, Any]) -> None:
+    error = window.get("error") or window.get("failure") or {}
+    message = error.get("message") if isinstance(error, dict) else str(error)
+    code = error.get("code") if isinstance(error, dict) else "window_failed"
+    raise StepAssertionError(
+        assertion="window_failed",
+        message=f"Comment window failed: {code} — {message or 'no details'}",
+        expected="window.done or no-call window.done",
+        actual=window,
+    )
+
+
+def window_is_no_call(window: dict[str, Any] | None, comments: list[dict[str, Any]]) -> bool:
+    if not window:
+        return False
+    if window.get("no_call") is True:
+        return True
+    if window.get("status") == "done" and not comments:
+        ready = window.get("comments_ready_count")
+        target = window.get("comments_target_count")
+        if ready == 0 and target is not None:
+            return True
+    return False
+
+
+async def verify_backend_runtime(
+    ctx: dict[str, Any],
+    *,
+    scenario_id: str,
+    step_id: str = "verify_runtime",
+    require_verify_endpoint: bool = False,
+    require_model_match: bool = False,
+) -> None:
+    """Call /verify/runtime and validate verify mode plus LLM configuration."""
+    run_manager: RunManager = ctx["run_manager"]
+    config: VerifyConfig = ctx["config"]
+    metrics: MetricsAggregator = ctx["metrics"]
+
+    async with TargetClient(
+        config.target.base_url,
+        run_manager,
+        scenario_id,
+        step_id,
+        context=ctx,
+    ) as client:
+        body, rec = await client.verify_runtime()
+        if rec.status_code == 404:
+            if require_verify_endpoint:
+                raise StepAssertionError(
+                    assertion="verify_runtime_available",
+                    message="Verify runtime endpoint required but returned 404",
+                    actual={"status_code": rec.status_code},
+                )
+            ctx["verify_mode_active"] = False
+            return
+
+        assert_that.is_true(
+            body.get("verify_mode", False),
+            "Verify mode should be enabled",
+        )
+
+        llm = body.get("llm", {})
+        if llm:
+            assert_that.not_contains(
+                str(llm), "sk-", "Verify runtime must not expose api_key"
+            )
+
+        backend_mode = llm.get("mode")
+        if backend_mode is not None:
+            assert_that.equal(
+                backend_mode,
+                config.llm.mode,
+                label="backend_llm_mode_matches_verify_config",
+            )
+
+        if require_model_match:
+            expected_model = config.effective_model()
+            backend_model = llm.get("model")
+            assert_that.is_not_none(backend_model, "verify runtime should expose llm.model")
+            if expected_model:
+                assert_that.equal(
+                    backend_model,
+                    expected_model,
+                    label="backend_llm_model_matches_verify_config",
+                )
+
+        config_hash = body.get("config_hash") or llm.get("config_hash")
+        if config_hash is not None:
+            metrics.record(
+                "verify.runtime.config_hash_available",
+                1,
+                unit="count",
+                scenario_id=scenario_id,
+                step_id=step_id,
+            )
+            ctx["backend_config_hash"] = config_hash
+        else:
+            metrics.record(
+                "verify.runtime.config_hash_available",
+                0,
+                unit="count",
+                scenario_id=scenario_id,
+                step_id=step_id,
+            )
+
+        ctx["verify_mode_active"] = True
+        ctx["backend_version"] = body.get("app_version")
+        ctx["verify_runtime"] = body
+        run_manager.set_backend_version(body.get("app_version"))
+
+        metrics.record_from_api_record(rec, scenario_id=scenario_id, step_id=step_id)
+
+
+def collect_validation_failures(
+    comments: list[dict[str, Any]],
+    window: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Collect desensitized validation failure summaries for audit export."""
+    failures: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+
+    for comment in comments:
+        if not comment.get("validation_failed"):
+            continue
+        key = (comment.get("paragraph_idx"), comment.get("trace_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        failures.append(
+            {
+                "paragraph_idx": comment.get("paragraph_idx"),
+                "trace_id": comment.get("trace_id"),
+                "reason": comment.get("validation_error")
+                or comment.get("discard_reason")
+                or "validation_failed",
+                "summary": _validation_failure_summary(comment),
+            }
+        )
+
+    telemetry = window.get("comment_telemetry") if window else None
+    if isinstance(telemetry, dict):
+        for item in telemetry.get("validation_failures") or []:
+            if not isinstance(item, dict):
+                continue
+            key = (item.get("paragraph_idx"), item.get("trace_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            failures.append(item)
+
+    return failures
+
+
+def _validation_failure_summary(comment: dict[str, Any]) -> str:
+    text = str(comment.get("comment") or comment.get("validation_error") or "")
+    text = text.strip()
+    if len(text) <= 120:
+        return text
+    return text[:120] + "…"
 
 
 async def wait_for_comments(
@@ -406,7 +582,7 @@ def _iso_duration_ms(start: str | None, end: str | None) -> float | None:
     return max(0.0, (end_dt - start_dt).total_seconds() * 1000)
 
 
-def record_comment_metrics(
+def record_comment_metrics(  # noqa: C901
     metrics: MetricsAggregator,
     trace: ReadingTrace,
     *,
@@ -414,6 +590,8 @@ def record_comment_metrics(
     step_id: str,
     jobs: list[dict[str, Any]] | None = None,
     comments: list[dict[str, Any]] | None = None,
+    window: dict[str, Any] | None = None,
+    config: VerifyConfig | None = None,
 ) -> None:
     for latency in trace.window_e2e_latencies_ms:
         metrics.record(
@@ -439,6 +617,15 @@ def record_comment_metrics(
         metrics.record(
             "comment.created.count",
             trace.comment_created_count,
+            unit="count",
+            scenario_id=scenario_id,
+            step_id=step_id,
+        )
+
+    if trace.window_failed_count:
+        metrics.record(
+            "comment.window_failed_count",
+            trace.window_failed_count,
             unit="count",
             scenario_id=scenario_id,
             step_id=step_id,
@@ -494,8 +681,21 @@ def record_comment_metrics(
                 tags={"job_id": job.get("id")},
             )
 
-    # TODO(spec S2): populate tokens_per_comment once verify trace summary or
-    # comment telemetry exposes per-comment token totals from the backend.
+    window_metrics = _extract_window_comment_metrics(window, comments or [], config)
+    for metric_name, value in window_metrics.items():
+        if value is None:
+            continue
+        unit = "ratio" if metric_name.startswith("comment.density") else "count"
+        if metric_name.startswith("tokens_per_comment"):
+            unit = "tokens"
+        metrics.record(
+            metric_name,
+            float(value),
+            unit=unit,
+            scenario_id=scenario_id,
+            step_id=step_id,
+        )
+
     if comments:
         token_totals = [
             (comment.get("tokens_in") or 0) + (comment.get("tokens_out") or 0)
@@ -510,6 +710,105 @@ def record_comment_metrics(
                 scenario_id=scenario_id,
                 step_id=step_id,
             )
+        if token_totals:
+            metrics.record(
+                "tokens_per_comment_window",
+                sum(token_totals),
+                unit="tokens",
+                scenario_id=scenario_id,
+                step_id=step_id,
+            )
+
+
+def _parse_comment_telemetry(
+    window: dict[str, Any] | None,
+) -> tuple[int, int, dict[str, int], int | None, int | None, int]:
+    validation_failed = 0
+    discarded = 0
+    discarded_by_reason: dict[str, int] = {}
+    tool_call_count = window.get("tool_call_count") if window else None
+    candidate_lookup_count = window.get("candidate_lookup_count") if window else None
+
+    telemetry = window.get("comment_telemetry") if window else None
+    if window and isinstance(telemetry, dict):
+        validation_failed = int(telemetry.get("validation_failed_count") or 0)
+        reasons = telemetry.get("discarded_by_reason") or {}
+        if isinstance(reasons, dict):
+            discarded_by_reason = {str(k): int(v) for k, v in reasons.items()}
+        if tool_call_count is None:
+            tool_call_count = telemetry.get("tool_call_count")
+        if candidate_lookup_count is None:
+            candidate_lookup_count = telemetry.get("candidate_lookup_count")
+        return (
+            validation_failed,
+            int(telemetry.get("discarded_count") or 0),
+            discarded_by_reason,
+            tool_call_count,
+            candidate_lookup_count,
+            1,
+        )
+
+    return validation_failed, discarded, discarded_by_reason, tool_call_count, candidate_lookup_count, 0
+
+
+def _extract_window_comment_metrics(
+    window: dict[str, Any] | None,
+    comments: list[dict[str, Any]],
+    config: VerifyConfig | None,
+) -> dict[str, float | int | None]:
+    if not window and not comments:
+        return {}
+
+    valid_count = window.get("comments_ready_count") if window else None
+    if valid_count is None:
+        valid_count = len(comments)
+
+    (
+        validation_failed,
+        discarded,
+        discarded_by_reason,
+        tool_call_count,
+        candidate_lookup_count,
+        telemetry_available,
+    ) = _parse_comment_telemetry(window)
+
+    density_actual = None
+    stat_start = None
+    stat_end = None
+    soft_min = config.comment_density.soft_min if config else None
+    stat_window = config.comment_density.stat_window_paragraphs if config else None
+
+    if window:
+        stat_start = window.get("density_stat_start_paragraph_idx")
+        stat_end = window.get("density_stat_end_paragraph_idx")
+        density_actual = window.get("comment_density_actual")
+        if density_actual is None and stat_start is not None and stat_end is not None:
+            span = max(1, int(stat_end) - int(stat_start) + 1)
+            density_actual = float(valid_count or 0) / span
+        elif density_actual is None and stat_window:
+            stat_end = window.get("assistant_frontier_paragraph_idx") or window.get(
+                "end_paragraph_idx"
+            )
+            if stat_end is not None:
+                stat_start = max(0, int(stat_end) - stat_window + 1)
+                span = max(1, stat_window)
+                density_actual = float(valid_count or 0) / span
+
+    metrics: dict[str, float | int | None] = {
+        "comment.telemetry_available": telemetry_available if window else None,
+        "comment.valid_count": valid_count,
+        "comment.validation_failed_count": validation_failed,
+        "comment.discarded_count": discarded,
+        "comment.tool_call_count": tool_call_count,
+        "comment.candidate_lookup_count": candidate_lookup_count,
+        "comment.density.actual": density_actual,
+        "comment.density.soft_min": soft_min,
+        "comment.density.stat_start_paragraph_idx": stat_start,
+        "comment.density.stat_end_paragraph_idx": stat_end,
+    }
+    for reason, count in discarded_by_reason.items():
+        metrics[f"comment.discarded_by_reason.{reason}"] = count
+    return metrics
 
 
 async def assert_comments_not_regenerated(
@@ -558,7 +857,44 @@ def assert_comments_valid(
     comments: list[dict[str, Any]],
     *,
     window: dict[str, Any] | None = None,
-) -> None:
+    allow_no_call: bool = True,
+    config: VerifyConfig | None = None,
+) -> list[dict[str, Any]]:
+    validation_failures = collect_validation_failures(comments, window)
+
+    if not comments:
+        if validation_failures:
+            raise StepAssertionError(
+                assertion="comment_validation_failed",
+                message=(
+                    "Window completed with validation failures but no persisted comments"
+                ),
+                expected="valid comments or explicit no-call window",
+                actual={"window": window, "validation_failures": validation_failures},
+            )
+        if allow_no_call and window_is_no_call(window, comments):
+            return validation_failures
+        if window and window.get("status") == "done":
+            if config is not None and not config.is_real_llm:
+                raise StepAssertionError(
+                    assertion="done_with_zero_comments",
+                    message=(
+                        "Stub mode: done window with zero comments and no no_call marker"
+                    ),
+                    expected="persisted comments or explicit no-call window",
+                    actual={"window": window, "comments": comments},
+                )
+            logger.warning(
+                "Done window with zero comments and no no_call marker "
+                "(scenario may need comment.telemetry or explicit no_call)"
+            )
+            return validation_failures
+        raise StepAssertionError(
+            assertion="comments_or_no_call",
+            message="Expected persisted comments or a successful no-call window",
+            actual={"window": window, "comments": comments},
+        )
+
     focus_start = window.get("focus_start_paragraph_idx") if window else None
     focus_end = window.get("focus_end_paragraph_idx") if window else None
 
@@ -571,9 +907,11 @@ def assert_comments_valid(
                 forbidden,
                 label=f"comment[{paragraph_idx}] must not contain span fields",
             )
+        if comment.get("validation_failed"):
+            continue
         assert_that.is_true(
-            bool(comment.get("comment", "").strip()),
-            f"comment[{paragraph_idx}] text must not be empty",
+            bool(comment.get("comment", "").strip()) or comment.get("discarded"),
+            f"comment[{paragraph_idx}] text must not be empty unless discarded",
         )
         if focus_start is not None and focus_end is not None:
             assert_that.is_true(
@@ -581,6 +919,8 @@ def assert_comments_valid(
                 f"comment paragraph {paragraph_idx} should be within focus range "
                 f"[{focus_start}, {focus_end}]",
             )
+
+    return validation_failures
 
 
 def window_covers_paragraph(window: dict[str, Any] | None, paragraph_idx: int) -> bool:

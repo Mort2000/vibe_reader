@@ -21,25 +21,40 @@ uv run vibe-reader
 # 4. 确认 runtime（本终端）
 curl -s http://127.0.0.1:8000/api/runtime | jq '.data_dir, .verify_mode'
 
-# 5. 运行验证套件
+# 5. 运行默认 stub 验证套件（不要求真实 LLM API key）
 uv run vibe-verify run --suite smoke --target-url http://127.0.0.1:8000
 ```
 
 输出目录：`backend/verify_runs/<run_id>/`。排查失败时可加 `--keep-data` 保留验证数据目录。
 
+## LLM 模式
+
+| 模式 | 默认 | 外部网络 | 用途 |
+|---|---|---|---|
+| `stub` | 是 | 否 | A0–A2 默认回归：接口、窗口、评论流程、metrics、审计样本 |
+| `real` | 否 | 是 | 显式 `--suite real-happy-path --llm-mode real` 的真实 LLM Happy Path |
+
+默认配置见 `tests/corpus/verify.toml`。`collect_provider_usage` 在 stub 模式下为 `false`。
+
 ## 前置条件
 
 ### 环境变量（`.env`）
 
-运行系统验证时建议配置：
+运行 **stub 默认套件** 时只需：
 
 | 变量 | 示例 | 说明 |
 |---|---|---|
 | `VIBE_READER_DATA_DIR` | `/tmp/vibe_reader_verify` | 与后端、验证框架共用隔离目录 |
 | `VIBE_READER_VERIFY_MODE` | `1` | 启用 `/api/verify/*` |
-| `VIBE_READER_LLM_BASE_URL` | （你的 API 地址） | S0 `llm_ping` 需要 |
-| `VIBE_READER_LLM_API_KEY` | （你的 key） | 同上 |
 | `VIBE_READER_VERIFY_TARGET_URL` | `http://127.0.0.1:8000` | 被测后端地址 |
+
+运行 **real-happy-path** 时额外需要：
+
+| 变量 | 说明 |
+|---|---|
+| `VIBE_READER_LLM_BASE_URL` | 真实 provider 地址 |
+| `VIBE_READER_LLM_API_KEY` | 真实 API key |
+| `VIBE_READER_VERIFY_LLM_MODE` | 可选，设为 `real` |
 
 Shell 中已设置的变量优先于 `.env`。
 
@@ -47,38 +62,29 @@ Shell 中已设置的变量优先于 `.env`。
 
 将 `corpus/manifest.toml` 中声明的 epub 放到 `corpus/books/`（该目录 gitignore），再执行 `vibe-verify prepare`。
 
-## CLI 参考
+manifest 现包含 `happy_path_current` probe，供 real-happy-path 长流程定位。
 
-主入口：`uv run vibe-verify`（注册于 `pyproject.toml` 的 `[project.scripts]`）。
+## CLI 参考
 
 ```bash
 cd backend
 set -a && source ../.env && set +a
 
-# 校验语料
+# 校验语料（含 happy_path_current）
 uv run vibe-verify prepare --corpus tests/corpus/manifest.toml
 
-# smoke / mvp：S0–S3（含评论链路 Slice 2）
+# stub smoke / mvp：S0–S3
 uv run vibe-verify run --suite smoke --target-url http://127.0.0.1:8000
-
-# 与 smoke 相同场景集合
 uv run vibe-verify run --suite mvp --target-url http://127.0.0.1:8000
 
-# 仅创建 run 目录与 manifest
-uv run vibe-verify init-run --corpus tests/corpus/manifest.toml
+# 真实 LLM A2 评论覆盖（显式 opt-in）
+uv run vibe-verify run --suite real-happy-path --llm-mode real --real-coverage A2
 
-# 准备语料 + run 骨架，不执行场景
-uv run vibe-verify run --dry-run --corpus tests/corpus/manifest.toml
+# 从已有 run 生成报告
+uv run vibe-verify report --run-id <run_id>
 
 # 失败时保留数据目录
 uv run vibe-verify run --suite smoke --keep-data
-```
-
-被测后端（另开终端）：
-
-```bash
-cd backend
-uv run vibe-reader
 ```
 
 ## 输出目录
@@ -87,48 +93,47 @@ uv run vibe-reader
 
 | 文件 | 说明 |
 |---|---|
-| `run_manifest.json` | run 元数据与安全检查结果 |
+| `run_manifest.json` | run 元数据（含 `llm_mode`、`stub_profile`、`real_llm_*`） |
 | `scenario_results.ndjson` | 各场景逐步结果 |
 | `api_requests.ndjson` | HTTP 请求/响应摘要 |
-| `metrics.ndjson` | 指标采样 |
+| `metrics.ndjson` | 指标采样（含 `llm_mode` / `usage_source` 维度） |
 | `traces/trace_index.ndjson` | trace 索引 |
 | `sse_events.ndjson` | SSE 事件（S2/S3 窗口与评论） |
-| `audit/comments.ndjson` | 评论审计样本（S2） |
-| `audit/samples/*.md` | 评论样本 Markdown（S2） |
-| `corpus_manifest.resolved.json` | 解析后的语料 manifest |
+| `audit/comments.ndjson` | 评论审计样本 |
+| `audit/window_status.ndjson` | no-call 窗口状态 |
+| `reports/summary.md` | V-16 摘要报告 |
+| `reports/metrics.json` | 指标聚合 |
+| `reports/failures.md` | 失败分类 |
 
 ## 场景与套件
 
-| 套件 | 包含场景 |
-|---|---|
-| `smoke` / `mvp` | S0、S1、S2、S3 |
+| 套件 | 包含场景 | LLM 模式 |
+|---|---|---|
+| `smoke` / `mvp` | S0、S1、S2、S3 | stub（默认） |
+| `real-happy-path` | R1（当前 A2 comments 子集） | real（显式） |
 
-| 场景 | 内容 |
-|---|---|
-| **S0_connectivity** | health / runtime / settings / verify 端点、trace 头、`llm_ping` |
-| **S1_book_import** | epub 导入、章节段落结构、计数与编号连续性、阅读进度 PUT→GET |
-| **S2_continuous_reading** | 从 early probe 推进阅读、等待评论窗口、校验评论落库与 span 约束、导出评论审计样本 |
-| **S3_fast_scroll** | 快速滚动与跳读、校验窗口与最新阅读位置一致、跳回后评论复用、dedup / stale job 指标 |
-
-S1 另含导入幂等与进度去重相关断言步骤（`import_idempotent`、`progress_dedup_identical`、`progress_skip_trivial_scroll`）。场景在 `continue_on_failure` 下会执行全部步骤并在 `scenario_results.ndjson` 中汇总结果。
+| 场景 | 内容 | 验收阶段 |
+|---|---|---|
+| **S0_connectivity** | health / runtime / LLM 模式 / trace / llm_ping | A0 |
+| **S1_book_import** | epub 导入、进度、happy_path_current probe | A1 |
+| **S2_continuous_reading** | 连续阅读、评论/no-call 窗口、密度与校验指标、审计样本 | A2 |
+| **S3_fast_scroll** | 快速滚动与跳读、窗口对齐、评论复用 | A2 |
+| **R1_real_happy_path** | 真实 LLM 至少 2 个评论窗口、成本护栏、真实审计样本 | A2（real） |
 
 ## pytest
-
-系统验证场景的 pytest 入口位于 `system_verify/test_scenarios.py`，与 CLI 共用 `system_verify/suite.py` 编排逻辑。`pyproject.toml` 已注册 marker `system_verify` / `system_llm`：
 
 ```bash
 cd backend
 set -a && source ../.env && set +a
 
-# 全部系统验证场景
-uv run pytest tests/system_verify/ -m system_verify
+# 默认 stub 回归（不含 real_llm）
+uv run pytest tests/system_verify/ -m "system_verify and system and not real_llm"
 
-# 与 smoke/mvp CLI 等价的完整套件（单测入口）
-uv run pytest tests/system_verify/test_scenarios.py::test_mvp_suite -m system_llm
+# 完整 stub 套件
+uv run pytest tests/system_verify/test_scenarios.py::test_mvp_suite -m system
 
-# 仅 Slice 2（S2/S3；同 session 内会先共享 S1 的 suite_ctx）
-uv run pytest tests/system_verify/test_scenarios.py::test_s2_continuous_reading \
-  tests/system_verify/test_scenarios.py::test_s3_fast_scroll -m system_llm
+# 真实 LLM Happy Path（需 API key）
+uv run pytest tests/system_verify/test_scenarios.py::test_r1_real_happy_path_a2_comments -m real_llm --llm-mode real
 ```
 
 `.env` 由 `tests/system_verify/conftest.py` 自动加载。pytest **不**负责启动或停止后端进程。
@@ -137,17 +142,15 @@ uv run pytest tests/system_verify/test_scenarios.py::test_s2_continuous_reading 
 
 ```text
 tests/
-  README.md                 本文件
+  README.md
   corpus/
-    manifest.toml           验证语料声明
-    books/                  epub 文件（gitignore，需自行放置）
-  system_verify/            验证框架（vibe-verify CLI 实现）
-    scenarios/              场景实现（S0–S3）
-    suite.py                CLI / pytest 共用的套件编排
-    test_scenarios.py       pytest 场景入口
-    conftest.py             pytest fixtures
-    client.py               Target HTTP client
-    contract.py             接口合同校验
-    run.py                  run 目录与 manifest
+    manifest.toml           验证语料声明（含 happy_path_current）
+    verify.toml             默认验证配置（stub profile）
+    books/                  epub 文件（gitignore）
+  system_verify/
+    scenarios/              S0–S3、R1
+    report_generator.py     V-16 报告生成
+    suite.py                套件编排
+    test_scenarios.py       pytest 入口
     …
 ```

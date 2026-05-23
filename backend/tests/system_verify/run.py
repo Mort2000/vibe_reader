@@ -7,6 +7,7 @@ import json
 import pathlib
 import subprocess
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -47,6 +48,91 @@ def hash_string(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
+@dataclass
+class RealLLMCallTracker:
+    """Tracks real LLM usage for budget guardrails in R1."""
+
+    call_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    max_input_tokens_single: int = 0
+    max_output_tokens_single: int = 0
+    total_cost_usd: float = 0.0
+    cost_reported: bool = False
+    cost_guardrail_status: str = "not_checked"
+    budget_exceeded: bool = False
+    budget_reason: str = ""
+    phase_coverage: dict[str, bool] = field(
+        default_factory=lambda: {
+            "A2_comments": False,
+            "A3_compaction": False,
+            "A4_full_flow": False,
+        }
+    )
+
+    def record_call(
+        self,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: float | None = None,
+        config: VerifyConfig | None = None,
+    ) -> None:
+        self.call_count += 1
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.max_input_tokens_single = max(self.max_input_tokens_single, input_tokens)
+        self.max_output_tokens_single = max(self.max_output_tokens_single, output_tokens)
+        if cost_usd is not None:
+            self.total_cost_usd += cost_usd
+            self.cost_reported = True
+
+        if config is not None:
+            self._check_per_call_limits(config, input_tokens, output_tokens)
+
+    def _check_per_call_limits(
+        self, config: VerifyConfig, input_tokens: int, output_tokens: int
+    ) -> None:
+        if self.budget_exceeded:
+            return
+        limits = config.real_llm
+        if input_tokens > limits.max_input_tokens_per_call:
+            self.budget_exceeded = True
+            self.budget_reason = "real_llm_budget_exceeded:input_tokens_per_call"
+            return
+        if output_tokens > limits.max_output_tokens_per_call:
+            self.budget_exceeded = True
+            self.budget_reason = "real_llm_budget_exceeded:output_tokens_per_call"
+
+    def check_budget(self, config: VerifyConfig) -> None:
+        if self.budget_exceeded:
+            return
+
+        limits = config.real_llm
+        if self.call_count > limits.max_calls:
+            self.budget_exceeded = True
+            self.budget_reason = "real_llm_budget_exceeded:max_calls"
+            return
+        if self.max_input_tokens_single > limits.max_input_tokens_per_call:
+            self.budget_exceeded = True
+            self.budget_reason = "real_llm_budget_exceeded:input_tokens_per_call"
+            return
+        if self.max_output_tokens_single > limits.max_output_tokens_per_call:
+            self.budget_exceeded = True
+            self.budget_reason = "real_llm_budget_exceeded:output_tokens_per_call"
+            return
+
+        if limits.max_total_cost_usd > 0:
+            if self.cost_reported:
+                self.cost_guardrail_status = "enforced"
+                if self.total_cost_usd > limits.max_total_cost_usd:
+                    self.budget_exceeded = True
+                    self.budget_reason = "real_llm_budget_exceeded:total_cost_usd"
+            else:
+                # Provider cost is not available yet; enforce once usage/cost is recorded.
+                self.cost_guardrail_status = "skipped_no_cost_data"
+
+
 class RunManager:
     """Manages a single verification run's output directory and manifest."""
 
@@ -60,6 +146,7 @@ class RunManager:
         self._security_checks: dict[str, Any] = {}
         self._backend_version: str | None = None
         self._data_lifecycle: dict[str, Any] = {}
+        self.real_llm_tracker = RealLLMCallTracker()
 
     def set_security_checks(self, checks: dict[str, Any]) -> None:
         self._security_checks = checks
@@ -95,24 +182,45 @@ class RunManager:
         git_commit, git_dirty = get_git_info()
         config_hash = hash_string(repr(self.config))
         resolved_backend_version = backend_version or self._backend_version
+        cfg = self.config
+        tracker = self.real_llm_tracker
 
+        base_url = cfg.real_llm.base_url if cfg.is_real_llm else ""
         manifest: dict[str, Any] = {
             "run_id": self.run_id,
             "started_at": _fmt_ts(self.started_at),
             "ended_at": _fmt_ts(self.ended_at),
             "git_commit": git_commit,
             "git_dirty": git_dirty,
-            "suite": self.config.run.suite,
-            "target_url": self.config.target.base_url,
+            "suite": cfg.run.suite,
+            "target_url": cfg.target.base_url,
             "backend_version": resolved_backend_version,
-            "model": self.config.llm.model,
-            "llm_base_url_hash": hash_string(self.config.llm.base_url)
-            if self.config.llm.base_url
-            else None,
+            "llm_mode": cfg.llm.mode,
+            "stub_profile": cfg.llm.stub_profile if not cfg.is_real_llm else None,
+            "real_llm": cfg.is_real_llm,
+            "model": cfg.effective_model(),
+            "llm_base_url_hash": hash_string(base_url) if base_url else None,
+            "real_llm_call_count": tracker.call_count if cfg.is_real_llm else 0,
+            "real_llm_input_tokens": tracker.input_tokens if cfg.is_real_llm else 0,
+            "real_llm_output_tokens": tracker.output_tokens if cfg.is_real_llm else 0,
+            "real_llm_max_input_tokens_single": (
+                tracker.max_input_tokens_single if cfg.is_real_llm else 0
+            ),
+            "real_llm_max_output_tokens_single": (
+                tracker.max_output_tokens_single if cfg.is_real_llm else 0
+            ),
+            "real_llm_total_cost_usd": tracker.total_cost_usd if cfg.is_real_llm else 0.0,
+            "real_llm_cost_guardrail_status": (
+                tracker.cost_guardrail_status if cfg.is_real_llm else None
+            ),
+            "real_llm_budget_exceeded": tracker.budget_exceeded,
+            "real_llm_budget_reason": tracker.budget_reason or None,
+            "real_llm_phase_coverage": tracker.phase_coverage,
+            "usage_source": cfg.usage_source,
             "corpus_sha256": self._corpus_sha256,
             "config_hash": config_hash,
             "security_checks": self._security_checks,
-            "target_data_dir": str(self.config.target.data_dir),
+            "target_data_dir": str(cfg.target.data_dir),
             "data_lifecycle": self._data_lifecycle,
         }
 

@@ -11,7 +11,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .config import VerifyConfig
 from .run import RunManager
+
+
+def merge_llm_tags(
+    config: VerifyConfig | None, tags: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    merged = dict(tags or {})
+    if config is not None:
+        merged.update(config.llm_metric_tags())
+    return merged
 
 
 @dataclass
@@ -75,8 +85,9 @@ class TraceIndexEntry:
 class MetricsAggregator:
     """Collects and aggregates metric points."""
 
-    def __init__(self, run_manager: RunManager):
+    def __init__(self, run_manager: RunManager, config: VerifyConfig | None = None):
         self.run_manager = run_manager
+        self.config = config or run_manager.config
         self._points: list[MetricPoint] = []
         self._traces: list[TraceIndexEntry] = []
 
@@ -96,7 +107,7 @@ class MetricsAggregator:
             metric=metric,
             value=value,
             unit=unit,
-            tags=tags or {},
+            tags=merge_llm_tags(self.config, tags),
             created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
         self._points.append(pt)

@@ -77,6 +77,12 @@ async def run_s1(
         timeout_s=5.0,
     )
     builder.add_step(
+        "happy_path_probe",
+        "Parse happy_path_current probe for real-happy-path readiness",
+        _step_happy_path_probe,
+        timeout_s=5.0,
+    )
+    builder.add_step(
         "paragraph_stability",
         "Verify paragraph idx continuity",
         _step_paragraph_stability,
@@ -330,7 +336,6 @@ async def _step_validate_counts(ctx: dict[str, Any]) -> None:
         label="paragraph_count_vs_manifest",
     )
 
-    # Validate char count if expected
     if book_manifest.expected_min_chars > 0:
         import_chars = import_stats.get("char_count", 0)
         assert_that.gte(
@@ -338,6 +343,40 @@ async def _step_validate_counts(ctx: dict[str, Any]) -> None:
             book_manifest.expected_min_chars,
             label="char_count_vs_manifest",
         )
+
+
+async def _step_happy_path_probe(ctx: dict[str, Any]) -> None:
+    corpus: CorpusManager = ctx["corpus"]
+    book_manifest = ctx.get("book_manifest")
+    if not book_manifest:
+        return
+
+    probe = corpus.get_probe(book_manifest.alias, "happy_path_current")
+    assert_that.is_not_none(
+        probe,
+        "Corpus must declare happy_path_current probe",
+    )
+    assert probe is not None
+    ctx["happy_path_probe"] = probe
+
+    errors = corpus.validate_happy_path_probe(book_manifest.alias)
+    assert_that.is_true(
+        len(errors) == 0,
+        f"happy_path_current validation failed: {'; '.join(errors)}",
+    )
+
+    metrics: MetricsAggregator = ctx["metrics"]
+    metrics.record(
+        "corpus.happy_path_probe.resolved",
+        1,
+        unit="count",
+        scenario_id="S1_book_import",
+        step_id="happy_path_probe",
+        tags={
+            "chapter_idx": probe.chapter_idx,
+            "paragraph_idx": probe.paragraph_idx,
+        },
+    )
 
 
 async def _step_paragraph_stability(ctx: dict[str, Any]) -> None:

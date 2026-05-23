@@ -24,12 +24,33 @@ class TargetConfig:
 
 
 @dataclass
-class VerifyLLMConfig:
+class LLMConfig:
+    mode: str = "stub"
+    stub_profile: str = "mvp_default"
+    temperature: float = 0.4
+    timeout_s: int = 120
+
+
+@dataclass
+class RealLLMLongFlowConfig:
+    require_compaction: bool = True
+    test_compaction_trigger_tokens: int = 24000
+    test_compaction_min_source_tokens: int = 16000
+    test_compaction_min_source_paragraphs: int = 120
+    min_comment_windows: int = 2
+    min_chat_turns: int = 1
+
+
+@dataclass
+class RealLLMConfig:
     base_url: str = ""
     api_key_env: str = "VIBE_READER_LLM_API_KEY"
     model: str = "deepseek-v4-flash"
-    temperature: float = 0.4
-    timeout_s: int = 120
+    max_calls: int = 8
+    max_input_tokens_per_call: int = 64000
+    max_output_tokens_per_call: int = 1200
+    max_total_cost_usd: float = 3.00
+    long_flow: RealLLMLongFlowConfig = field(default_factory=RealLLMLongFlowConfig)
 
     @property
     def api_key(self) -> str:
@@ -51,7 +72,7 @@ class MetricsConfig:
     collect_otel: bool = True
     collect_logfire: bool = True
     collect_sse_events: bool = True
-    collect_provider_usage: bool = True
+    collect_provider_usage: bool = False
 
 
 @dataclass
@@ -64,16 +85,47 @@ class AuditConfig:
 
 
 @dataclass
+class CommentDensityConfig:
+    soft_min: float = 0.25
+    stat_window_paragraphs: int = 80
+
+
+@dataclass
 class VerifyConfig:
     target: TargetConfig = field(default_factory=TargetConfig)
-    llm: VerifyLLMConfig = field(default_factory=VerifyLLMConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    real_llm: RealLLMConfig = field(default_factory=RealLLMConfig)
     run: RunConfig = field(default_factory=RunConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     audit: AuditConfig = field(default_factory=AuditConfig)
+    comment_density: CommentDensityConfig = field(default_factory=CommentDensityConfig)
 
     @property
     def target_data_dir(self) -> pathlib.Path:
         return pathlib.Path(self.target.data_dir)
+
+    @property
+    def is_real_llm(self) -> bool:
+        return self.llm.mode == "real"
+
+    @property
+    def usage_source(self) -> str:
+        if self.is_real_llm and self.metrics.collect_provider_usage:
+            return "provider"
+        return "estimate"
+
+    def llm_metric_tags(self) -> dict[str, object]:
+        return {
+            "llm_mode": self.llm.mode,
+            "stub_profile": self.llm.stub_profile if not self.is_real_llm else None,
+            "usage_source": self.usage_source,
+            "real_llm": self.is_real_llm,
+        }
+
+    def effective_model(self) -> str | None:
+        if self.is_real_llm:
+            return _env("VIBE_READER_LLM_MODEL") or self.real_llm.model
+        return None
 
 
 def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
@@ -102,13 +154,39 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
     )
 
     llm_raw = raw.get("llm", {})
-    llm = VerifyLLMConfig(
-        base_url=_env("VIBE_READER_LLM_BASE_URL") or llm_raw.get("base_url", ""),
-        api_key_env=llm_raw.get("api_key_env", "VIBE_READER_LLM_API_KEY"),
-        model=_env("VIBE_READER_LLM_MODEL")
-        or llm_raw.get("model", "deepseek-v4-flash"),
+    llm_mode = _env("VIBE_READER_VERIFY_LLM_MODE") or llm_raw.get("mode", "stub")
+    llm = LLMConfig(
+        mode=llm_mode,
+        stub_profile=llm_raw.get("stub_profile", "mvp_default"),
         temperature=llm_raw.get("temperature", 0.4),
         timeout_s=llm_raw.get("timeout_s", 120),
+    )
+
+    real_raw = raw.get("real_llm", {})
+    long_flow_raw = real_raw.get("long_flow", {})
+    real_llm = RealLLMConfig(
+        base_url=_env("VIBE_READER_LLM_BASE_URL") or real_raw.get("base_url", ""),
+        api_key_env=real_raw.get("api_key_env", "VIBE_READER_LLM_API_KEY"),
+        model=_env("VIBE_READER_LLM_MODEL")
+        or real_raw.get("model", "deepseek-v4-flash"),
+        max_calls=real_raw.get("max_calls", 8),
+        max_input_tokens_per_call=real_raw.get("max_input_tokens_per_call", 64000),
+        max_output_tokens_per_call=real_raw.get("max_output_tokens_per_call", 1200),
+        max_total_cost_usd=real_raw.get("max_total_cost_usd", 3.00),
+        long_flow=RealLLMLongFlowConfig(
+            require_compaction=long_flow_raw.get("require_compaction", True),
+            test_compaction_trigger_tokens=long_flow_raw.get(
+                "test_compaction_trigger_tokens", 24000
+            ),
+            test_compaction_min_source_tokens=long_flow_raw.get(
+                "test_compaction_min_source_tokens", 16000
+            ),
+            test_compaction_min_source_paragraphs=long_flow_raw.get(
+                "test_compaction_min_source_paragraphs", 120
+            ),
+            min_comment_windows=long_flow_raw.get("min_comment_windows", 2),
+            min_chat_turns=long_flow_raw.get("min_chat_turns", 1),
+        ),
     )
 
     run_raw = raw.get("run", {})
@@ -122,11 +200,14 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
     )
 
     metrics_raw = raw.get("metrics", {})
+    default_collect_provider = llm.mode == "real"
     metrics = MetricsConfig(
         collect_otel=metrics_raw.get("collect_otel", True),
         collect_logfire=metrics_raw.get("collect_logfire", True),
         collect_sse_events=metrics_raw.get("collect_sse_events", True),
-        collect_provider_usage=metrics_raw.get("collect_provider_usage", True),
+        collect_provider_usage=metrics_raw.get(
+            "collect_provider_usage", default_collect_provider
+        ),
     )
 
     audit_raw = raw.get("audit", {})
@@ -138,10 +219,36 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
         include_original_excerpts=audit_raw.get("include_original_excerpts", True),
     )
 
+    density_raw = raw.get("comment_density", {})
+    comment_density = CommentDensityConfig(
+        soft_min=density_raw.get("soft_min", 0.25),
+        stat_window_paragraphs=density_raw.get("stat_window_paragraphs", 80),
+    )
+
     return VerifyConfig(
         target=target,
         llm=llm,
+        real_llm=real_llm,
         run=run,
         metrics=metrics,
         audit=audit,
+        comment_density=comment_density,
     )
+
+
+def validate_real_llm_config(config: VerifyConfig) -> list[str]:
+    """Return configuration errors when real LLM mode is requested."""
+    if not config.is_real_llm:
+        return []
+
+    errors: list[str] = []
+    if not config.real_llm.base_url:
+        errors.append("real_llm.base_url is required when llm.mode=real")
+    if not config.real_llm.api_key:
+        errors.append(
+            f"real LLM API key env {config.real_llm.api_key_env} is required "
+            "when llm.mode=real"
+        )
+    if not config.real_llm.model:
+        errors.append("real_llm.model is required when llm.mode=real")
+    return errors
