@@ -222,20 +222,16 @@ async def _step_wait_window(ctx: dict[str, Any]) -> None:
             trace,
         )
         session.ingest_events(trace)
-        ctx["completed_window"] = window
 
-        if window is None:
-            # Backend may not emit window events yet; continue to comment polling.
-            body, rec = await client.get_current_window(
-                ctx["book_id"],
-                ctx["chapter_idx"],
-                paragraph_idx=ctx["final_paragraph_idx"],
-            )
-            validate_window_response(body, rec)
-            ctx["completed_window"] = body.get("window")
-        else:
-            window_body = {"window": window}
-            validate_window_response(window_body, None)
+        body, rec = await client.get_current_window(
+            ctx["book_id"],
+            ctx["chapter_idx"],
+            paragraph_idx=ctx["final_paragraph_idx"],
+        )
+        validate_window_response(body, rec)
+        ctx["completed_window"] = body.get("window")
+        if window is not None and ctx["completed_window"] is None:
+            ctx["completed_window"] = window
 
 
 async def _step_verify_comments(ctx: dict[str, Any]) -> None:

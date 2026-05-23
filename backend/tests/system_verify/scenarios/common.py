@@ -337,24 +337,14 @@ async def wait_for_window_done(
     timeout_s: float,
     trace: ReadingTrace,
 ) -> dict[str, Any] | None:
-    """Wait for a terminal window state: done (success/no-call) or failed."""
+    """Wait for the window covering paragraph_idx to reach a terminal state."""
 
-    def _book_filter(evt: SSEEvent) -> bool:
+    def _chapter_filter(evt: SSEEvent) -> bool:
         return evt.book_id == book_id and evt.chapter_idx == chapter_idx
-
-    evt = await session.collector.wait_for_event(
-        ("window.done", "window.failed"),
-        timeout_s=min(timeout_s, 30.0),
-        predicate=_book_filter,
-    )
-    if evt:
-        session.ingest_events(trace)
-        if evt.event_type == "window.failed":
-            raise_window_failed(evt.data)
-        return evt.data
 
     deadline = time.monotonic() + timeout_s
     last_window: dict[str, Any] | None = None
+
     while time.monotonic() < deadline:
         body, rec = await client.get_current_window(
             book_id, chapter_idx, paragraph_idx=paragraph_idx
@@ -365,10 +355,40 @@ async def wait_for_window_done(
             last_window = window
             status = window.get("status")
             if status == "done":
+                session.ingest_events(trace)
                 return window
             if status == "failed":
                 raise_window_failed(window)
-        await asyncio.sleep(1.0)
+
+            target_window_id = window.get("id")
+            remaining = deadline - time.monotonic()
+            if target_window_id is not None and remaining > 0:
+                evt = await session.collector.wait_for_event(
+                    ("window.done", "window.failed"),
+                    timeout_s=min(remaining, 2.0),
+                    predicate=lambda e, wid=target_window_id: (
+                        _chapter_filter(e)
+                        and int(e.window_id or e.data.get("window_id") or -1) == wid
+                    ),
+                )
+                if evt:
+                    session.ingest_events(trace)
+                    if evt.event_type == "window.failed":
+                        raise_window_failed(evt.data)
+                    body, rec = await client.get_current_window(
+                        book_id, chapter_idx, paragraph_idx=paragraph_idx
+                    )
+                    validate_window_response(body, rec)
+                    window = body.get("window")
+                    if window and window.get("status") == "done":
+                        return window
+                    if window and window.get("status") == "failed":
+                        raise_window_failed(window)
+                    last_window = window or last_window
+                    continue
+
+        await asyncio.sleep(0.5)
+
     return last_window
 
 
@@ -862,7 +882,14 @@ def assert_comments_valid(
 ) -> list[dict[str, Any]]:
     validation_failures = collect_validation_failures(comments, window)
 
-    if not comments:
+    window_id = window.get("id") if window else None
+    scoped_comments = (
+        [c for c in comments if c.get("window_id") == window_id]
+        if window_id is not None
+        else comments
+    )
+
+    if not scoped_comments:
         if validation_failures:
             raise StepAssertionError(
                 assertion="comment_validation_failed",
@@ -872,7 +899,7 @@ def assert_comments_valid(
                 expected="valid comments or explicit no-call window",
                 actual={"window": window, "validation_failures": validation_failures},
             )
-        if allow_no_call and window_is_no_call(window, comments):
+        if allow_no_call and window_is_no_call(window, scoped_comments):
             return validation_failures
         if window and window.get("status") == "done":
             if config is not None and not config.is_real_llm:
@@ -882,7 +909,7 @@ def assert_comments_valid(
                         "Stub mode: done window with zero comments and no no_call marker"
                     ),
                     expected="persisted comments or explicit no-call window",
-                    actual={"window": window, "comments": comments},
+                    actual={"window": window, "comments": scoped_comments},
                 )
             logger.warning(
                 "Done window with zero comments and no no_call marker "
@@ -892,13 +919,13 @@ def assert_comments_valid(
         raise StepAssertionError(
             assertion="comments_or_no_call",
             message="Expected persisted comments or a successful no-call window",
-            actual={"window": window, "comments": comments},
+            actual={"window": window, "comments": scoped_comments},
         )
 
     focus_start = window.get("focus_start_paragraph_idx") if window else None
     focus_end = window.get("focus_end_paragraph_idx") if window else None
 
-    for comment in comments:
+    for comment in scoped_comments:
         paragraph_idx = comment.get("paragraph_idx")
         assert_that.is_not_none(paragraph_idx, "comment.paragraph_idx")
         for forbidden in ("span_start", "span_end", "span"):

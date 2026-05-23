@@ -235,9 +235,9 @@ class JobRunner:
             if window_id:
                 window = await window_repo.get_window(db, window_id)
 
-            from ..config import get_settings
+            from ..config import load_settings
 
-            settings = get_settings()
+            settings = load_settings()
 
             await handler(db, job_id, window, settings)
 
