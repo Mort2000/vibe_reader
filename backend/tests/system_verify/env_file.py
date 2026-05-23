@@ -1,4 +1,5 @@
 """Load project .env for verification tests and CLI."""
+
 from __future__ import annotations
 
 import pathlib

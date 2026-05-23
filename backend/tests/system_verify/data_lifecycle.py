@@ -1,4 +1,5 @@
 """Backend data directory lifecycle for system verification runs."""
+
 from __future__ import annotations
 
 import pathlib
@@ -86,7 +87,9 @@ async def prepare_run_data_dir(
     ) as client:
         runtime_body, rec = await client.runtime()
         if rec.status_code >= 400:
-            raise DataDirError(f"Failed to read backend runtime (HTTP {rec.status_code})")
+            raise DataDirError(
+                f"Failed to read backend runtime (HTTP {rec.status_code})"
+            )
 
         actual_data_dir = runtime_body.get("data_dir", "")
         assert_isolated_data_dir(config.target_data_dir, actual_data_dir)

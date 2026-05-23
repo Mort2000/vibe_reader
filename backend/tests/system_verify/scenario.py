@@ -1,4 +1,5 @@
 """Scenario runner: composable, replayable scenario execution with result recording."""
+
 from __future__ import annotations
 
 import asyncio
@@ -58,7 +59,15 @@ class StepResult:
             "duration_ms": self.duration_ms,
             "assertions_passed": self.assertions_passed,
             "assertions_total": self.assertions_total,
-            "errors": [{"assertion": e.assertion, "message": e.message, "expected": e.expected, "actual": e.actual} for e in self.errors],
+            "errors": [
+                {
+                    "assertion": e.assertion,
+                    "message": e.message,
+                    "expected": e.expected,
+                    "actual": e.actual,
+                }
+                for e in self.errors
+            ],
             "trace_id": self.trace_id,
             "request_id": self.request_id,
             "failure_context": self.failure_context,
@@ -118,16 +127,20 @@ class ScenarioBuilder:
         retry_delay_s: float = 1.0,
     ) -> Callable:
         """Decorator to add a step to this scenario."""
+
         def decorator(func: StepFunc) -> StepFunc:
-            self._steps.append(Step(
-                step_id=step_id,
-                description=description,
-                func=func,
-                timeout_s=timeout_s,
-                retry_count=retry_count,
-                retry_delay_s=retry_delay_s,
-            ))
+            self._steps.append(
+                Step(
+                    step_id=step_id,
+                    description=description,
+                    func=func,
+                    timeout_s=timeout_s,
+                    retry_count=retry_count,
+                    retry_delay_s=retry_delay_s,
+                )
+            )
             return func
+
         return decorator
 
     def add_step(
@@ -139,14 +152,16 @@ class ScenarioBuilder:
         retry_count: int = 0,
         retry_delay_s: float = 1.0,
     ) -> None:
-        self._steps.append(Step(
-            step_id=step_id,
-            description=description,
-            func=func,
-            timeout_s=timeout_s,
-            retry_count=retry_count,
-            retry_delay_s=retry_delay_s,
-        ))
+        self._steps.append(
+            Step(
+                step_id=step_id,
+                description=description,
+                func=func,
+                timeout_s=timeout_s,
+                retry_count=retry_count,
+                retry_delay_s=retry_delay_s,
+            )
+        )
 
     @property
     def steps(self) -> list[Step]:
@@ -161,7 +176,9 @@ class ScenarioRunner:
         self.config = config
         self._results: list[ScenarioResult] = []
 
-    async def run(self, builder: ScenarioBuilder, context: dict[str, Any] | None = None) -> ScenarioResult:
+    async def run(
+        self, builder: ScenarioBuilder, context: dict[str, Any] | None = None
+    ) -> ScenarioResult:
         """Execute all steps in a scenario."""
         ctx = context or {}
         result = ScenarioResult(
@@ -188,7 +205,9 @@ class ScenarioRunner:
             result.failure_summary = f"Failed steps: {', '.join(failed_steps)}"
         elif result.status == ScenarioStatus.FAILED and not result.failure_summary:
             last = failed_steps[-1] if failed_steps else ""
-            step_desc = next((s.description for s in builder.steps if s.step_id == last), last)
+            step_desc = next(
+                (s.description for s in builder.steps if s.step_id == last), last
+            )
             result.failure_summary = f"Step '{last}' failed: {step_desc}"
 
         if result.status == ScenarioStatus.RUNNING:
@@ -208,6 +227,7 @@ class ScenarioRunner:
         )
 
         import time
+
         start = time.monotonic()
 
         attempts = 1 + step_def.retry_count
@@ -228,25 +248,33 @@ class ScenarioRunner:
                     continue
                 break
             except asyncio.TimeoutError:
-                step_result.errors.append(StepAssertionError(
-                    assertion="timeout",
-                    message=f"Step timed out after {step_def.timeout_s}s",
-                ))
+                step_result.errors.append(
+                    StepAssertionError(
+                        assertion="timeout",
+                        message=f"Step timed out after {step_def.timeout_s}s",
+                    )
+                )
                 step_result.status = StepStatus.FAILED
                 break
             except Exception as exc:
-                step_result.errors.append(StepAssertionError(
-                    assertion="unexpected_error",
-                    message=f"{type(exc).__name__}: {exc}",
-                ))
+                step_result.errors.append(
+                    StepAssertionError(
+                        assertion="unexpected_error",
+                        message=f"{type(exc).__name__}: {exc}",
+                    )
+                )
                 step_result.status = StepStatus.ERROR
                 step_result.failure_context["traceback"] = traceback.format_exc()
                 break
 
         elapsed = (time.monotonic() - start) * 1000
         step_result.duration_ms = elapsed
-        step_result.assertions_total = len(step_result.errors) + (1 if step_result.status == StepStatus.PASSED else 0)
-        step_result.assertions_passed = 1 if step_result.status == StepStatus.PASSED else 0
+        step_result.assertions_total = len(step_result.errors) + (
+            1 if step_result.status == StepStatus.PASSED else 0
+        )
+        step_result.assertions_passed = (
+            1 if step_result.status == StepStatus.PASSED else 0
+        )
 
         last_rec = context.get("last_api_record")
         if last_rec is not None:
@@ -255,7 +283,9 @@ class ScenarioRunner:
             if step_result.status in (StepStatus.FAILED, StepStatus.ERROR):
                 step_result.failure_context.setdefault(
                     "last_api_record",
-                    last_rec.to_dict() if hasattr(last_rec, "to_dict") else str(last_rec),
+                    last_rec.to_dict()
+                    if hasattr(last_rec, "to_dict")
+                    else str(last_rec),
                 )
 
         return step_result
@@ -268,14 +298,20 @@ class ScenarioRunner:
         return sum(1 for r in self._results if r.status == ScenarioStatus.PASSED)
 
     def failed_count(self) -> int:
-        return sum(1 for r in self._results if r.status in (ScenarioStatus.FAILED, ScenarioStatus.ERROR))
+        return sum(
+            1
+            for r in self._results
+            if r.status in (ScenarioStatus.FAILED, ScenarioStatus.ERROR)
+        )
 
 
 class ScenarioAssertion:
     """Helper for writing assertions inside scenario steps."""
 
     @staticmethod
-    def check(condition: bool, message: str, expected: Any = None, actual: Any = None) -> None:
+    def check(
+        condition: bool, message: str, expected: Any = None, actual: Any = None
+    ) -> None:
         if not condition:
             raise StepAssertionError(
                 assertion="assertion_failed",
@@ -290,7 +326,9 @@ class ScenarioAssertion:
             msg = f"Expected {expected}, got {actual}"
             if label:
                 msg = f"{label}: {msg}"
-            raise StepAssertionError(assertion="assert_equal", message=msg, expected=expected, actual=actual)
+            raise StepAssertionError(
+                assertion="assert_equal", message=msg, expected=expected, actual=actual
+            )
 
     @staticmethod
     def gte(actual: float | int, minimum: float | int, label: str = "") -> None:
@@ -298,7 +336,9 @@ class ScenarioAssertion:
             msg = f"Expected >= {minimum}, got {actual}"
             if label:
                 msg = f"{label}: {msg}"
-            raise StepAssertionError(assertion="assert_gte", message=msg, expected=minimum, actual=actual)
+            raise StepAssertionError(
+                assertion="assert_gte", message=msg, expected=minimum, actual=actual
+            )
 
     @staticmethod
     def contains(container: Any, item: Any, label: str = "") -> None:
@@ -306,7 +346,9 @@ class ScenarioAssertion:
             msg = f"Expected to contain {item}"
             if label:
                 msg = f"{label}: {msg}"
-            raise StepAssertionError(assertion="assert_contains", message=msg, actual=container)
+            raise StepAssertionError(
+                assertion="assert_contains", message=msg, actual=container
+            )
 
     @staticmethod
     def not_contains(container: Any, item: Any, label: str = "") -> None:
@@ -314,7 +356,9 @@ class ScenarioAssertion:
             msg = f"Expected NOT to contain {item}"
             if label:
                 msg = f"{label}: {msg}"
-            raise StepAssertionError(assertion="assert_not_contains", message=msg, actual=container)
+            raise StepAssertionError(
+                assertion="assert_not_contains", message=msg, actual=container
+            )
 
     @staticmethod
     def is_not_none(value: Any, label: str = "") -> None:

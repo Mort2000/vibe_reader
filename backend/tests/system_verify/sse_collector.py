@@ -1,4 +1,5 @@
 """SSE event collector for monitoring backend events during verification."""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,9 +16,17 @@ class SSEEvent:
     """A single collected SSE event."""
 
     __slots__ = (
-        "event_id", "event_type", "data", "verify_run_id",
-        "trace_id", "book_id", "chapter_idx", "paragraph_idx",
-        "window_id", "job_id", "created_at",
+        "event_id",
+        "event_type",
+        "data",
+        "verify_run_id",
+        "trace_id",
+        "book_id",
+        "chapter_idx",
+        "paragraph_idx",
+        "window_id",
+        "job_id",
+        "created_at",
     )
 
     def __init__(self, event_type: str, data: dict[str, Any]):
@@ -31,7 +40,9 @@ class SSEEvent:
         self.paragraph_idx = data.get("paragraph_idx")
         self.window_id = data.get("window_id")
         self.job_id = data.get("job_id")
-        self.created_at = data.get("created_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        self.created_at = data.get(
+            "created_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -120,8 +131,12 @@ class SSEEventCollector:
         query_params = params or {}
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
-                async with client.stream("GET", url, headers=headers, params=query_params) as resp:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(300.0, connect=10.0)
+            ) as client:
+                async with client.stream(
+                    "GET", url, headers=headers, params=query_params
+                ) as resp:
                     current_event_type = "message"
                     current_data_parts: list[str] = []
 
@@ -130,9 +145,9 @@ class SSEEventCollector:
                             break
 
                         if line.startswith("event:"):
-                            current_event_type = line[len("event:"):].strip()
+                            current_event_type = line[len("event:") :].strip()
                         elif line.startswith("data:"):
-                            current_data_parts.append(line[len("data:"):].strip())
+                            current_data_parts.append(line[len("data:") :].strip())
                         elif line == "" and current_data_parts:
                             data_str = "\n".join(current_data_parts)
                             try:
@@ -142,7 +157,9 @@ class SSEEventCollector:
 
                             evt = SSEEvent(current_event_type, data)
                             self._events.append(evt)
-                            self.run_manager.write_ndjson("sse_events.ndjson", [evt.to_dict()])
+                            self.run_manager.write_ndjson(
+                                "sse_events.ndjson", [evt.to_dict()]
+                            )
                             current_event_type = "message"
                             current_data_parts = []
         except Exception as exc:

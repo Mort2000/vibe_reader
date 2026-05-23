@@ -1,4 +1,5 @@
 """Minimal OpenAI-compatible LLM connectivity probe for system verification."""
+
 from __future__ import annotations
 
 import time
@@ -14,9 +15,13 @@ from ..observability import get_trace_id
 async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
     """Send a minimal chat completion request and return usage summary."""
     if not llm.base_url:
-        raise AppError("llm_not_configured", "LLM base_url is not configured", status=400)
+        raise AppError(
+            "llm_not_configured", "LLM base_url is not configured", status=400
+        )
     if not llm.api_key:
-        raise AppError("llm_not_configured", "LLM api_key is not configured", status=400)
+        raise AppError(
+            "llm_not_configured", "LLM api_key is not configured", status=400
+        )
 
     url = f"{llm.base_url.rstrip('/')}/chat/completions"
     payload = {
@@ -32,12 +37,18 @@ async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
 
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=10.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_s, connect=10.0)
+        ) as client:
             resp = await client.post(url, headers=headers, json=payload)
     except httpx.TimeoutException as exc:
-        raise AppError("llm_timeout", f"LLM ping timed out after {timeout_s}s", status=504) from exc
+        raise AppError(
+            "llm_timeout", f"LLM ping timed out after {timeout_s}s", status=504
+        ) from exc
     except httpx.HTTPError as exc:
-        raise AppError("llm_provider_error", f"LLM ping request failed: {exc}", status=502) from exc
+        raise AppError(
+            "llm_provider_error", f"LLM ping request failed: {exc}", status=502
+        ) from exc
 
     elapsed_ms = (time.monotonic() - start) * 1000
 
@@ -47,13 +58,18 @@ async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
             "llm_provider_error",
             f"LLM provider returned HTTP {resp.status_code}",
             status=502,
-            details={"provider_status": resp.status_code, "provider_body_excerpt": detail},
+            details={
+                "provider_status": resp.status_code,
+                "provider_body_excerpt": detail,
+            },
         )
 
     try:
         body = resp.json()
     except ValueError as exc:
-        raise AppError("llm_provider_error", "LLM provider returned non-JSON response", status=502) from exc
+        raise AppError(
+            "llm_provider_error", "LLM provider returned non-JSON response", status=502
+        ) from exc
 
     usage = body.get("usage") or {}
     choice = (body.get("choices") or [{}])[0]
@@ -63,7 +79,8 @@ async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
     tokens: dict[str, int | None] = {
         "input": usage.get("prompt_tokens"),
         "output": usage.get("completion_tokens"),
-        "cached_input": usage.get("prompt_cache_hit_tokens") or usage.get("cached_tokens"),
+        "cached_input": usage.get("prompt_cache_hit_tokens")
+        or usage.get("cached_tokens"),
     }
     if tokens["input"] is None and tokens["output"] is None:
         tokens["input"] = _estimate_tokens(payload["messages"][0]["content"])

@@ -3,6 +3,7 @@
 Loads from a TOML config file + environment variable overrides.
 Does not read or write the user's daily ~/.vibe_reader/ directory.
 """
+
 from __future__ import annotations
 
 import os
@@ -94,15 +95,18 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
 
     target_raw = raw.get("target", {})
     target = TargetConfig(
-        base_url=_env("VIBE_READER_VERIFY_TARGET_URL") or target_raw.get("base_url", "http://127.0.0.1:8000"),
-        data_dir=_env("VIBE_READER_VERIFY_DATA_DIR") or target_raw.get("data_dir", "/tmp/vibe_reader_verify"),
+        base_url=_env("VIBE_READER_VERIFY_TARGET_URL")
+        or target_raw.get("base_url", "http://127.0.0.1:8000"),
+        data_dir=_env("VIBE_READER_VERIFY_DATA_DIR")
+        or target_raw.get("data_dir", "/tmp/vibe_reader_verify"),
     )
 
     llm_raw = raw.get("llm", {})
     llm = VerifyLLMConfig(
         base_url=_env("VIBE_READER_LLM_BASE_URL") or llm_raw.get("base_url", ""),
         api_key_env=llm_raw.get("api_key_env", "VIBE_READER_LLM_API_KEY"),
-        model=_env("VIBE_READER_LLM_MODEL") or llm_raw.get("model", "deepseek-v4-flash"),
+        model=_env("VIBE_READER_LLM_MODEL")
+        or llm_raw.get("model", "deepseek-v4-flash"),
         temperature=llm_raw.get("temperature", 0.4),
         timeout_s=llm_raw.get("timeout_s", 120),
     )

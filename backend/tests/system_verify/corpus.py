@@ -3,6 +3,7 @@
 Reads a TOML manifest, validates file existence, sha256, and metadata,
 and writes a resolved manifest with actual statistics.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -118,9 +119,7 @@ class CorpusManager:
 
             # Check authorization declaration
             if not book.license:
-                self._validation_errors.append(
-                    f"[{book.alias}] No license declared"
-                )
+                self._validation_errors.append(f"[{book.alias}] No license declared")
                 all_ok = False
 
             # Check probe validity
@@ -160,7 +159,9 @@ class CorpusManager:
                     }
                     for p in book.probes
                 ],
-                "validation_status": "ok" if not self._has_errors_for(book.alias) else "failed",
+                "validation_status": "ok"
+                if not self._has_errors_for(book.alias)
+                else "failed",
             }
             resolved_books.append(entry)
 
@@ -175,7 +176,9 @@ class CorpusManager:
 
         if run_manager:
             out_path = run_manager.base_dir / "corpus_manifest.resolved.json"
-            out_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+            out_path.write_text(
+                json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+            )
             sha_list = [b["sha256"] for b in resolved_books if b.get("sha256")]
             run_manager.set_corpus_sha256(sha_list)
             return out_path

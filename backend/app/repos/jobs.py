@@ -120,7 +120,8 @@ async def list_jobs(
     total = (await count_cur.fetchone())[0]
 
     cur = await db.execute(
-        f"SELECT * FROM ai_jobs {where} ORDER BY created_at DESC LIMIT ?", params + [limit]
+        f"SELECT * FROM ai_jobs {where} ORDER BY created_at DESC LIMIT ?",
+        params + [limit],
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows], total

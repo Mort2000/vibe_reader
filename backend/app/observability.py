@@ -9,11 +9,21 @@ from datetime import datetime, timezone
 
 from .config import Settings
 
-_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
-_trace_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="")
-_verify_run_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("verify_run_id", default="")
-_verify_scenario_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("verify_scenario_id", default="")
-_verify_step_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("verify_step_id", default="")
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default=""
+)
+_trace_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "trace_id", default=""
+)
+_verify_run_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "verify_run_id", default=""
+)
+_verify_scenario_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "verify_scenario_id", default=""
+)
+_verify_step_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "verify_step_id", default=""
+)
 
 
 def new_request_id() -> str:

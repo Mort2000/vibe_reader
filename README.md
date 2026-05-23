@@ -14,7 +14,6 @@
 vibe_reader/
   backend/          FastAPI 后端（uv 项目根）
   frontend/         React + TypeScript + Vite 前端
-  .env.example      环境变量模板（复制为 .env）
 ```
 
 本地数据目录默认为 `~/.vibe_reader/`（可通过 `VIBE_READER_DATA_DIR` 覆盖）：
@@ -29,16 +28,7 @@ vibe_reader/
 
 ## 快速开始
 
-### 1. 配置环境变量
-
-```bash
-cp .env.example .env
-# 按需编辑；LLM 与验证相关项见 .env.example 注释
-```
-
-Shell 中已设置的变量优先于 `.env` 文件。
-
-### 2. 安装依赖
+### 1. 安装依赖
 
 ```bash
 # 后端：editable 安装，注册 vibe-reader / vibe-verify CLI
@@ -50,7 +40,7 @@ cd ../frontend
 npm install
 ```
 
-### 3. 启动后端
+### 2. 启动后端
 
 在 `backend/` 目录：
 
@@ -68,7 +58,7 @@ curl http://127.0.0.1:8000/api/health
 curl http://127.0.0.1:8000/api/runtime
 ```
 
-### 4. 启动前端（开发模式）
+### 3. 启动前端（开发模式）
 
 在 `frontend/` 目录：
 
@@ -78,11 +68,11 @@ npm run dev
 
 Vite 会将 `/api` 代理到 `http://127.0.0.1:8000`。浏览器打开终端提示的地址（通常 `http://127.0.0.1:5173`）。
 
-### 5. 一体化静态部署（可选）
+### 4. 一体化静态部署（可选）
 
 ```bash
 cd frontend && npm run build
-cd ../backend && set -a && source ../.env && set +a && uv run vibe-reader
+cd ../backend && uv run vibe-reader
 ```
 
 访问 `http://127.0.0.1:8000/` 即可使用阅读界面。
@@ -105,7 +95,7 @@ cd ../backend && set -a && source ../.env && set +a && uv run vibe-reader
 
 ## 配置说明
 
-首次运行可在数据目录创建 `config.toml`，结构与 `spec_mini.md` 一致，例如：
+首次运行可在数据目录创建 `config.toml`，例如：
 
 ```toml
 [llm]
@@ -123,7 +113,3 @@ max_window_tokens = 12000
 ```
 
 敏感项建议通过环境变量注入，不要提交到版本库。
-
-## 相关文档
-
-产品与设计规格见同级文档仓 `vibe_reader_doc/`（`spec_mini.md`、`task_mini.md`、`spec_interface.md`）。

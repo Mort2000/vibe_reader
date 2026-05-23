@@ -1,4 +1,5 @@
 """Response contract validation against spec_interface.md definitions."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -152,4 +153,6 @@ def _check_no_api_key(body: Any, rec: APIRecord | None = None) -> None:
     suspicious = ("sk-", "api_key", "apikey")
     for s in suspicious:
         if s in text and "api_key_configured" not in text:
-            raise ContractError(f"Potential API key leak detected containing '{s}'", rec)
+            raise ContractError(
+                f"Potential API key leak detected containing '{s}'", rec
+            )

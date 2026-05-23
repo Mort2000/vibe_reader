@@ -99,7 +99,8 @@ def load_settings() -> Settings:
     llm = LLMConfig(
         base_url=_env("VIBE_READER_LLM_BASE_URL") or llm_raw.get("base_url", ""),
         api_key=_env("VIBE_READER_LLM_API_KEY") or llm_raw.get("api_key", ""),
-        model=_env("VIBE_READER_LLM_MODEL") or llm_raw.get("model", "deepseek-v4-flash"),
+        model=_env("VIBE_READER_LLM_MODEL")
+        or llm_raw.get("model", "deepseek-v4-flash"),
     )
 
     reader_raw = raw.get("reader", {})
@@ -138,7 +139,9 @@ def load_settings() -> Settings:
         log_level=_env("VIBE_READER_LOG_LEVEL") or obs_raw.get("log_level", "INFO"),
         include_prompt_manifest=obs_raw.get("include_prompt_manifest", True),
         include_full_prompt=obs_raw.get("include_full_prompt", False),
-        service_name=obs_raw.get("service_name", "vibe-reader-backend") if isinstance(obs_raw.get("service_name"), str) else "vibe-reader-backend",
+        service_name=obs_raw.get("service_name", "vibe-reader-backend")
+        if isinstance(obs_raw.get("service_name"), str)
+        else "vibe-reader-backend",
         otel_endpoint=_env("VIBE_READER_OTEL_ENDPOINT") or obs_raw.get("endpoint", ""),
     )
 

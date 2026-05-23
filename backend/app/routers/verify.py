@@ -11,13 +11,18 @@ from ..errors import AppError
 class VerifyResetRequest(BaseModel):
     confirm_data_dir: str = Field(..., min_length=1)
 
+
 router = APIRouter(tags=["verify"])
 
 
 def _require_verify(request: Request) -> None:
     settings = request.app.state.settings
     if not settings.verify_mode:
-        raise AppError("verify_mode_required", "Verify endpoints require VIBE_READER_VERIFY_MODE=1", status=404)
+        raise AppError(
+            "verify_mode_required",
+            "Verify endpoints require VIBE_READER_VERIFY_MODE=1",
+            status=404,
+        )
 
 
 @router.get("/verify/runtime")
@@ -54,6 +59,7 @@ async def verify_list_jobs(
 ) -> dict[str, Any]:
     _require_verify(request)
     from ..repos import jobs as job_repo
+
     db = request.app.state.db
     items, total = await job_repo.list_jobs(
         db,

@@ -3,9 +3,9 @@
 Auto-injects X-Verify-* headers, records all requests/responses
 to api_requests.ndjson, and provides typed methods for each endpoint.
 """
+
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,10 +20,20 @@ class APIRecord:
     """A single recorded API request/response pair."""
 
     __slots__ = (
-        "method", "url", "status_code", "request_headers_sanitized",
-        "response_headers", "request_body_summary", "response_body_summary",
-        "duration_ms", "error", "trace_id", "request_id",
-        "verify_run_id", "verify_scenario_id", "verify_step_id",
+        "method",
+        "url",
+        "status_code",
+        "request_headers_sanitized",
+        "response_headers",
+        "request_body_summary",
+        "response_body_summary",
+        "duration_ms",
+        "error",
+        "trace_id",
+        "request_id",
+        "verify_run_id",
+        "verify_scenario_id",
+        "verify_step_id",
         "created_at",
     )
 
@@ -173,7 +183,9 @@ class TargetClient:
                 body = resp.json()
                 rec.response_body_summary = _summarize_response_body(body)
             except Exception:
-                rec.response_body_summary = f"<non-json: {resp.headers.get('content-type', 'unknown')}>"
+                rec.response_body_summary = (
+                    f"<non-json: {resp.headers.get('content-type', 'unknown')}>"
+                )
 
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000
@@ -233,8 +245,12 @@ class TargetClient:
         resp, rec = await self._request("GET", f"/api/books/{book_id}/chapters")
         return resp.json(), rec
 
-    async def get_chapter(self, book_id: int, chapter_idx: int) -> tuple[dict, APIRecord]:
-        resp, rec = await self._request("GET", f"/api/books/{book_id}/chapters/{chapter_idx}")
+    async def get_chapter(
+        self, book_id: int, chapter_idx: int
+    ) -> tuple[dict, APIRecord]:
+        resp, rec = await self._request(
+            "GET", f"/api/books/{book_id}/chapters/{chapter_idx}"
+        )
         return resp.json(), rec
 
     async def list_paragraphs(
@@ -266,7 +282,9 @@ class TargetClient:
             "paragraph_idx": paragraph_idx,
             "scroll_pct": scroll_pct,
         }
-        resp, rec = await self._request("PUT", f"/api/books/{book_id}/progress", json_body=body)
+        resp, rec = await self._request(
+            "PUT", f"/api/books/{book_id}/progress", json_body=body
+        )
         return resp.json(), rec
 
     async def list_comments(
@@ -302,7 +320,9 @@ class TargetClient:
         resp, rec = await self._request("POST", "/api/verify/llm-ping")
         return resp.json(), rec
 
-    async def verify_metrics(self, run_id: str, scenario_id: str | None = None) -> tuple[dict, APIRecord]:
+    async def verify_metrics(
+        self, run_id: str, scenario_id: str | None = None
+    ) -> tuple[dict, APIRecord]:
         params: dict[str, Any] = {"run_id": run_id}
         if scenario_id:
             params["scenario_id"] = scenario_id

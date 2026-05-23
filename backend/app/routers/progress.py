@@ -50,7 +50,9 @@ async def _validate_progress_position(
                 "last_paragraph_idx": last_p,
             },
         )
-    paragraph = await paragraph_repo.get_paragraph(db, book_id, chapter_idx, paragraph_idx)
+    paragraph = await paragraph_repo.get_paragraph(
+        db, book_id, chapter_idx, paragraph_idx
+    )
     if paragraph is None:
         raise AppError(
             "invalid_progress",
@@ -100,25 +102,38 @@ async def update_progress(
     settings = request.app.state.settings
 
     from ..repos import books as book_repo
+
     book = await book_repo.get_book(db, book_id)
     if not book:
         raise AppError("book_not_found", "Book not found", details={"book_id": book_id})
 
     chapter = await chapter_repo.get_chapter(db, book_id, body.chapter_idx)
     if not chapter:
-        raise AppError("invalid_progress", "Chapter not found", details={"book_id": book_id, "chapter_idx": body.chapter_idx})
+        raise AppError(
+            "invalid_progress",
+            "Chapter not found",
+            details={"book_id": book_id, "chapter_idx": body.chapter_idx},
+        )
 
-    last_p = await _validate_progress_position(db, book_id, body.chapter_idx, body.paragraph_idx)
+    last_p = await _validate_progress_position(
+        db, book_id, body.chapter_idx, body.paragraph_idx
+    )
 
     current = await progress_repo.get_progress(db, book_id)
     if (
         current.get("chapter_idx") == body.chapter_idx
         and current.get("paragraph_idx") == body.paragraph_idx
         and current.get("updated_at")
-        and abs((current.get("scroll_pct") or 0) - body.scroll_pct) < _SCROLL_DEDUP_THRESHOLD
+        and abs((current.get("scroll_pct") or 0) - body.scroll_pct)
+        < _SCROLL_DEDUP_THRESHOLD
     ):
         frontier, current_window, jobs = await _progress_response_fields(
-            db, book_id, body.chapter_idx, body.paragraph_idx, last_p, settings,
+            db,
+            book_id,
+            body.chapter_idx,
+            body.paragraph_idx,
+            last_p,
+            settings,
         )
         logger.info(
             "progress.update.deduped",
@@ -148,7 +163,12 @@ async def update_progress(
     )
 
     frontier, current_window, jobs = await _progress_response_fields(
-        db, book_id, body.chapter_idx, body.paragraph_idx, last_p, settings,
+        db,
+        book_id,
+        body.chapter_idx,
+        body.paragraph_idx,
+        last_p,
+        settings,
     )
 
     logger.info(

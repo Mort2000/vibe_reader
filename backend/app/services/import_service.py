@@ -9,17 +9,16 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from bs4 import XMLParsedAsHTMLWarning
-
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
-
 import aiosqlite
+from bs4 import XMLParsedAsHTMLWarning
 from ebooklib import epub
 
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import paragraphs as paragraph_repo
 from ..repos import progress as progress_repo
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +57,9 @@ def _extract_cover(book: epub.EpubBook, dest_dir: Path) -> str | None:
 def _parse_chapters(book: epub.EpubBook) -> list[dict[str, Any]]:
     from bs4 import BeautifulSoup
 
-    items = [item for item in book.get_items_of_type(9) if isinstance(item, epub.EpubHtml)]
+    items = [
+        item for item in book.get_items_of_type(9) if isinstance(item, epub.EpubHtml)
+    ]
 
     if not items:
         return []
@@ -90,26 +91,30 @@ def _parse_chapters(book: epub.EpubBook) -> list[dict[str, Any]]:
             text = tag.get_text(separator="", strip=True)
             if not _is_valid_paragraph(text):
                 continue
-            paragraphs.append({
-                "paragraph_idx": p_idx,
-                "text": text,
-                "text_hash": _text_hash(text),
-                "char_count": len(text),
-                "token_estimate": _estimate_tokens(text),
-            })
+            paragraphs.append(
+                {
+                    "paragraph_idx": p_idx,
+                    "text": text,
+                    "text_hash": _text_hash(text),
+                    "char_count": len(text),
+                    "token_estimate": _estimate_tokens(text),
+                }
+            )
             p_idx += 1
 
         if not paragraphs:
             continue
 
         total_tokens = sum(p["token_estimate"] for p in paragraphs)
-        chapters.append({
-            "idx": len(chapters),
-            "title": title,
-            "paragraphs": paragraphs,
-            "paragraph_count": len(paragraphs),
-            "token_estimate": total_tokens,
-        })
+        chapters.append(
+            {
+                "idx": len(chapters),
+                "title": title,
+                "paragraphs": paragraphs,
+                "paragraph_count": len(paragraphs),
+                "token_estimate": total_tokens,
+            }
+        )
 
     return chapters
 
@@ -133,7 +138,13 @@ async def import_epub(
 
     existing = await book_repo.get_book_by_hash(db, file_hash)
     if existing is not None:
-        logger.info("book.import.duplicate", extra={"event": "book.import.duplicate", "fields": {"book_id": existing["id"], "file_hash": file_hash}})
+        logger.info(
+            "book.import.duplicate",
+            extra={
+                "event": "book.import.duplicate",
+                "fields": {"book_id": existing["id"], "file_hash": file_hash},
+            },
+        )
         prog = await progress_repo.get_progress(db, existing["id"])
         lp = prog if prog.get("updated_at") else None
         return {
@@ -141,7 +152,9 @@ async def import_epub(
                 "id": existing["id"],
                 "title": existing["title"],
                 "author": existing.get("author"),
-                "cover_url": f"/api/books/{existing['id']}/cover" if existing.get("cover_path") else None,
+                "cover_url": f"/api/books/{existing['id']}/cover"
+                if existing.get("cover_path")
+                else None,
                 "total_chapters": existing["total_chapters"],
                 "imported_at": existing.get("imported_at", ""),
                 "updated_at": existing["updated_at"],
@@ -171,6 +184,7 @@ async def import_epub(
     parsed_chapters = _parse_chapters(book)
     if not parsed_chapters:
         from ..errors import AppError
+
         raise AppError("invalid_epub", "No readable chapters found in epub")
 
     book_record = await book_repo.create_book(
@@ -240,7 +254,9 @@ async def import_epub(
             "title": first_ch["title"],
             "paragraph_count": first_ch["paragraph_count"],
             "token_estimate": first_ch["token_estimate"],
-        } if first_ch else None,
+        }
+        if first_ch
+        else None,
         "import_stats": {
             "chapter_count": len(parsed_chapters),
             "paragraph_count": total_paragraphs,

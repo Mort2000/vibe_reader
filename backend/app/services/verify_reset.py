@@ -1,4 +1,5 @@
 """Reset verification data directory for system testing."""
+
 from __future__ import annotations
 
 import pathlib

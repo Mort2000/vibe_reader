@@ -23,7 +23,17 @@ async def create_comment(
         """INSERT INTO paragraph_comments
            (book_id, chapter_idx, paragraph_idx, window_id, comment, comment_type, status, trace_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
-        (book_id, chapter_idx, paragraph_idx, window_id, comment, comment_type, trace_id, now, now),
+        (
+            book_id,
+            chapter_idx,
+            paragraph_idx,
+            window_id,
+            comment,
+            comment_type,
+            trace_id,
+            now,
+            now,
+        ),
     )
     await db.commit()
     return {
@@ -67,7 +77,9 @@ async def list_comments(
 
     where = " AND ".join(conditions)
 
-    count_cur = await db.execute(f"SELECT COUNT(*) FROM paragraph_comments WHERE {where}", params)
+    count_cur = await db.execute(
+        f"SELECT COUNT(*) FROM paragraph_comments WHERE {where}", params
+    )
     total = (await count_cur.fetchone())[0]
 
     sql = f"SELECT * FROM paragraph_comments WHERE {where} ORDER BY paragraph_idx, created_at"

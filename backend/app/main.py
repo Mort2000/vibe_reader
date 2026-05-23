@@ -54,7 +54,9 @@ def create_app() -> FastAPI:
 
     frontend_dist = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
     if frontend_dist.is_dir():
-        app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+        app.mount(
+            "/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend"
+        )
 
     @app.on_event("startup")
     async def startup() -> None:

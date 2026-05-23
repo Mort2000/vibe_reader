@@ -3,6 +3,7 @@
 Imports an epub from the corpus through the API, validates
 chapter/paragraph structure, and records import metrics.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +25,9 @@ from ..run import RunManager
 from ..scenario import ScenarioBuilder, ScenarioRunner, StepAssertionError, assert_that
 
 
-def _pick_progress_paragraph(ctx: dict[str, Any], *, prefer: int = 12) -> tuple[int, int]:
+def _pick_progress_paragraph(
+    ctx: dict[str, Any], *, prefer: int = 12
+) -> tuple[int, int]:
     """Return (chapter_idx, paragraph_idx) within the first chapter's bounds."""
     paragraphs = ctx.get("first_chapter_paragraphs", [])
     if not paragraphs:
@@ -33,18 +36,51 @@ def _pick_progress_paragraph(ctx: dict[str, Any], *, prefer: int = 12) -> tuple[
     return 0, min(prefer, last_idx)
 
 
-async def run_s1(run_manager: RunManager, config: VerifyConfig, metrics: MetricsAggregator, corpus: CorpusManager) -> None:
+async def run_s1(
+    run_manager: RunManager,
+    config: VerifyConfig,
+    metrics: MetricsAggregator,
+    corpus: CorpusManager,
+) -> None:
     """Execute S1 scenario."""
-    builder = ScenarioBuilder("S1_book_import", "Real novel import and structure validation")
+    builder = ScenarioBuilder(
+        "S1_book_import", "Real novel import and structure validation"
+    )
     builder.continue_on_failure = True
 
-    builder.add_step("import_book", "Import epub through API", _step_import, timeout_s=60.0)
-    builder.add_step("list_books", "Verify book appears in list", _step_list_books, timeout_s=10.0)
-    builder.add_step("book_detail", "Get book detail with stats", _step_book_detail, timeout_s=10.0)
-    builder.add_step("list_chapters", "List chapters and validate structure", _step_list_chapters, timeout_s=10.0)
-    builder.add_step("list_paragraphs", "List paragraphs and validate numbering", _step_list_paragraphs, timeout_s=10.0)
-    builder.add_step("validate_counts", "Validate chapter/paragraph counts against manifest", _step_validate_counts, timeout_s=5.0)
-    builder.add_step("paragraph_stability", "Verify paragraph idx continuity", _step_paragraph_stability, timeout_s=5.0)
+    builder.add_step(
+        "import_book", "Import epub through API", _step_import, timeout_s=60.0
+    )
+    builder.add_step(
+        "list_books", "Verify book appears in list", _step_list_books, timeout_s=10.0
+    )
+    builder.add_step(
+        "book_detail", "Get book detail with stats", _step_book_detail, timeout_s=10.0
+    )
+    builder.add_step(
+        "list_chapters",
+        "List chapters and validate structure",
+        _step_list_chapters,
+        timeout_s=10.0,
+    )
+    builder.add_step(
+        "list_paragraphs",
+        "List paragraphs and validate numbering",
+        _step_list_paragraphs,
+        timeout_s=10.0,
+    )
+    builder.add_step(
+        "validate_counts",
+        "Validate chapter/paragraph counts against manifest",
+        _step_validate_counts,
+        timeout_s=5.0,
+    )
+    builder.add_step(
+        "paragraph_stability",
+        "Verify paragraph idx continuity",
+        _step_paragraph_stability,
+        timeout_s=5.0,
+    )
     builder.add_step(
         "reading_progress",
         "Save and restore reading progress via PUT then GET",
@@ -69,7 +105,9 @@ async def run_s1(run_manager: RunManager, config: VerifyConfig, metrics: Metrics
         _step_progress_skip_trivial_scroll,
         timeout_s=10.0,
     )
-    builder.add_step("import_metrics", "Record import metrics", _step_import_metrics, timeout_s=5.0)
+    builder.add_step(
+        "import_metrics", "Record import metrics", _step_import_metrics, timeout_s=5.0
+    )
 
     runner = ScenarioRunner(run_manager, config)
     ctx = {
@@ -99,7 +137,13 @@ async def _step_import(ctx: dict[str, Any]) -> None:
     book_manifest = corpus.books[0]
     ctx["book_manifest"] = book_manifest
 
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "import_book", context=ctx) as client:
+    async with TargetClient(
+        config.target.base_url,
+        run_manager,
+        "S1_book_import",
+        "import_book",
+        context=ctx,
+    ) as client:
         body, rec = await client.import_book(book_manifest.path)
         validate_import_response(body, rec)
 
@@ -120,8 +164,12 @@ async def _step_import(ctx: dict[str, Any]) -> None:
         )
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="import_book")
-        metrics.record_import_metrics(stats, scenario_id="S1_book_import", step_id="import_book")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="import_book"
+        )
+        metrics.record_import_metrics(
+            stats, scenario_id="S1_book_import", step_id="import_book"
+        )
 
 
 async def _step_list_books(ctx: dict[str, Any]) -> None:
@@ -129,7 +177,9 @@ async def _step_list_books(ctx: dict[str, Any]) -> None:
     config: VerifyConfig = ctx["config"]
     imported_book = ctx.get("imported_book", {})
 
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_books", context=ctx) as client:
+    async with TargetClient(
+        config.target.base_url, run_manager, "S1_book_import", "list_books", context=ctx
+    ) as client:
         body, rec = await client.list_books()
         validate_list_response(body, rec)
 
@@ -139,7 +189,9 @@ async def _step_list_books(ctx: dict[str, Any]) -> None:
         assert_that.is_true(found, "Imported book should appear in list")
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="list_books")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="list_books"
+        )
 
 
 async def _step_book_detail(ctx: dict[str, Any]) -> None:
@@ -150,7 +202,13 @@ async def _step_book_detail(ctx: dict[str, Any]) -> None:
     book_id = imported_book.get("id")
     assert_that.is_not_none(book_id, "book_id should be set")
 
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "book_detail", context=ctx) as client:
+    async with TargetClient(
+        config.target.base_url,
+        run_manager,
+        "S1_book_import",
+        "book_detail",
+        context=ctx,
+    ) as client:
         body, rec = await client.get_book(book_id)
 
         assert_that.equal(body.get("id"), book_id, label="book_id")
@@ -161,7 +219,9 @@ async def _step_book_detail(ctx: dict[str, Any]) -> None:
         ctx["book_detail"] = body
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="book_detail")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="book_detail"
+        )
 
 
 async def _step_list_chapters(ctx: dict[str, Any]) -> None:
@@ -170,7 +230,13 @@ async def _step_list_chapters(ctx: dict[str, Any]) -> None:
     imported_book = ctx.get("imported_book", {})
 
     book_id = imported_book.get("id")
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_chapters", context=ctx) as client:
+    async with TargetClient(
+        config.target.base_url,
+        run_manager,
+        "S1_book_import",
+        "list_chapters",
+        context=ctx,
+    ) as client:
         body, rec = await client.list_chapters(book_id)
         validate_chapters_response(body, rec)
 
@@ -183,7 +249,9 @@ async def _step_list_chapters(ctx: dict[str, Any]) -> None:
             assert_that.equal(first_idx, 0, label="first_chapter_idx")
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="list_chapters")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="list_chapters"
+        )
 
 
 async def _step_list_paragraphs(ctx: dict[str, Any]) -> None:
@@ -199,7 +267,13 @@ async def _step_list_paragraphs(ctx: dict[str, Any]) -> None:
     first_chapter = chapters[0]
     chapter_idx = first_chapter["idx"]
 
-    async with TargetClient(config.target.base_url, run_manager, "S1_book_import", "list_paragraphs", context=ctx) as client:
+    async with TargetClient(
+        config.target.base_url,
+        run_manager,
+        "S1_book_import",
+        "list_paragraphs",
+        context=ctx,
+    ) as client:
         body, rec = await client.list_paragraphs(book_id, chapter_idx)
         validate_paragraphs_response(body, rec)
 
@@ -207,7 +281,9 @@ async def _step_list_paragraphs(ctx: dict[str, Any]) -> None:
         ctx["first_chapter_paragraph_count"] = body["total"]
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="list_paragraphs")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="list_paragraphs"
+        )
 
 
 async def _step_validate_counts(ctx: dict[str, Any]) -> None:
@@ -311,18 +387,26 @@ async def _step_reading_progress(ctx: dict[str, Any]) -> None:
         saved = put_body["progress"]
         assert_that.equal(saved["book_id"], book_id, label="put_book_id")
         assert_that.equal(saved["chapter_idx"], target_chapter, label="put_chapter_idx")
-        assert_that.equal(saved["paragraph_idx"], target_paragraph, label="put_paragraph_idx")
+        assert_that.equal(
+            saved["paragraph_idx"], target_paragraph, label="put_paragraph_idx"
+        )
         assert_that.equal(saved["scroll_pct"], target_scroll, label="put_scroll_pct")
 
         frontier = put_body.get("assistant_frontier_paragraph_idx")
         assert_that.is_not_none(frontier, label="assistant_frontier_paragraph_idx")
-        assert_that.gte(frontier, target_paragraph, label="assistant_frontier_gte_reading")
+        assert_that.gte(
+            frontier, target_paragraph, label="assistant_frontier_gte_reading"
+        )
 
         restored, rec = await client.get_progress(book_id)
         validate_reading_progress(restored, rec)
         assert_that.equal(restored["book_id"], book_id, label="get_book_id")
-        assert_that.equal(restored["chapter_idx"], target_chapter, label="get_chapter_idx")
-        assert_that.equal(restored["paragraph_idx"], target_paragraph, label="get_paragraph_idx")
+        assert_that.equal(
+            restored["chapter_idx"], target_chapter, label="get_chapter_idx"
+        )
+        assert_that.equal(
+            restored["paragraph_idx"], target_paragraph, label="get_paragraph_idx"
+        )
         assert_that.equal(restored["scroll_pct"], target_scroll, label="get_scroll_pct")
         assert_that.is_not_none(restored.get("updated_at"), label="restored_updated_at")
 
@@ -331,11 +415,19 @@ async def _step_reading_progress(ctx: dict[str, Any]) -> None:
             await client.update_progress(book_id, next_chapter, 0, 0.0)
             switched, rec = await client.get_progress(book_id)
             validate_reading_progress(switched, rec)
-            assert_that.equal(switched["chapter_idx"], next_chapter, label="chapter_switch_chapter_idx")
-            assert_that.equal(switched["paragraph_idx"], 0, label="chapter_switch_paragraph_idx")
+            assert_that.equal(
+                switched["chapter_idx"],
+                next_chapter,
+                label="chapter_switch_chapter_idx",
+            )
+            assert_that.equal(
+                switched["paragraph_idx"], 0, label="chapter_switch_paragraph_idx"
+            )
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="reading_progress")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="reading_progress"
+        )
 
 
 async def _step_import_idempotent(ctx: dict[str, Any]) -> None:
@@ -381,7 +473,9 @@ async def _step_import_idempotent(ctx: dict[str, Any]) -> None:
         )
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="import_idempotent")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="import_idempotent"
+        )
 
 
 async def _step_progress_dedup_identical(ctx: dict[str, Any]) -> None:
@@ -410,7 +504,11 @@ async def _step_progress_dedup_identical(ctx: dict[str, Any]) -> None:
             scroll_pct,
         )
         validate_progress_response(first, rec)
-        assert_that.equal(first["progress"]["paragraph_idx"], paragraph_idx, label="first_paragraph_idx")
+        assert_that.equal(
+            first["progress"]["paragraph_idx"],
+            paragraph_idx,
+            label="first_paragraph_idx",
+        )
         first_updated_at = first["progress"]["updated_at"]
         assert_that.is_not_none(first_updated_at, label="first_updated_at")
 
@@ -432,7 +530,9 @@ async def _step_progress_dedup_identical(ctx: dict[str, Any]) -> None:
         )
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="progress_dedup_identical")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="progress_dedup_identical"
+        )
 
 
 async def _step_progress_skip_trivial_scroll(ctx: dict[str, Any]) -> None:
@@ -462,7 +562,9 @@ async def _step_progress_skip_trivial_scroll(ctx: dict[str, Any]) -> None:
             base_scroll,
         )
         validate_progress_response(base, rec)
-        assert_that.equal(base["progress"]["paragraph_idx"], paragraph_idx, label="base_paragraph_idx")
+        assert_that.equal(
+            base["progress"]["paragraph_idx"], paragraph_idx, label="base_paragraph_idx"
+        )
         base_updated_at = base["progress"]["updated_at"]
         assert_that.is_not_none(base_updated_at, label="base_updated_at")
 
@@ -484,7 +586,9 @@ async def _step_progress_skip_trivial_scroll(ctx: dict[str, Any]) -> None:
         )
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S1_book_import", step_id="progress_skip_trivial_scroll")
+        metrics.record_from_api_record(
+            rec, scenario_id="S1_book_import", step_id="progress_skip_trivial_scroll"
+        )
 
 
 async def _step_import_metrics(ctx: dict[str, Any]) -> None:

@@ -22,14 +22,24 @@ async def create_chapter(
     analysis_status: str = "pending",
 ) -> dict[str, Any]:
     now = _now()
-    cur = await db.execute(
+    await db.execute(
         """INSERT INTO chapters (book_id, idx, title, raw_text, paragraph_count, token_estimate, analysis_status, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(book_id, idx) DO UPDATE SET
                title=excluded.title, raw_text=excluded.raw_text,
                paragraph_count=excluded.paragraph_count,
                token_estimate=excluded.token_estimate, updated_at=excluded.updated_at""",
-        (book_id, idx, title, raw_text, paragraph_count, token_estimate, analysis_status, now, now),
+        (
+            book_id,
+            idx,
+            title,
+            raw_text,
+            paragraph_count,
+            token_estimate,
+            analysis_status,
+            now,
+            now,
+        ),
     )
     await db.commit()
     return {
@@ -43,7 +53,9 @@ async def create_chapter(
     }
 
 
-async def get_chapter(db: aiosqlite.Connection, book_id: int, idx: int) -> dict[str, Any] | None:
+async def get_chapter(
+    db: aiosqlite.Connection, book_id: int, idx: int
+) -> dict[str, Any] | None:
     cur = await db.execute(
         "SELECT * FROM chapters WHERE book_id = ? AND idx = ?",
         (book_id, idx),

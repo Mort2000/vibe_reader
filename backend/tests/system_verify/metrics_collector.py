@@ -3,6 +3,7 @@
 Reads metrics from the verify/metrics endpoint and SSE events,
 aggregates latency/token/cache metrics, and writes ndjson output.
 """
+
 from __future__ import annotations
 
 import math
@@ -16,6 +17,7 @@ from .run import RunManager
 @dataclass
 class MetricPoint:
     """A single metric observation."""
+
     run_id: str
     scenario_id: str
     step_id: str
@@ -41,6 +43,7 @@ class MetricPoint:
 @dataclass
 class TraceIndexEntry:
     """A single trace index record linking scenario to trace_id."""
+
     run_id: str
     scenario_id: str
     step_id: str
@@ -128,7 +131,9 @@ class MetricsAggregator:
         self._traces.append(entry)
         self.run_manager.write_ndjson("traces/trace_index.ndjson", [entry.to_dict()])
 
-    def record_from_api_record(self, rec: Any, scenario_id: str = "", step_id: str = "") -> None:
+    def record_from_api_record(
+        self, rec: Any, scenario_id: str = "", step_id: str = ""
+    ) -> None:
         """Extract metrics from a TargetClient APIRecord."""
         if rec.duration_ms is not None:
             self.record(
@@ -147,9 +152,17 @@ class MetricsAggregator:
                 step_id=step_id,
             )
 
-    def record_import_metrics(self, stats: dict, scenario_id: str = "", step_id: str = "") -> None:
+    def record_import_metrics(
+        self, stats: dict, scenario_id: str = "", step_id: str = ""
+    ) -> None:
         """Record import-related metrics from import_stats."""
-        for key in ("duration_ms", "paragraph_count", "chapter_count", "char_count", "token_estimate"):
+        for key in (
+            "duration_ms",
+            "paragraph_count",
+            "chapter_count",
+            "char_count",
+            "token_estimate",
+        ):
             if key in stats:
                 unit = "ms" if key == "duration_ms" else "count"
                 self.record(
@@ -160,7 +173,9 @@ class MetricsAggregator:
                     step_id=step_id,
                 )
 
-    def record_sse_event_metrics(self, event: Any, scenario_id: str = "", step_id: str = "") -> None:
+    def record_sse_event_metrics(
+        self, event: Any, scenario_id: str = "", step_id: str = ""
+    ) -> None:
         """Record trace from SSE events."""
         if hasattr(event, "trace_id") and event.trace_id:
             self.record_trace(
@@ -216,8 +231,10 @@ class MetricsAggregator:
                 for word in sensitive_words:
                     if word in text.lower() and "api_key_configured" not in text:
                         idx = text.lower().index(word)
-                        context = text[max(0, idx - 30):idx + 50]
-                        findings.append(f"Sensitive word '{word}' in {path}: ...{context}...")
+                        context = text[max(0, idx - 30) : idx + 50]
+                        findings.append(
+                            f"Sensitive word '{word}' in {path}: ...{context}..."
+                        )
             except Exception:
                 pass
         return findings

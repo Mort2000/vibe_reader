@@ -1,4 +1,5 @@
 """Run manager: creates run directories, generates run_id and run_manifest.json."""
+
 from __future__ import annotations
 
 import hashlib
@@ -21,14 +22,22 @@ def generate_run_id() -> str:
 def get_git_info() -> tuple[str, bool]:
     """Return (commit_hash, is_dirty) from git."""
     try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
-        dirty = bool(subprocess.check_output(
-            ["git", "status", "--porcelain"],
-            stderr=subprocess.DEVNULL,
-        ).decode().strip())
+        commit = (
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
+        dirty = bool(
+            subprocess.check_output(
+                ["git", "status", "--porcelain"],
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
         return commit, dirty
     except Exception:
         return "", True
@@ -97,7 +106,9 @@ class RunManager:
             "target_url": self.config.target.base_url,
             "backend_version": resolved_backend_version,
             "model": self.config.llm.model,
-            "llm_base_url_hash": hash_string(self.config.llm.base_url) if self.config.llm.base_url else None,
+            "llm_base_url_hash": hash_string(self.config.llm.base_url)
+            if self.config.llm.base_url
+            else None,
             "corpus_sha256": self._corpus_sha256,
             "config_hash": config_hash,
             "security_checks": self._security_checks,
@@ -120,6 +131,7 @@ class RunManager:
 
 def _env_run_id() -> str | None:
     import os
+
     return os.environ.get("VIBE_READER_VERIFY_RUN_ID")
 
 

@@ -13,33 +13,47 @@ Backend should be started with an isolated data directory, for example:
     VIBE_READER_VERIFY_MODE=1 \\
     python3 -m app.main
 """
+
 from __future__ import annotations
 
 import argparse
 import sys
 
+from .env_file import load_project_dotenv
+
 DEFAULT_CORPUS = "tests/corpus/manifest.toml"
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="vibe-verify", description="Vibe Reader system verification")
+    load_project_dotenv()
+    parser = argparse.ArgumentParser(
+        prog="vibe-verify", description="Vibe Reader system verification"
+    )
     sub = parser.add_subparsers(dest="command")
 
     # prepare
     p_prepare = sub.add_parser("prepare", help="Validate corpus manifest")
-    p_prepare.add_argument("--corpus", default=DEFAULT_CORPUS, help="Corpus manifest path")
+    p_prepare.add_argument(
+        "--corpus", default=DEFAULT_CORPUS, help="Corpus manifest path"
+    )
     p_prepare.add_argument("--config", default=None, help="Verify config TOML")
 
     # init-run
     p_init = sub.add_parser("init-run", help="Create an empty verification run")
-    p_init.add_argument("--corpus", default=None, help="Optional corpus manifest to validate and resolve")
+    p_init.add_argument(
+        "--corpus",
+        default=None,
+        help="Optional corpus manifest to validate and resolve",
+    )
     p_init.add_argument("--run-id", default=None, help="Reuse an existing run ID")
     p_init.add_argument("--target-url", default=None, help="Backend base URL")
     p_init.add_argument("--config", default=None, help="Verify config TOML")
 
     # run
     p_run = sub.add_parser("run", help="Run verification scenarios")
-    p_run.add_argument("--suite", default="mvp", choices=["smoke", "mvp", "cache", "judge"])
+    p_run.add_argument(
+        "--suite", default="mvp", choices=["smoke", "mvp", "cache", "judge"]
+    )
     p_run.add_argument("--target-url", default=None, help="Backend base URL")
     p_run.add_argument("--run-id", default=None, help="Reuse an existing run ID")
     p_run.add_argument("--corpus", default=DEFAULT_CORPUS, help="Corpus manifest path")
@@ -209,13 +223,15 @@ def _finalize_run(mgr, metrics=None) -> None:
     if metrics is not None:
         findings = metrics.check_no_api_key_in_outputs()
 
-    mgr.set_security_checks({
-        "api_key_leak_scan": {
-            "passed": len(findings) == 0,
-            "findings_count": len(findings),
-            "findings": findings,
-        },
-    })
+    mgr.set_security_checks(
+        {
+            "api_key_leak_scan": {
+                "passed": len(findings) == 0,
+                "findings_count": len(findings),
+                "findings": findings,
+            },
+        }
+    )
     mgr.finish()
     mgr.write_manifest()
 

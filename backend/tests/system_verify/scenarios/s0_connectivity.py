@@ -3,6 +3,7 @@
 Verifies that the backend is accessible, LLM config is present,
 and a minimal model call succeeds.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,15 +20,36 @@ from ..run import RunManager
 from ..scenario import ScenarioBuilder, ScenarioRunner, StepAssertionError, assert_that
 
 
-async def run_s0(run_manager: RunManager, config: VerifyConfig, metrics: MetricsAggregator) -> None:
+async def run_s0(
+    run_manager: RunManager, config: VerifyConfig, metrics: MetricsAggregator
+) -> None:
     """Execute S0 scenario."""
     builder = ScenarioBuilder("S0_connectivity", "Environment and model connectivity")
 
-    builder.add_step("health_check", "Call backend health endpoint", _step_health, timeout_s=10.0)
-    builder.add_step("runtime_info", "Get runtime and LLM config info", _step_runtime, timeout_s=10.0)
-    builder.add_step("settings_check", "Verify settings endpoint returns config", _step_settings, timeout_s=10.0)
-    builder.add_step("verify_runtime", "Check verify runtime endpoint", _step_verify_runtime, timeout_s=10.0)
-    builder.add_step("verify_trace", "Verify trace headers are returned", _step_trace_headers, timeout_s=10.0)
+    builder.add_step(
+        "health_check", "Call backend health endpoint", _step_health, timeout_s=10.0
+    )
+    builder.add_step(
+        "runtime_info", "Get runtime and LLM config info", _step_runtime, timeout_s=10.0
+    )
+    builder.add_step(
+        "settings_check",
+        "Verify settings endpoint returns config",
+        _step_settings,
+        timeout_s=10.0,
+    )
+    builder.add_step(
+        "verify_runtime",
+        "Check verify runtime endpoint",
+        _step_verify_runtime,
+        timeout_s=10.0,
+    )
+    builder.add_step(
+        "verify_trace",
+        "Verify trace headers are returned",
+        _step_trace_headers,
+        timeout_s=10.0,
+    )
     builder.add_step(
         "llm_ping",
         "Minimal LLM connectivity probe",
@@ -66,7 +88,9 @@ async def _step_health(ctx: dict[str, Any]) -> None:
         )
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S0_connectivity", step_id="health_check")
+        metrics.record_from_api_record(
+            rec, scenario_id="S0_connectivity", step_id="health_check"
+        )
 
 
 async def _step_runtime(ctx: dict[str, Any]) -> None:
@@ -94,7 +118,9 @@ async def _step_runtime(ctx: dict[str, Any]) -> None:
         ctx["runtime_info"] = body
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S0_connectivity", step_id="runtime_info")
+        metrics.record_from_api_record(
+            rec, scenario_id="S0_connectivity", step_id="runtime_info"
+        )
 
 
 async def _step_settings(ctx: dict[str, Any]) -> None:
@@ -118,10 +144,14 @@ async def _step_settings(ctx: dict[str, Any]) -> None:
             "api_key_configured" in llm,
             "LLM settings should include 'api_key_configured'",
         )
-        assert_that.not_contains(str(llm), "sk-", "LLM settings must not expose api_key value")
+        assert_that.not_contains(
+            str(llm), "sk-", "LLM settings must not expose api_key value"
+        )
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S0_connectivity", step_id="settings_check")
+        metrics.record_from_api_record(
+            rec, scenario_id="S0_connectivity", step_id="settings_check"
+        )
 
 
 async def _step_verify_runtime(ctx: dict[str, Any]) -> None:
@@ -147,14 +177,18 @@ async def _step_verify_runtime(ctx: dict[str, Any]) -> None:
 
         llm = body.get("llm", {})
         if llm:
-            assert_that.not_contains(str(llm), "sk-", "Verify runtime must not expose api_key")
+            assert_that.not_contains(
+                str(llm), "sk-", "Verify runtime must not expose api_key"
+            )
 
         ctx["verify_mode_active"] = True
         ctx["backend_version"] = body.get("app_version")
         run_manager.set_backend_version(body.get("app_version"))
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S0_connectivity", step_id="verify_runtime")
+        metrics.record_from_api_record(
+            rec, scenario_id="S0_connectivity", step_id="verify_runtime"
+        )
 
 
 async def _step_trace_headers(ctx: dict[str, Any]) -> None:
@@ -170,15 +204,21 @@ async def _step_trace_headers(ctx: dict[str, Any]) -> None:
     ) as client:
         _, rec = await client.health()
 
-        assert_that.is_not_none(rec.trace_id, "Response should include x-trace-id header")
-        assert_that.is_not_none(rec.request_id, "Response should include x-request-id header")
+        assert_that.is_not_none(
+            rec.trace_id, "Response should include x-trace-id header"
+        )
+        assert_that.is_not_none(
+            rec.request_id, "Response should include x-request-id header"
+        )
         assert_that.is_true(
             len(rec.trace_id) > 0,
             "Trace ID should not be empty",
         )
 
         metrics: MetricsAggregator = ctx["metrics"]
-        metrics.record_from_api_record(rec, scenario_id="S0_connectivity", step_id="verify_trace")
+        metrics.record_from_api_record(
+            rec, scenario_id="S0_connectivity", step_id="verify_trace"
+        )
 
 
 async def _step_llm_ping(ctx: dict[str, Any]) -> None:
@@ -241,7 +281,9 @@ async def _step_llm_ping(ctx: dict[str, Any]) -> None:
                 step_id="llm_ping",
                 agent="llm_ping",
             )
-        metrics.record_from_api_record(rec, scenario_id="S0_connectivity", step_id="llm_ping")
+        metrics.record_from_api_record(
+            rec, scenario_id="S0_connectivity", step_id="llm_ping"
+        )
 
         if body.get("latency_ms") is not None:
             metrics.record(

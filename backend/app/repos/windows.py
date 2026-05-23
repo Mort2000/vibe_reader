@@ -31,9 +31,20 @@ async def create_window(
             focus_start_paragraph_idx, focus_end_paragraph_idx, assistant_frontier_paragraph_idx,
             text_hash, context_hash, status, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-        (book_id, chapter_idx, window_seq, start_paragraph_idx, end_paragraph_idx,
-         focus_start_paragraph_idx, focus_end_paragraph_idx, assistant_frontier_paragraph_idx,
-         text_hash, context_hash, now, now),
+        (
+            book_id,
+            chapter_idx,
+            window_seq,
+            start_paragraph_idx,
+            end_paragraph_idx,
+            focus_start_paragraph_idx,
+            focus_end_paragraph_idx,
+            assistant_frontier_paragraph_idx,
+            text_hash,
+            context_hash,
+            now,
+            now,
+        ),
     )
     await db.commit()
     return {

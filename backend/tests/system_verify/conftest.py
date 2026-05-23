@@ -12,6 +12,7 @@ data directory and verify mode, for example:
 Pre/post data directory reset is handled by the vibe-verify CLI run command;
 pytest fixtures do not manage backend process lifecycle.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,18 +21,19 @@ import pathlib
 
 import pytest
 
-from .env_file import load_project_dotenv
-
-load_project_dotenv()
-
 from .config import VerifyConfig, load_verify_config
 from .corpus import CorpusManager
+from .env_file import load_project_dotenv
 from .metrics_collector import MetricsAggregator
 from .run import RunManager
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line("markers", "system_llm: system verification tests requiring real backend and LLM")
+    load_project_dotenv()
+    config.addinivalue_line(
+        "markers",
+        "system_llm: system verification tests requiring real backend and LLM",
+    )
     config.addinivalue_line("markers", "system_verify: all system verification tests")
 
 
@@ -48,13 +50,15 @@ def run_manager(verify_config: VerifyConfig) -> RunManager:
     yield mgr
     metrics = MetricsAggregator(mgr)
     findings = metrics.check_no_api_key_in_outputs()
-    mgr.set_security_checks({
-        "api_key_leak_scan": {
-            "passed": len(findings) == 0,
-            "findings_count": len(findings),
-            "findings": findings,
-        },
-    })
+    mgr.set_security_checks(
+        {
+            "api_key_leak_scan": {
+                "passed": len(findings) == 0,
+                "findings_count": len(findings),
+                "findings": findings,
+            },
+        }
+    )
     mgr.finish()
     mgr.write_manifest()
 

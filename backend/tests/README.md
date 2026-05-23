@@ -134,9 +134,3 @@ tests/
     run.py                  run 目录与 manifest
     …
 ```
-
-## 相关规格
-
-- 任务与验收：`vibe_reader_doc/task_mini.md`
-- 接口合同：`vibe_reader_doc/spec_interface.md`
-- 可观测：`vibe_reader_doc/spec_telemetry.md`

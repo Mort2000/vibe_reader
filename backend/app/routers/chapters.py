@@ -24,8 +24,12 @@ async def list_chapters(
             "book_id": c["book_id"],
             "idx": c["idx"],
             "title": c["title"],
-            "paragraph_count": c["paragraph_count"] if "paragraph_count" in c.keys() else 0,
-            "token_estimate": c["token_estimate"] if "token_estimate" in c.keys() else 0,
+            "paragraph_count": c["paragraph_count"]
+            if "paragraph_count" in c.keys()
+            else 0,
+            "token_estimate": c["token_estimate"]
+            if "token_estimate" in c.keys()
+            else 0,
         }
         for c in chapters
     ]
@@ -41,7 +45,11 @@ async def get_chapter(
     db = request.app.state.db
     chapter = await chapter_repo.get_chapter(db, book_id, chapter_idx)
     if not chapter:
-        raise AppError("chapter_not_found", "Chapter not found", details={"book_id": book_id, "chapter_idx": chapter_idx})
+        raise AppError(
+            "chapter_not_found",
+            "Chapter not found",
+            details={"book_id": book_id, "chapter_idx": chapter_idx},
+        )
 
     all_chapters = await chapter_repo.list_chapters(db, book_id)
     prev_idx = None
@@ -84,7 +92,9 @@ async def list_paragraphs(
 
     comments_map: dict[int, list[dict[str, Any]]] = {}
     if include_comments:
-        comments, _ = await comment_repo.list_comments(db, book_id, chapter_idx, status="active")
+        comments, _ = await comment_repo.list_comments(
+            db, book_id, chapter_idx, status="active"
+        )
         for c in comments:
             pidx = c["paragraph_idx"]
             comments_map.setdefault(pidx, []).append(c)
@@ -101,4 +111,9 @@ async def list_paragraphs(
             item["comments"] = comments_map.get(p["paragraph_idx"], [])
         items.append(item)
 
-    return {"book_id": book_id, "chapter_idx": chapter_idx, "items": items, "total": total}
+    return {
+        "book_id": book_id,
+        "chapter_idx": chapter_idx,
+        "items": items,
+        "total": total,
+    }
