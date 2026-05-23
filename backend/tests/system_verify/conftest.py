@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 import pathlib
+from typing import Any
 
 import pytest
 
@@ -74,6 +75,12 @@ def corpus_manager(verify_config: VerifyConfig) -> CorpusManager:
     cm = CorpusManager(verify_config, manifest_path)
     cm.load()
     return cm
+
+
+@pytest.fixture(scope="session")
+def suite_ctx() -> dict[str, Any]:
+    """Shared book/import state when running S1→S2→S3 in one pytest session."""
+    return {}
 
 
 @pytest.fixture(scope="session")

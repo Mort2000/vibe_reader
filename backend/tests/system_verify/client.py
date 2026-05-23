@@ -316,6 +316,24 @@ class TargetClient:
         )
         return resp.json(), rec
 
+    async def retry_window(
+        self,
+        window_id: int,
+        reason: str = "manual_retry",
+    ) -> tuple[dict, APIRecord]:
+        resp, rec = await self._request(
+            "POST",
+            f"/api/windows/{window_id}/retry",
+            json_body={"reason": reason},
+        )
+        return resp.json(), rec
+
+    async def verify_trace_summary(self, trace_id: str) -> tuple[dict, APIRecord]:
+        resp, rec = await self._request(
+            "GET", f"/api/verify/traces/{trace_id}/summary"
+        )
+        return resp.json(), rec
+
     async def verify_llm_ping(self) -> tuple[dict, APIRecord]:
         resp, rec = await self._request("POST", "/api/verify/llm-ping")
         return resp.json(), rec
