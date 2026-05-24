@@ -223,7 +223,7 @@ def _start_stub_sidecar(
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
-    from .config import load_verify_config
+    from .config import load_verify_config, validate_real_llm_config
     from .metrics_collector import MetricsAggregator
     from .run import RunManager
 
@@ -234,9 +234,11 @@ def _cmd_run(args: argparse.Namespace) -> None:
     if args.suite:
         config.run.suite = args.suite
 
-    if config.run.suite == "real-happy-path" and not config.is_real_llm:
-        print("real-happy-path requires --llm-mode real", file=sys.stderr)
-        sys.exit(1)
+    if config.run.suite == "real-happy-path" and config.is_real_llm:
+        errors = validate_real_llm_config(config)
+        if errors:
+            print("Real LLM config invalid: " + "; ".join(errors), file=sys.stderr)
+            sys.exit(1)
 
     mgr = RunManager(config, run_id=args.run_id)
     out_dir = mgr.start()

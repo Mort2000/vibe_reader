@@ -5,6 +5,8 @@ from __future__ import annotations
 import pathlib
 from typing import TYPE_CHECKING, Any
 
+import toml
+
 if TYPE_CHECKING:
     from .client import TargetClient
     from .config import VerifyConfig
@@ -94,4 +96,29 @@ async def prepare_run_data_dir(
         actual_data_dir = runtime_body.get("data_dir", "")
         assert_isolated_data_dir(config.target_data_dir, actual_data_dir)
 
-        return await reset_backend_data(client, actual_data_dir)
+        reset_body = await reset_backend_data(client, actual_data_dir)
+        if config.app_config:
+            await sync_app_config(client, config)
+        return reset_body
+
+
+async def sync_app_config(client: TargetClient, config: VerifyConfig) -> dict[str, Any]:
+    """Write app config.toml and apply overlays on the running backend."""
+    app_raw = dict(config.app_config)
+    if not app_raw:
+        return {"synced": False}
+
+    data_dir = config.target_data_dir
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_path = data_dir / "config.toml"
+    config_path.write_text(toml.dumps(app_raw), encoding="utf-8")
+
+    body, rec = await client.verify_app_config(
+        reader=app_raw.get("reader"),
+        window_l1=app_raw.get("window_l1"),
+        context_l2=app_raw.get("context_l2"),
+        context_l3=app_raw.get("context_l3"),
+    )
+    if rec.status_code >= 400:
+        raise DataDirError(f"App config sync failed (HTTP {rec.status_code}): {body}")
+    return body

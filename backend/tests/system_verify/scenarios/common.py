@@ -306,6 +306,34 @@ async def update_progress(
     return body
 
 
+async def advance_reading_to(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    chapter_idx: int,
+    paragraph_idx: int,
+    trace: ReadingTrace,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+) -> int:
+    """Jump reading progress to *paragraph_idx* in one PUT."""
+    await update_progress(
+        client,
+        ctx,
+        book_id,
+        chapter_idx,
+        paragraph_idx,
+        0.35,
+        trace,
+        scenario_id=scenario_id,
+        step_id=step_id,
+        metrics=metrics,
+    )
+    return paragraph_idx
+
+
 async def advance_reading(
     client: TargetClient,
     ctx: dict[str, Any],
@@ -578,6 +606,181 @@ async def advance_reading_cross_chapter(
     return active_session
 
 
+async def drain_chapter_comment_jobs(
+    client: TargetClient,
+    session: ReadingSession,
+    book_id: int,
+    chapter_idx: int,
+    anchor_paragraph_idx: int,
+    trace: ReadingTrace,
+    *,
+    scenario_id: str,
+    step_id: str,
+    config: VerifyConfig,
+    timeout_s: float | None = None,
+) -> None:
+    """Wait until all comment_window jobs for *chapter_idx* finish."""
+    max_wait = float(config.run.max_wait_comment_window_s)
+    if timeout_s is None:
+        timeout_s = max_wait * 40
+    deadline = time.monotonic() + timeout_s
+
+    while time.monotonic() < deadline:
+        jobs = await fetch_verify_jobs(
+            client,
+            book_id,
+            chapter_idx,
+            scenario_id=scenario_id,
+            step_id=step_id,
+            job_type="comment_window",
+        )
+        active = [j for j in jobs if j.get("status") in ("pending", "running")]
+        if not active:
+            return
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await wait_for_window_done(
+            client,
+            session,
+            book_id,
+            chapter_idx,
+            anchor_paragraph_idx,
+            min(max_wait, remaining),
+            trace,
+            retry_on_failure=True,
+        )
+
+    jobs = await fetch_verify_jobs(
+        client,
+        book_id,
+        chapter_idx,
+        scenario_id=scenario_id,
+        step_id=step_id,
+        job_type="comment_window",
+    )
+    active = [j for j in jobs if j.get("status") in ("pending", "running")]
+    if active:
+        raise StepAssertionError(
+            assertion="comment_jobs_drained",
+            message=(
+                f"Timed out waiting for {len(active)} comment_window jobs "
+                f"on chapter {chapter_idx}"
+            ),
+            actual={
+                "chapter_idx": chapter_idx,
+                "pending_or_running": len(active),
+            },
+        )
+
+
+async def advance_start_chapter_sync_then_cross(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+    config: VerifyConfig,
+    read_batch_size: int | None = None,
+) -> ReadingSession:
+    """Read the start chapter in paced batches, waiting for comment windows between batches."""
+    start_chapter_idx = cursor.chapter_idx
+    chapter = chapter_by_idx(chapters, start_chapter_idx)
+    if chapter is None:
+        raise StepAssertionError(
+            assertion="chapter_exists",
+            message=f"Chapter {start_chapter_idx} not found in book metadata",
+            actual={"chapter_idx": start_chapter_idx},
+        )
+
+    chapter_last = last_paragraph_idx(chapter)
+    if read_batch_size is None:
+        read_batch_size = config.effective_read_batch_size
+    delay_ms = config.effective_progress_step_delay_ms
+    max_wait = float(config.run.max_wait_comment_window_s)
+
+    next_paragraph = cursor.paragraph_idx
+    while cursor.chapter_idx == start_chapter_idx and next_paragraph <= chapter_last:
+        batch_end = min(next_paragraph + read_batch_size - 1, chapter_last)
+        last = await advance_reading(
+            client,
+            ctx,
+            book_id,
+            start_chapter_idx,
+            next_paragraph,
+            batch_end,
+            trace,
+            scenario_id=scenario_id,
+            step_id=step_id,
+            metrics=metrics,
+            delay_ms=delay_ms,
+        )
+        cursor.paragraph_idx = last
+        ctx["final_paragraph_idx"] = last
+        ctx["chapter_idx"] = cursor.chapter_idx
+        next_paragraph = last + 1
+
+        await wait_for_window_done(
+            client,
+            session,
+            book_id,
+            start_chapter_idx,
+            last,
+            max_wait,
+            trace,
+            retry_on_failure=True,
+        )
+
+    await drain_chapter_comment_jobs(
+        client,
+        session,
+        book_id,
+        start_chapter_idx,
+        chapter_last,
+        trace,
+        scenario_id=scenario_id,
+        step_id=step_id,
+        config=config,
+    )
+
+    if cursor.chapters_crossed >= 1:
+        return session
+
+    active_session = await advance_reading_cross_chapter(
+        client,
+        ctx,
+        book_id,
+        cursor,
+        chapters,
+        max(read_batch_size, 8),
+        trace,
+        session,
+        scenario_id=scenario_id,
+        step_id=step_id,
+        metrics=metrics,
+        delay_ms=delay_ms,
+    )
+    if cursor.chapters_crossed < 1:
+        raise StepAssertionError(
+            assertion="cross_chapter_reading",
+            message="Finished start chapter but did not enter the next chapter",
+            actual={
+                "chapter_idx": cursor.chapter_idx,
+                "paragraph_idx": cursor.paragraph_idx,
+                "start_chapter_idx": start_chapter_idx,
+                "chapter_last_paragraph_idx": chapter_last,
+            },
+        )
+    return active_session
+
+
 async def advance_until_chapter_crossed(
     client: TargetClient,
     ctx: dict[str, Any],
@@ -593,7 +796,7 @@ async def advance_until_chapter_crossed(
     delay_ms: int = 300,
     batch_size: int = 24,
 ) -> ReadingSession:
-    """Keep reading forward until at least one chapter boundary is crossed."""
+    """Read forward paragraph-by-paragraph until the next chapter is entered."""
     active_session = session
     while cursor.chapters_crossed < 1:
         active_session = await advance_reading_cross_chapter(
@@ -679,53 +882,20 @@ async def cross_to_next_chapter(
     )
 
 
-async def read_from_start_then_cross_chapter(
+async def _maybe_retry_failed_window(
     client: TargetClient,
-    ctx: dict[str, Any],
-    book_id: int,
-    cursor: ReadingCursor,
-    chapters: list[dict[str, Any]],
-    trace: ReadingTrace,
-    session: ReadingSession,
+    window: dict[str, Any],
     *,
-    scenario_id: str,
-    step_id: str,
-    metrics: MetricsAggregator,
-    warmup_paragraphs: int = 24,
-    delay_ms: int = 300,
-) -> ReadingSession:
-    """Read from the start probe, then explicitly switch to the next chapter."""
-    active_session = await advance_reading_cross_chapter(
-        client,
-        ctx,
-        book_id,
-        cursor,
-        chapters,
-        warmup_paragraphs,
-        trace,
-        session,
-        scenario_id=scenario_id,
-        step_id=step_id,
-        metrics=metrics,
-        delay_ms=delay_ms,
-    )
-    if cursor.chapters_crossed >= 1:
-        return active_session
-    return await cross_to_next_chapter(
-        client,
-        ctx,
-        book_id,
-        cursor,
-        chapters,
-        trace,
-        active_session,
-        scenario_id=scenario_id,
-        step_id=step_id,
-        metrics=metrics,
-    )
+    retry_on_failure: bool,
+) -> bool:
+    window_id = window.get("id")
+    if not retry_on_failure or window_id is None:
+        return False
+    await client.retry_window(int(window_id), reason="verify_window_retry")
+    return True
 
 
-async def wait_for_window_done(
+async def wait_for_window_done(  # noqa: C901
     client: TargetClient,
     session: ReadingSession,
     book_id: int,
@@ -733,11 +903,20 @@ async def wait_for_window_done(
     paragraph_idx: int,
     timeout_s: float,
     trace: ReadingTrace,
+    *,
+    retry_on_failure: bool = False,
 ) -> dict[str, Any] | None:
     """Wait for the window covering paragraph_idx to reach a terminal state."""
 
     def _chapter_filter(evt: SSEEvent) -> bool:
         return evt.book_id == book_id and evt.chapter_idx == chapter_idx
+
+    async def _handle_failed_window(window: dict[str, Any]) -> bool:
+        if await _maybe_retry_failed_window(
+            client, window, retry_on_failure=retry_on_failure
+        ):
+            return True
+        raise_window_failed(window)
 
     deadline = time.monotonic() + timeout_s
     last_window: dict[str, Any] | None = None
@@ -755,7 +934,9 @@ async def wait_for_window_done(
                 session.ingest_events(trace)
                 return window
             if status == "failed":
-                raise_window_failed(window)
+                if await _handle_failed_window(window):
+                    deadline = time.monotonic() + timeout_s
+                continue
 
             target_window_id = window.get("id")
             remaining = deadline - time.monotonic()
@@ -771,7 +952,15 @@ async def wait_for_window_done(
                 if evt:
                     session.ingest_events(trace)
                     if evt.event_type == "window.failed":
-                        raise_window_failed(evt.data)
+                        failed_window = evt.data if isinstance(evt.data, dict) else {}
+                        if not failed_window.get("id"):
+                            failed_window = {
+                                **failed_window,
+                                "id": evt.window_id or target_window_id,
+                            }
+                        if await _handle_failed_window(failed_window):
+                            deadline = time.monotonic() + timeout_s
+                        continue
                     body, rec = await client.get_current_window(
                         book_id, chapter_idx, paragraph_idx=paragraph_idx
                     )
@@ -780,7 +969,9 @@ async def wait_for_window_done(
                     if window and window.get("status") == "done":
                         return window
                     if window and window.get("status") == "failed":
-                        raise_window_failed(window)
+                        if await _handle_failed_window(window):
+                            deadline = time.monotonic() + timeout_s
+                        continue
                     last_window = window or last_window
                     continue
 
@@ -1750,6 +1941,64 @@ async def assert_reading_not_blocked(
         )
 
 
+async def _poll_compaction_verify_jobs(
+    client: TargetClient,
+    book_id: int,
+    chapter_idx: int,
+    *,
+    run_id: str | None,
+) -> list[dict[str, Any]]:
+    jobs = await fetch_verify_jobs(
+        client,
+        book_id,
+        chapter_idx,
+        job_type="compact_context",
+        run_id=run_id,
+    )
+    if jobs:
+        return jobs
+    return await fetch_verify_jobs(
+        client,
+        book_id,
+        chapter_idx,
+        job_type="compact_context",
+    )
+
+
+async def _poll_real_compaction_agent_job(
+    client: TargetClient,
+    book_id: int,
+    chapter_idx: int,
+    run_id: str | None,
+) -> dict[str, Any] | None:
+    if not run_id:
+        return None
+    from ..context_assertions import extract_chapter_summary, find_compaction_agent_runs
+
+    agent_runs = await fetch_verify_agent_runs(client, run_id)
+    for run in reversed(find_compaction_agent_runs(agent_runs)):
+        interaction = run.get("interaction") or run
+        if int(run.get("input_tokens") or interaction.get("input_tokens") or 0) > 0:
+            return {
+                "id": run.get("job_id") or interaction.get("job_id"),
+                "job_type": "compact_context",
+                "book_id": book_id,
+                "chapter_idx": chapter_idx,
+                "status": "done",
+                "trace_id": run.get("trace_id"),
+            }
+        if interaction.get("summary_id") or extract_chapter_summary(interaction):
+            return {
+                "id": run.get("job_id") or interaction.get("job_id"),
+                "job_type": "compact_context",
+                "book_id": book_id,
+                "chapter_idx": chapter_idx,
+                "status": "done",
+                "trace_id": run.get("trace_id"),
+            }
+    return None
+
+
 async def wait_for_compaction(
     client: TargetClient,
     session: ReadingSession,
@@ -1770,28 +2019,27 @@ async def wait_for_compaction(
         return evt.book_id == book_id and evt.chapter_idx == chapter_idx
 
     deadline = time.monotonic() + timeout_s
-    last_job: dict[str, Any] | None = None
     last_failed: dict[str, Any] | None = None
 
     while time.monotonic() < deadline:
-        jobs = await fetch_verify_jobs(
-            client,
-            book_id,
-            chapter_idx,
-            job_type="compact_context",
-            run_id=run_id,
+        jobs = await _poll_compaction_verify_jobs(
+            client, book_id, chapter_idx, run_id=run_id
         )
-        done_jobs = [job for job in jobs if job.get("status") == "done"]
-        if done_jobs:
-            session.ingest_events(trace)
-            return done_jobs[-1], jobs, last_failed
-
         failed_jobs = [job for job in jobs if job.get("status") == "failed"]
         if failed_jobs:
             last_failed = failed_jobs[-1]
 
-        if jobs:
-            last_job = jobs[-1]
+        real_run = await _poll_real_compaction_agent_job(
+            client, book_id, chapter_idx, run_id
+        )
+        if real_run:
+            session.ingest_events(trace)
+            return real_run, jobs, last_failed
+
+        done_jobs = [job for job in jobs if job.get("status") == "done"]
+        if done_jobs and not run_id:
+            session.ingest_events(trace)
+            return done_jobs[-1], jobs, last_failed
 
         remaining = deadline - time.monotonic()
         if remaining > 0:
@@ -1802,16 +2050,14 @@ async def wait_for_compaction(
             )
             if evt:
                 session.ingest_events(trace)
-                jobs = await fetch_verify_jobs(
-                    client,
-                    book_id,
-                    chapter_idx,
-                    job_type="compact_context",
-                    run_id=run_id,
+                jobs = await _poll_compaction_verify_jobs(
+                    client, book_id, chapter_idx, run_id=run_id
                 )
-                done_jobs = [job for job in jobs if job.get("status") == "done"]
-                if done_jobs:
-                    return done_jobs[-1], jobs, last_failed
+                real_run = await _poll_real_compaction_agent_job(
+                    client, book_id, chapter_idx, run_id
+                )
+                if real_run:
+                    return real_run, jobs, last_failed
                 failed_jobs = [job for job in jobs if job.get("status") == "failed"]
                 if failed_jobs:
                     last_failed = failed_jobs[-1]
@@ -1820,12 +2066,8 @@ async def wait_for_compaction(
         await asyncio.sleep(0.5)
 
     session.ingest_events(trace)
-    return last_job, await fetch_verify_jobs(
-        client,
-        book_id,
-        chapter_idx,
-        job_type="compact_context",
-        run_id=run_id,
+    return None, await _poll_compaction_verify_jobs(
+        client, book_id, chapter_idx, run_id=run_id
     ), last_failed
 
 
@@ -1906,6 +2148,299 @@ async def advance_until_compaction(
         next_paragraph = last + 1
 
     return last_job, all_jobs, last_failed
+
+
+async def _advance_post_compaction_comment_windows(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+    config: VerifyConfig,
+    post_comment_windows: int,
+) -> tuple[int, ReadingSession]:
+    """Re-read after compaction so new comment windows include chapter summary."""
+    post_batch = max(12, config.effective_read_batch_size // 4)
+    max_wait = float(config.run.max_wait_comment_window_s)
+    completed_post = 0
+    active_session = session
+    chapter_rewind_done = False
+
+    while completed_post < post_comment_windows:
+        chapter = chapter_by_idx(chapters, cursor.chapter_idx)
+        if chapter is None:
+            break
+        chapter_last = last_paragraph_idx(chapter)
+
+        if cursor.paragraph_idx >= chapter_last and not chapter_rewind_done:
+            rewind = min(
+                max(post_batch, config.effective_read_batch_size),
+                chapter_last,
+            )
+            back = max(0, chapter_last - rewind)
+            if back < chapter_last:
+                await advance_reading_to(
+                    client,
+                    ctx,
+                    book_id,
+                    cursor.chapter_idx,
+                    back,
+                    trace,
+                    scenario_id=scenario_id,
+                    step_id=step_id,
+                    metrics=metrics,
+                )
+                cursor.paragraph_idx = back
+                chapter_rewind_done = True
+                continue
+            chapter_rewind_done = True
+
+        if cursor.paragraph_idx >= chapter_last:
+            active_session, moved = await _cross_reading_chapter(
+                ctx,
+                cursor,
+                chapters,
+                active_session,
+                scenario_id=scenario_id,
+                book_id=book_id,
+            )
+            if moved:
+                ctx["chapters_crossed"] = int(ctx.get("chapters_crossed") or 0) + 1
+                chapter_rewind_done = False
+                await advance_reading_to(
+                    client,
+                    ctx,
+                    book_id,
+                    cursor.chapter_idx,
+                    0,
+                    trace,
+                    scenario_id=scenario_id,
+                    step_id=step_id,
+                    metrics=metrics,
+                )
+                continue
+            break
+
+        end = min(cursor.paragraph_idx + post_batch, chapter_last)
+        if end <= cursor.paragraph_idx:
+            break
+        last = await advance_reading_to(
+            client,
+            ctx,
+            book_id,
+            cursor.chapter_idx,
+            end,
+            trace,
+            scenario_id=scenario_id,
+            step_id=step_id,
+            metrics=metrics,
+        )
+        cursor.paragraph_idx = last
+        ctx["final_paragraph_idx"] = last
+        window = await wait_for_window_done(
+            client,
+            active_session,
+            book_id,
+            cursor.chapter_idx,
+            last,
+            max_wait,
+            trace,
+            retry_on_failure=True,
+        )
+        if window and window.get("status") == "done":
+            completed_post += 1
+
+    compaction_chapter_idx = ctx.get("long_chapter_idx")
+    if compaction_chapter_idx is not None:
+        chapter = chapter_by_idx(chapters, int(compaction_chapter_idx))
+        if chapter and cursor.chapter_idx == int(compaction_chapter_idx):
+            chapter_last = last_paragraph_idx(chapter)
+            if cursor.paragraph_idx < chapter_last:
+                last = await advance_reading_to(
+                    client,
+                    ctx,
+                    book_id,
+                    cursor.chapter_idx,
+                    chapter_last,
+                    trace,
+                    scenario_id=scenario_id,
+                    step_id=step_id,
+                    metrics=metrics,
+                )
+                cursor.paragraph_idx = last
+                ctx["final_paragraph_idx"] = last
+                await wait_for_window_done(
+                    client,
+                    active_session,
+                    book_id,
+                    cursor.chapter_idx,
+                    last,
+                    max_wait,
+                    trace,
+                    retry_on_failure=True,
+                )
+    return completed_post, active_session
+
+
+async def advance_until_compaction_then_post_windows(
+    client: TargetClient,
+    ctx: dict[str, Any],
+    book_id: int,
+    cursor: ReadingCursor,
+    chapters: list[dict[str, Any]],
+    trace: ReadingTrace,
+    session: ReadingSession,
+    *,
+    scenario_id: str,
+    step_id: str,
+    metrics: MetricsAggregator,
+    config: VerifyConfig,
+    batch_size: int | None = None,
+    post_comment_windows: int | None = None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """Advance with large batches until compaction, then finish a few comment windows."""
+    if batch_size is None:
+        batch_size = config.effective_compaction_advance_batch_size
+    if post_comment_windows is None:
+        post_comment_windows = config.real_llm.long_flow.post_compaction_comment_windows
+
+    chapter = chapter_by_idx(chapters, cursor.chapter_idx)
+    if chapter is None:
+        raise StepAssertionError(
+            assertion="chapter_exists",
+            message=f"Chapter {cursor.chapter_idx} not found",
+            actual={"chapter_idx": cursor.chapter_idx},
+        )
+
+    chapter_last = last_paragraph_idx(chapter)
+    next_paragraph = cursor.paragraph_idx
+    if next_paragraph == 0:
+        await advance_reading_to(
+            client,
+            ctx,
+            book_id,
+            cursor.chapter_idx,
+            0,
+            trace,
+            scenario_id=scenario_id,
+            step_id=step_id,
+            metrics=metrics,
+        )
+    timeout_s = float(config.run.max_wait_compaction_s)
+    deadline = time.monotonic() + timeout_s
+    max_wait = float(config.run.max_wait_comment_window_s)
+    last_failed: dict[str, Any] | None = None
+    all_jobs: list[dict[str, Any]] = []
+    done_job: dict[str, Any] | None = None
+    chapter_end_nudged = False
+
+    while time.monotonic() < deadline:
+        done_job, jobs, failed_job = await wait_for_compaction(
+            client,
+            session,
+            book_id,
+            cursor.chapter_idx,
+            timeout_s=min(2.0, deadline - time.monotonic()),
+            trace=trace,
+            run_id=ctx["run_manager"].run_id,
+        )
+        all_jobs = jobs or all_jobs
+        if failed_job:
+            last_failed = failed_job
+        if done_job:
+            break
+
+        if next_paragraph <= chapter_last:
+            end = min(next_paragraph + batch_size - 1, chapter_last)
+            last = await advance_reading_to(
+                client,
+                ctx,
+                book_id,
+                cursor.chapter_idx,
+                end,
+                trace,
+                scenario_id=scenario_id,
+                step_id=step_id,
+                metrics=metrics,
+            )
+            cursor.paragraph_idx = last
+            ctx["final_paragraph_idx"] = last
+            next_paragraph = last + 1
+            await wait_for_window_done(
+                client,
+                session,
+                book_id,
+                cursor.chapter_idx,
+                last,
+                max_wait,
+                trace,
+                retry_on_failure=True,
+            )
+        else:
+            if not chapter_end_nudged:
+                await advance_reading_to(
+                    client,
+                    ctx,
+                    book_id,
+                    cursor.chapter_idx,
+                    chapter_last,
+                    trace,
+                    scenario_id=scenario_id,
+                    step_id=step_id,
+                    metrics=metrics,
+                )
+                cursor.paragraph_idx = chapter_last
+                ctx["final_paragraph_idx"] = chapter_last
+                chapter_end_nudged = True
+            await drain_chapter_comment_jobs(
+                client,
+                session,
+                book_id,
+                cursor.chapter_idx,
+                chapter_last,
+                trace,
+                scenario_id=scenario_id,
+                step_id=step_id,
+                config=config,
+                timeout_s=min(60.0, deadline - time.monotonic()),
+            )
+            await asyncio.sleep(1.0)
+
+    if not done_job:
+        raise StepAssertionError(
+            assertion="compaction_triggered",
+            message="Timed out before the first compaction completed",
+            actual={
+                "chapter_idx": cursor.chapter_idx,
+                "paragraph_idx": cursor.paragraph_idx,
+                "jobs_seen": len(all_jobs),
+                "last_failed": last_failed,
+            },
+        )
+
+    completed_post, session = await _advance_post_compaction_comment_windows(
+        client,
+        ctx,
+        book_id,
+        cursor,
+        chapters,
+        trace,
+        session,
+        scenario_id=scenario_id,
+        step_id=step_id,
+        metrics=metrics,
+        config=config,
+        post_comment_windows=post_comment_windows,
+    )
+    ctx["post_compaction_comment_windows_completed"] = completed_post
+    ctx["reading_session"] = session
+    return done_job, all_jobs, last_failed
 
 
 async def collect_latest_injected_contexts(

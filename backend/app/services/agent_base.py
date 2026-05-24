@@ -52,7 +52,7 @@ class CommentDeps:
 
 class AnchorExcerpt(BaseModel):
     chapter_idx: int
-    paragraph_idx: int
+    paragraph_idx: int | None = None
     text: str
     reason: str
 
@@ -135,14 +135,15 @@ def get_comment_agent(settings: Settings) -> Agent[CommentDeps, str | None]:
 class CompactionDeps:
     previous_summary: str | None = None
     chunk_text: str = ""
+    raw_output: dict[str, Any] = field(default_factory=dict)
 
 
-_compaction_agent: Agent[CompactionDeps, ChapterCompressedSummaryOutput] | None = None
+_compaction_agent: Agent[CompactionDeps, str | None] | None = None
 
 
 def get_compaction_agent(
     settings: Settings,
-) -> Agent[CompactionDeps, ChapterCompressedSummaryOutput]:
+) -> Agent[CompactionDeps, str | None]:
     global _compaction_agent
     if _compaction_agent is not None:
         return _compaction_agent
@@ -150,10 +151,20 @@ def get_compaction_agent(
     _compaction_agent = Agent(
         model,
         deps_type=CompactionDeps,
-        output_type=ChapterCompressedSummaryOutput,
-        instructions=COMPACTION_INSTRUCTIONS,
+        output_type=str | None,
+        instructions=COMPACTION_INSTRUCTIONS
+        + "\n调用 emit_chapter_compressed_summary 提交 JSON 结构化摘要；最终自然语言会被忽略。",
         name="ContextCompactionAgent",
         description="将已读原文 chunk 压缩成章节摘要",
         retries={"output": 2},
     )
+
+    @_compaction_agent.tool
+    async def emit_chapter_compressed_summary(
+        ctx: RunContext[CompactionDeps], payload: dict[str, Any]
+    ) -> str:
+        """Submit chapter compressed summary payload."""
+        ctx.deps.raw_output = payload
+        return "accepted"
+
     return _compaction_agent

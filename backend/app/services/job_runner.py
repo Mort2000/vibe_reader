@@ -7,7 +7,7 @@ from typing import Any
 
 import aiosqlite
 
-from ..observability import ensure_trace_id
+from ..observability import new_trace_id
 from ..repos import context_state
 from ..repos import jobs as job_repo
 from ..repos import windows as window_repo
@@ -238,7 +238,7 @@ class JobRunner:
             )
             return
 
-        trace_id = ensure_trace_id()
+        trace_id = new_trace_id()
 
         await context_state.get_or_create(db, book_id)
         await context_state.update_state(
@@ -331,22 +331,33 @@ class JobRunner:
                 db, "compact_context", book_id, chapter_idx
             )
 
-        done_event = (
-            "window.done"
-            if job_type == "comment_window"
-            else "context.compacted"
-        )
-        await publish_event(
-            done_event,
-            {
+        if telemetry or job_type == "comment_window":
+            done_event = (
+                "window.done"
+                if job_type == "comment_window"
+                else "context.compacted"
+            )
+            event_payload: dict[str, Any] = {
                 "book_id": book_id,
                 "chapter_idx": chapter_idx,
                 "window_id": window_id,
                 "job_id": job_id,
                 "job_type": job_type,
                 "trace_id": trace_id,
-            },
-        )
+            }
+            if telemetry and job_type == "compact_context":
+                for key in (
+                    "reclaimed_chunk_id",
+                    "reclaimed_chunk_ids",
+                    "source_chunk_id",
+                    "summary_id",
+                ):
+                    if telemetry.get(key) is not None:
+                        event_payload[key] = telemetry[key]
+            await publish_event(
+                done_event,
+                event_payload,
+            )
 
         logger.info(
             "job_runner.job_done",
@@ -385,24 +396,81 @@ class JobRunner:
         from ..repos import progress as progress_repo
         from . import window_service
         from .context_builder import build_context
+        from .progress_helpers import validate_pending_progress
 
         chapter_idx = state["pending_chapter_idx"]
         paragraph_idx = state["pending_paragraph_idx"]
         scroll_pct = state["pending_scroll_pct"]
+        pending_af_ch = state.get("pending_assistant_frontier_chapter_idx")
+        pending_af_p = state.get("pending_assistant_frontier_paragraph_idx")
+        pending_jump_chars = state.get("pending_context_jump_chars")
+
+        _clear_pending = {
+            "status": "idle",
+            "running_job_id": None,
+            "pending_chapter_idx": None,
+            "pending_paragraph_idx": None,
+            "pending_scroll_pct": None,
+            "pending_assistant_frontier_chapter_idx": None,
+            "pending_assistant_frontier_paragraph_idx": None,
+            "pending_context_jump_chars": None,
+            "pending_updated_at": None,
+        }
 
         if chapter_idx is None or paragraph_idx is None:
-            await context_state.update_state(
-                db, book_id, status="idle", running_job_id=None,
-                pending_chapter_idx=None, pending_paragraph_idx=None,
-                pending_scroll_pct=None, pending_updated_at=None,
-            )
+            await context_state.update_state(db, book_id, **_clear_pending)
             return
+
+        jump_type, jump_chars = await validate_pending_progress(
+            db,
+            book_id,
+            state,
+            chapter_idx=chapter_idx,
+            paragraph_idx=paragraph_idx,
+            assistant_frontier_chapter_idx=pending_af_ch,
+            assistant_frontier_paragraph_idx=pending_af_p,
+            max_context_jump_chars=settings.context.max_context_jump_chars,
+            lookahead_paragraphs=settings.reader.lookahead_paragraphs,
+        )
+
+        if jump_type in ("backward", "forward_rejected"):
+            logger.info(
+                "job_runner.pending_discarded",
+                extra={
+                    "event": "job_runner.pending_discarded",
+                    "fields": {
+                        "book_id": book_id,
+                        "chapter_idx": chapter_idx,
+                        "paragraph_idx": paragraph_idx,
+                        "jump_type": jump_type,
+                        "jump_chars": jump_chars,
+                        "stored_jump_chars": pending_jump_chars,
+                    },
+                },
+            )
+            await context_state.update_state(db, book_id, **_clear_pending)
+            return
+
+        assistant_frontier = pending_af_p
+        if assistant_frontier is None:
+            from .progress_helpers import compute_assistant_frontier
+
+            assistant_frontier = await compute_assistant_frontier(
+                db, book_id, chapter_idx, paragraph_idx,
+                settings.reader.lookahead_paragraphs,
+            )
 
         await progress_repo.upsert_progress(
             db, book_id,
             chapter_idx=chapter_idx,
             paragraph_idx=paragraph_idx,
             scroll_pct=scroll_pct or 0.0,
+        )
+
+        await context_state.update_state(
+            db, book_id,
+            active_chapter_idx=chapter_idx,
+            reading_paragraph_idx=paragraph_idx,
         )
 
         window, is_new = await window_service.get_or_create_window(
@@ -430,12 +498,11 @@ class JobRunner:
 
         await context_state.update_state(
             db, book_id,
-            status="idle",
-            running_job_id=None,
-            pending_chapter_idx=None,
-            pending_paragraph_idx=None,
-            pending_scroll_pct=None,
-            pending_updated_at=None,
+            assistant_frontier_chapter_idx=chapter_idx,
+            assistant_frontier_paragraph_idx=assistant_frontier,
+            context_frontier_chapter_idx=chapter_idx,
+            context_frontier_paragraph_idx=assistant_frontier,
+            **_clear_pending,
         )
 
         logger.info(
@@ -446,6 +513,9 @@ class JobRunner:
                     "book_id": book_id,
                     "chapter_idx": chapter_idx,
                     "paragraph_idx": paragraph_idx,
+                    "assistant_frontier": assistant_frontier,
+                    "jump_type": jump_type,
+                    "jump_chars": jump_chars,
                 },
             },
         )

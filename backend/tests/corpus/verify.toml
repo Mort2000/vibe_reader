@@ -26,9 +26,9 @@ model = "deepseek-v4-flash"
 base_url = ""
 api_key_env = "VIBE_READER_LLM_API_KEY"
 model = "deepseek-v4-flash"
-max_calls = 16
-max_input_tokens_per_call = 64000
-max_output_tokens_per_call = 1200
+max_calls = 15
+max_input_tokens_per_call = 128000
+max_output_tokens_per_call = 4096
 max_total_cost_usd = 3.00
 
 [real_llm.long_flow]
@@ -38,16 +38,22 @@ test_compaction_min_source_tokens = 16000
 test_compaction_min_source_paragraphs = 120
 min_comment_windows = 2
 min_chat_turns = 1
+post_compaction_comment_windows = 3
 # cross_chapter: stop after crossing a chapter boundary
 # comment_windows: advance within the start chapter until min_comment_windows complete
-reading_stop_mode = "comment_windows"
+reading_stop_mode = "cross_chapter"
 
 [run]
 suite = "mvp"
-max_wait_comment_window_s = 180
-max_wait_compaction_s = 240
+max_wait_comment_window_s = 300
+max_wait_compaction_s = 600
 max_wait_chat_s = 120
-progress_step_delay_ms = 300
+# real-happy-path pacing (stub uses stub_* keys below)
+progress_step_delay_ms = 100
+read_batch_size = 120
+compaction_advance_batch_size = 120
+stub_progress_step_delay_ms = 0
+stub_compaction_advance_batch_size = 64
 seed = 20260522
 
 [metrics]
@@ -72,8 +78,26 @@ include_full_prompt = false
 include_original_excerpts = true
 
 [comment_density]
-soft_min = 0.25
-stat_window_paragraphs = 80
+soft_min = 0.05
+stat_window_paragraphs = 400
+
+[app.reader]
+lookahead_paragraphs = 80
+
+[app.window_l1]
+focus_max_tokens = 24000
+min_focus_paragraphs = 80
+max_focus_paragraphs = 200
+trigger_advance_ratio = 0.88
+comment_density_soft_min = 0.05
+comment_density_stat_window_paragraphs = 400
+
+[app.context_l3]
+preflight_trigger_input_tokens = 24000
+max_completed_l2_chunks_before_compaction = 1
+
+[app.context_l2]
+max_live_original_tokens = 24000
 
 [context]
 provider_context_limit_tokens = 1000000

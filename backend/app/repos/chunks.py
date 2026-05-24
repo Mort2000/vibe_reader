@@ -182,7 +182,7 @@ async def get_earliest_complete_unreclaimed(
         """SELECT * FROM original_text_chunks
            WHERE book_id = ? AND chapter_idx = ?
              AND status = 'active'
-             AND end_paragraph_idx < ?
+             AND end_paragraph_idx <= ?
            ORDER BY chunk_seq
            LIMIT 1""",
         (book_id, chapter_idx, frontier_pidx),
@@ -201,7 +201,7 @@ async def count_completed_unreclaimed(
         """SELECT COUNT(*) FROM original_text_chunks
            WHERE book_id = ? AND chapter_idx = ?
              AND status = 'active'
-             AND end_paragraph_idx < ?""",
+             AND end_paragraph_idx <= ?""",
         (book_id, chapter_idx, frontier_pidx),
     )
     row = await cur.fetchone()

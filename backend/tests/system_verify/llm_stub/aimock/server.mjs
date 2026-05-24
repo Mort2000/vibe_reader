@@ -169,7 +169,10 @@ function invalidPayload(paragraphIdx, variant) {
  */
 function isCommentPrompt(req) {
   const content = lastUserContent(req);
-  return content.includes("comment_target_paragraphs") && content.includes("<CURRENT_WINDOW>");
+  return (
+    content.includes("comment_target_paragraphs") &&
+    (content.includes("<CURRENT_WINDOW>") || content.includes("<CURRENT_TASK>"))
+  );
 }
 
 /**
@@ -288,16 +291,21 @@ mock.on(
   },
 );
 
-// A3: Compaction structured output — implemented, not yet covered by verify scenarios
+function isCompactionPrompt(req) {
+  const content = lastUserContent(req);
+  return (
+    content.includes("<SOURCE_ORIGINAL_CHUNK>") ||
+    content.includes("RollingContextSnapshotOutput") ||
+    content.includes("ChapterCompressedSummaryOutput") ||
+    content.includes("ContextCompactionAgent") ||
+    content.includes("context compaction")
+  );
+}
+
+// A3: Compaction structured output — initial tool-call round
 mock.on(
   {
-    predicate: (req) => {
-      const content = lastUserContent(req);
-      return (
-        content.includes("RollingContextSnapshotOutput") ||
-        content.includes("context compaction")
-      );
-    },
+    predicate: (req) => isCompactionPrompt(req) && !hasToolResult(req),
   },
   (req) => {
     const content = lastUserContent(req);
@@ -317,17 +325,30 @@ mock.on(
     return {
       toolCalls: [
         {
-          id: "call_final_result_compaction",
-          name: "final_result",
+          id: "call_emit_chapter_compressed_summary",
+          name: "emit_chapter_compressed_summary",
           arguments: {
-            summary: `[stub:${profileName}] rolling summary ctx=${ctxHash}`,
-            comment_digest: "comments: P20,P21",
-            chat_digest: "recent chat digest",
-            anchor_excerpts: anchors,
-            open_questions: [],
+            payload: {
+              summary: `[stub:${profileName}] rolling summary ctx=${ctxHash}`,
+              anchor_excerpts: anchors,
+            },
           },
         },
       ],
+      usage: estimateUsage(content),
+    };
+  },
+);
+
+// A3: Compaction post-tool follow-up (PydanticAI ignores natural language)
+mock.on(
+  {
+    predicate: (req) => isCompactionPrompt(req) && hasToolResult(req),
+  },
+  (req) => {
+    const content = lastUserContent(req);
+    return {
+      content: "stub compaction tool round complete",
       usage: estimateUsage(content),
     };
   },

@@ -222,6 +222,30 @@ class TargetClient:
         )
         return resp.json(), rec
 
+    async def verify_app_config(
+        self,
+        *,
+        reader: dict | None = None,
+        window_l1: dict | None = None,
+        context_l2: dict | None = None,
+        context_l3: dict | None = None,
+    ) -> tuple[dict, APIRecord]:
+        body: dict[str, Any] = {}
+        if reader is not None:
+            body["reader"] = reader
+        if window_l1 is not None:
+            body["window_l1"] = window_l1
+        if context_l2 is not None:
+            body["context_l2"] = context_l2
+        if context_l3 is not None:
+            body["context_l3"] = context_l3
+        resp, rec = await self._request(
+            "POST",
+            "/api/verify/app-config",
+            json_body=body,
+        )
+        return resp.json(), rec
+
     async def settings(self) -> tuple[dict, APIRecord]:
         resp, rec = await self._request("GET", "/api/settings")
         return resp.json(), rec

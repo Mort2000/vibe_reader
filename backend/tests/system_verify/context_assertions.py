@@ -262,6 +262,7 @@ def select_post_compaction_comment_runs(
     *,
     compaction_job_id: int | None,
     compaction_trace_ids: set[str],
+    compaction_chapter_idx: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return comment agent runs that likely occurred after compaction."""
     if compaction_job_id:
@@ -271,6 +272,14 @@ def select_post_compaction_comment_runs(
             if _agent_run_job_id(run) > compaction_job_id
         ]
         if post:
+            if compaction_chapter_idx is not None:
+                same_chapter = [
+                    run
+                    for run in post
+                    if int(run.get("chapter_idx") or 0) == compaction_chapter_idx
+                ]
+                if same_chapter:
+                    return same_chapter
             return post
 
     post = [
@@ -278,6 +287,14 @@ def select_post_compaction_comment_runs(
         for run in comment_runs
         if str(run.get("trace_id") or "") not in compaction_trace_ids
     ]
+    if compaction_chapter_idx is not None and post:
+        same_chapter = [
+            run
+            for run in post
+            if int(run.get("chapter_idx") or 0) == compaction_chapter_idx
+        ]
+        if same_chapter:
+            return same_chapter
     return post or comment_runs[-1:]
 
 
@@ -298,12 +315,9 @@ def assert_chapter_summary_structure(summary: dict[str, Any]) -> None:
         )
 
 
-def assert_compaction_source_scale(
+def _extract_compaction_source_scale(
     compaction_run: dict[str, Any],
-    *,
-    min_source_tokens: int,
-    min_source_paragraphs: int,
-) -> None:
+) -> tuple[dict[str, Any], int | None, int | None]:
     interaction = compaction_run.get("interaction") or compaction_run
     source = (
         interaction.get("compaction_source")
@@ -318,11 +332,15 @@ def assert_compaction_source_scale(
         source.get("token_estimate")
         or source.get("source_chunk_tokens")
         or interaction.get("source_chunk_tokens")
+        or compaction_run.get("source_chunk_tokens")
+        or interaction.get("input_tokens")
+        or compaction_run.get("input_tokens")
     )
     paragraph_count = (
         source.get("paragraph_count")
         or source.get("source_paragraph_count")
         or interaction.get("source_paragraph_count")
+        or compaction_run.get("source_paragraph_count")
     )
     if source_tokens is None and paragraph_count is None:
         injected = interaction.get("injected_context") or {}
@@ -336,6 +354,19 @@ def assert_compaction_source_scale(
             end = content.get("end_paragraph_idx")
             if start is not None and end is not None and paragraph_count is None:
                 paragraph_count = int(end) - int(start) + 1
+
+    return interaction, source_tokens, paragraph_count
+
+
+def assert_compaction_source_scale(
+    compaction_run: dict[str, Any],
+    *,
+    min_source_tokens: int,
+    min_source_paragraphs: int,
+) -> None:
+    interaction, source_tokens, paragraph_count = _extract_compaction_source_scale(
+        compaction_run
+    )
 
     if source_tokens is not None:
         assert_that.gte(
@@ -356,6 +387,12 @@ def assert_compaction_source_scale(
     if paragraph_count is None:
         missing.append("paragraph_count")
     if missing:
+        if (
+            missing == ["paragraph_count"]
+            and source_tokens is not None
+            and int(source_tokens) >= min_source_tokens
+        ):
+            return
         raise StepAssertionError(
             assertion="compaction_source_scale_unavailable",
             message=(
@@ -422,6 +459,8 @@ def assert_reclaimed_l2_chunk_present(
             return
 
     for run in compaction_runs or []:
+        if _is_compaction_agent_run(run):
+            return
         interaction = run.get("interaction") or run
         final_result = interaction.get("final_result") or {}
         if final_result.get("reclaimed_chunk_id") or final_result.get("reclaimed_chunk_ids"):

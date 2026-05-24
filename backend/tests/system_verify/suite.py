@@ -59,13 +59,11 @@ async def run_real_happy_path_suite(
     suite_ctx: dict[str, Any] | None = None,
     coverage: str = "A2",
 ) -> None:
-    """Run R1 real LLM happy path for the requested coverage phase."""
-    if not config.is_real_llm:
-        raise RuntimeError("real-happy-path requires llm.mode=real")
-
-    errors = validate_real_llm_config(config)
-    if errors:
-        raise RuntimeError("Real LLM config invalid: " + "; ".join(errors))
+    """Run R1 happy path for the requested coverage phase (stub or real LLM)."""
+    if config.is_real_llm:
+        errors = validate_real_llm_config(config)
+        if errors:
+            raise RuntimeError("Real LLM config invalid: " + "; ".join(errors))
 
     ctx = suite_ctx if suite_ctx is not None else {}
     corpus = prepare_corpus(mgr, config, corpus_path)

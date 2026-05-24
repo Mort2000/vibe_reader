@@ -311,6 +311,18 @@ async def _apply_overflow_strategy(
     )
 
 
+def _compaction_preflight_thresholds(
+    settings: Settings,
+) -> tuple[int, int, int]:
+    l3_cfg = settings.context_l3
+    l2_cfg = settings.context_l2
+    return (
+        l3_cfg.preflight_trigger_input_tokens,
+        l2_cfg.max_live_original_tokens,
+        l3_cfg.max_completed_l2_chunks_before_compaction,
+    )
+
+
 async def build_context(
     db: aiosqlite.Connection,
     *,
@@ -391,10 +403,13 @@ async def build_context(
         db, book_id, chapter_idx, frontier
     )
 
+    preflight_input_tokens, max_live_original_tokens, max_completed_before_compaction = (
+        _compaction_preflight_thresholds(settings)
+    )
     preflight_triggered = (
-        estimated_tokens > l3_cfg.preflight_trigger_input_tokens
-        or live_original_tokens > settings.context_l2.max_live_original_tokens
-        or completed_chunks >= l3_cfg.max_completed_l2_chunks_before_compaction
+        estimated_tokens > preflight_input_tokens
+        or live_original_tokens > max_live_original_tokens
+        or completed_chunks >= max_completed_before_compaction
     )
     hard_triggered = estimated_tokens > l3_cfg.compression_trigger_input_tokens
     context_degraded = False

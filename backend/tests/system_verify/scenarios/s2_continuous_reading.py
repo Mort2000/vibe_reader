@@ -199,7 +199,7 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
             scenario_id="S2_continuous_reading",
             step_id="advance_reading",
             metrics=metrics,
-            delay_ms=config.run.progress_step_delay_ms,
+            delay_ms=config.effective_progress_step_delay_ms,
         )
         ctx["final_paragraph_idx"] = final
 

@@ -304,6 +304,69 @@ def build_injected_context(
     }
 
 
+def _extract_tagged_prompt_block(prompt: str, tag: str) -> str | None:
+    start = f"<{tag}>"
+    end = f"</{tag}>"
+    begin = prompt.find(start)
+    if begin < 0:
+        return None
+    finish = prompt.find(end, begin + len(start))
+    if finish < 0:
+        return None
+    text = prompt[begin + len(start) : finish].strip()
+    return text or None
+
+
+def enrich_injected_context_from_build_manifest(
+    injected_context: dict[str, Any],
+    manifest: dict[str, Any] | None,
+    *,
+    prompt: str | None = None,
+) -> dict[str, Any]:
+    """Attach chapter summary / compaction metadata from ContextBuilder manifest."""
+    if not manifest:
+        return injected_context
+
+    summary_id = manifest.get("summary_id")
+    summary_tokens = 0
+    for entry in manifest.get("components") or []:
+        if entry.get("name") == "chapter_compressed_summary":
+            summary_tokens = int(entry.get("tokens") or 0)
+            break
+
+    if not summary_id and not summary_tokens:
+        return injected_context
+
+    summary_text = _extract_tagged_prompt_block(prompt or "", "CHAPTER_COMPRESSED_SUMMARY")
+    content: dict[str, Any] = {}
+    if summary_id is not None:
+        content["summary_id"] = summary_id
+    if summary_text:
+        content["summary"] = summary_text
+
+    components = list(injected_context.get("components") or [])
+    components.insert(
+        1,
+        {
+            "name": "chapter_compressed_summary",
+            "source": "context_builder",
+            "included": True,
+            "token_estimate": summary_tokens,
+            "content": content or None,
+        },
+    )
+    injected_context = {
+        **injected_context,
+        "components": components,
+        "compaction_epoch": manifest.get("compaction_epoch"),
+        "summary_id": summary_id,
+    }
+    injected_context["total_input_token_estimate"] = sum(
+        int(c.get("token_estimate") or 0) for c in components
+    )
+    return injected_context
+
+
 def _extract_thinking(response: ModelResponse) -> dict[str, Any]:
     parts: list[str] = []
     for part in response.parts:
@@ -565,6 +628,7 @@ def build_comment_interaction_packet(
     usage_source: str = "estimate",
     text_mode: str = "range_edge_excerpt",
     edge_paragraph_max_chars: int = 800,
+    context_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     context_hash = window.get("context_hash") or sha256_text(prompt)
     user_segments = _split_user_prompt_segments(
@@ -592,6 +656,11 @@ def build_comment_interaction_packet(
         text_mode=text_mode,
         edge_paragraph_max_chars=edge_paragraph_max_chars,
         context_hash=context_hash,
+    )
+    injected_context = enrich_injected_context_from_build_manifest(
+        injected_context,
+        context_manifest,
+        prompt=prompt,
     )
 
     messages = agent_result.all_messages() if agent_result is not None else []

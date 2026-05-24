@@ -5,11 +5,19 @@ from typing import Any
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
+from ..config import apply_app_config_overlays, restore_app_config_overlays
 from ..errors import AppError
 
 
 class VerifyResetRequest(BaseModel):
     confirm_data_dir: str = Field(..., min_length=1)
+
+
+class VerifyAppConfigRequest(BaseModel):
+    reader: dict[str, Any] | None = None
+    window_l1: dict[str, Any] | None = None
+    context_l2: dict[str, Any] | None = None
+    context_l3: dict[str, Any] | None = None
 
 
 router = APIRouter(tags=["verify"])
@@ -148,3 +156,46 @@ async def verify_reset(request: Request, body: VerifyResetRequest) -> dict[str, 
     from ..services.verify_reset import reset_verify_data
 
     return await reset_verify_data(request, body.confirm_data_dir)
+
+
+@router.post("/verify/app-config")
+async def verify_app_config(
+    request: Request,
+    body: VerifyAppConfigRequest,
+) -> dict[str, Any]:
+    """Apply runtime app config overlays for verify runs (window/reader/L3)."""
+    _require_verify(request)
+    settings = request.app.state.settings
+    payload = {
+        key: value
+        for key, value in {
+            "reader": body.reader,
+            "window_l1": body.window_l1,
+            "context_l2": body.context_l2,
+            "context_l3": body.context_l3,
+        }.items()
+        if value
+    }
+    if not payload:
+        raise AppError(
+            "invalid_app_config",
+            "At least one of reader, window_l1, context_l2, context_l3 must be provided",
+            status=400,
+        )
+    try:
+        applied = apply_app_config_overlays(settings, payload)
+    except ValueError as exc:
+        raise AppError(
+            "invalid_app_config",
+            str(exc),
+            status=400,
+        ) from exc
+    return {"synced": True, "applied": applied}
+
+
+@router.post("/verify/app-config/restore")
+async def verify_app_config_restore(request: Request) -> dict[str, Any]:
+    """Restore settings from the snapshot taken before the first overlay apply."""
+    _require_verify(request)
+    settings = request.app.state.settings
+    return restore_app_config_overlays(settings)

@@ -120,6 +120,7 @@ async def count_chars_in_range(
     start_idx: int,
     end_idx: int,
 ) -> int:
+    """Sum char_count for paragraphs with start_idx < paragraph_idx <= end_idx."""
     cur = await db.execute(
         "SELECT COALESCE(SUM(char_count), 0) FROM paragraphs "
         "WHERE book_id = ? AND chapter_idx = ? "

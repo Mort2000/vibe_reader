@@ -66,6 +66,7 @@ class RealLLMLongFlowConfig:
     min_comment_windows: int = 2
     min_chat_turns: int = 1
     reading_stop_mode: str = READING_STOP_COMMENT_WINDOWS
+    post_compaction_comment_windows: int = 3
 
 
 @dataclass
@@ -92,6 +93,9 @@ class RunConfig:
     max_wait_chat_s: int = 120
     progress_step_delay_ms: int = 300
     compaction_advance_batch_size: int = 16
+    read_batch_size: int = 12
+    stub_progress_step_delay_ms: int = 0
+    stub_compaction_advance_batch_size: int = 64
     seed: int = 20260522
 
 
@@ -161,6 +165,7 @@ class VerifyConfig:
     audit: AuditConfig = field(default_factory=AuditConfig)
     comment_density: CommentDensityConfig = field(default_factory=CommentDensityConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    app_config: dict = field(default_factory=dict)
 
     @property
     def target_data_dir(self) -> pathlib.Path:
@@ -188,6 +193,27 @@ class VerifyConfig:
         if self.is_real_llm:
             return _env("VIBE_READER_LLM_MODEL") or self.real_llm.model
         return self.llm_stub.aimock.model
+
+    @property
+    def effective_progress_step_delay_ms(self) -> int:
+        """Simulated reading pace between progress PUTs; stub runs skip artificial waits."""
+        if self.is_real_llm:
+            return self.run.progress_step_delay_ms
+        return self.run.stub_progress_step_delay_ms
+
+    @property
+    def effective_compaction_advance_batch_size(self) -> int:
+        """Paragraphs advanced per batch while waiting for compaction."""
+        if self.is_real_llm:
+            return self.run.compaction_advance_batch_size
+        return self.run.stub_compaction_advance_batch_size
+
+    @property
+    def effective_read_batch_size(self) -> int:
+        """Paragraphs advanced per batch while waiting for comment windows."""
+        if self.is_real_llm:
+            return self.run.read_batch_size
+        return self.run.stub_compaction_advance_batch_size
 
 
 def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
@@ -273,6 +299,9 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
             reading_stop_mode=long_flow_raw.get(
                 "reading_stop_mode", READING_STOP_COMMENT_WINDOWS
             ),
+            post_compaction_comment_windows=int(
+                long_flow_raw.get("post_compaction_comment_windows", 3)
+            ),
         ),
     )
 
@@ -284,6 +313,11 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
         max_wait_chat_s=run_raw.get("max_wait_chat_s", 120),
         progress_step_delay_ms=run_raw.get("progress_step_delay_ms", 300),
         compaction_advance_batch_size=run_raw.get("compaction_advance_batch_size", 16),
+        read_batch_size=run_raw.get("read_batch_size", 12),
+        stub_progress_step_delay_ms=run_raw.get("stub_progress_step_delay_ms", 0),
+        stub_compaction_advance_batch_size=run_raw.get(
+            "stub_compaction_advance_batch_size", 64
+        ),
         seed=run_raw.get("seed", 20260522),
     )
 
@@ -363,6 +397,7 @@ def load_verify_config(path: str | pathlib.Path | None = None) -> VerifyConfig:
         audit=audit,
         comment_density=comment_density,
         context=context,
+        app_config=dict(raw.get("app", {})),
     )
 
 

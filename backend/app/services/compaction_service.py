@@ -14,10 +14,94 @@ from ..repos import chunks as chunk_repo
 from ..repos import context_state
 from ..repos import paragraphs as paragraph_repo
 from ..repos import summaries as summary_repo
-from .agent_base import CompactionDeps, get_compaction_agent
+from .agent_base import (
+    ChapterCompressedSummaryOutput,
+    CompactionDeps,
+    get_compaction_agent,
+)
+from .context_builder import _estimate_text_tokens
 from .job_runner import JobRunner
 
 logger = logging.getLogger(__name__)
+
+
+def _estimate_tokens(text: str) -> int:
+    return _estimate_text_tokens(text)
+
+
+def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    if _estimate_tokens(text) <= max_tokens:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _estimate_tokens(text[:mid]) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo]
+
+
+def _find_paragraph_idx_for_text(
+    paragraphs: list[dict[str, Any]],
+    text: str,
+) -> int | None:
+    needle = text.strip()
+    if not needle:
+        return None
+    for paragraph in paragraphs:
+        body = paragraph.get("text") or ""
+        if needle in body or body in needle:
+            return int(paragraph["paragraph_idx"])
+    return None
+
+
+def _normalize_anchor_excerpts(
+    excerpts: list[Any],
+    *,
+    chapter_idx: int,
+    source_paragraphs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in excerpts:
+        if isinstance(item, str):
+            normalized.append(
+                {
+                    "chapter_idx": chapter_idx,
+                    "paragraph_idx": _find_paragraph_idx_for_text(
+                        source_paragraphs, item,
+                    ),
+                    "text": item,
+                    "reason": "anchor",
+                }
+            )
+        elif isinstance(item, dict):
+            excerpt = dict(item)
+            excerpt.setdefault("chapter_idx", chapter_idx)
+            if excerpt.get("paragraph_idx") is None:
+                excerpt["paragraph_idx"] = _find_paragraph_idx_for_text(
+                    source_paragraphs, str(excerpt.get("text") or ""),
+                )
+            normalized.append(excerpt)
+    return normalized
+
+
+def _trim_anchor_excerpts(
+    excerpts: list[dict[str, Any]],
+    *,
+    max_count: int,
+    max_tokens: int,
+) -> list[dict[str, Any]]:
+    trimmed: list[dict[str, Any]] = []
+    for excerpt in excerpts[:max_count]:
+        text = str(excerpt.get("text") or "")
+        reason = str(excerpt.get("reason") or "")
+        if _estimate_tokens(text) > max_tokens:
+            text = _truncate_to_tokens(text, max_tokens)
+        if _estimate_tokens(text) + _estimate_tokens(reason) > max_tokens:
+            continue
+        trimmed.append({**excerpt, "text": text})
+    return trimmed
 
 
 def _build_compaction_prompt(
@@ -121,7 +205,24 @@ async def run_compaction_task(
     )
     latency_ms = (time.monotonic() - t0) * 1000
 
-    output = result.output
+    if not deps.raw_output:
+        raise ValueError("Compaction agent did not emit chapter compressed summary")
+
+    raw_output = dict(deps.raw_output)
+    excerpts = raw_output.get("anchor_excerpts") or []
+    normalized_excerpts = _normalize_anchor_excerpts(
+        excerpts,
+        chapter_idx=chapter_idx,
+        source_paragraphs=paragraphs,
+    )
+    normalized_excerpts = _trim_anchor_excerpts(
+        normalized_excerpts,
+        max_count=settings.context.max_anchor_excerpts,
+        max_tokens=settings.context.max_anchor_excerpt_tokens,
+    )
+    raw_output["anchor_excerpts"] = normalized_excerpts
+
+    output = ChapterCompressedSummaryOutput.model_validate(raw_output)
     usage = result.usage()
 
     source_chunk_ids = previous_source_chunk_ids + [source_chunk["id"]]
@@ -203,6 +304,11 @@ async def run_compaction_task(
         },
     )
 
+    source_paragraph_count = (
+        source_chunk["end_paragraph_idx"] - source_chunk["start_paragraph_idx"] + 1
+    )
+    source_token_estimate = int(source_chunk.get("token_estimate") or token_estimate)
+
     return {
         "agent_name": "ContextCompactionAgent",
         "duration_ms": round(latency_ms, 1),
@@ -210,9 +316,18 @@ async def run_compaction_task(
         "output_tokens": usage.response_tokens or usage.output_tokens,
         "cached_input_tokens": usage.cache_read_tokens or None,
         "source_chunk_id": source_chunk["id"],
+        "reclaimed_chunk_id": source_chunk["id"],
         "summary_id": summary_row["id"],
         "compaction_epoch": compaction_epoch,
         "context_hash": source_hash,
+        "source_chunk_tokens": source_token_estimate,
+        "source_paragraph_count": source_paragraph_count,
+        "compaction_source": {
+            "token_estimate": source_token_estimate,
+            "paragraph_count": source_paragraph_count,
+            "start_paragraph_idx": source_chunk["start_paragraph_idx"],
+            "end_paragraph_idx": source_chunk["end_paragraph_idx"],
+        },
     }
 
 

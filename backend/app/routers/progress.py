@@ -14,6 +14,12 @@ from ..repos import chapters as chapter_repo
 from ..repos import jobs as job_repo
 from ..services import window_service
 from ..services.context_builder import build_context
+from ..services.progress_helpers import (
+    check_forward_jump_chars,
+    compute_assistant_frontier,
+    detect_jump_type,
+    is_reading_at_least,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,19 +79,7 @@ def _detect_jump_type(
     chapter_idx: int,
     paragraph_idx: int,
 ) -> str:
-    current_ch = state.get("active_chapter_idx", 0)
-    current_p = state.get("reading_paragraph_idx", 0)
-    if chapter_idx < current_ch:
-        return "backward"
-    if chapter_idx == current_ch and paragraph_idx < current_p:
-        return "backward"
-    ctx_ch = state.get("context_frontier_chapter_idx", 0)
-    ctx_p = state.get("context_frontier_paragraph_idx", 0)
-    if chapter_idx > ctx_ch:
-        return "forward"
-    if chapter_idx == ctx_ch and paragraph_idx > ctx_p:
-        return "forward"
-    return "normal"
+    return detect_jump_type(state, chapter_idx, paragraph_idx)
 
 
 async def _check_forward_jump_chars(
@@ -96,27 +90,9 @@ async def _check_forward_jump_chars(
     new_frontier: int,
     max_chars: int,
 ) -> int:
-    ctx_ch = state.get("context_frontier_chapter_idx", 0)
-    ctx_p = state.get("context_frontier_paragraph_idx", 0)
-    total_chars = 0
-
-    if chapter_idx > ctx_ch:
-        # Cross-chapter jump: count remaining in old chapter + new chapter prefix
-        old_remaining = await paragraph_repo.count_chars_in_range(
-            db, book_id, ctx_ch, ctx_p,
-            (await paragraph_repo.get_last_paragraph_idx(
-                db, book_id, ctx_ch
-            )) or ctx_p,
-        )
-        new_prefix = await paragraph_repo.count_chars_in_range(
-            db, book_id, chapter_idx, -1, new_frontier
-        )
-        total_chars = old_remaining + new_prefix
-    else:
-        total_chars = await paragraph_repo.count_chars_in_range(
-            db, book_id, chapter_idx, ctx_p, new_frontier
-        )
-    return total_chars
+    return await check_forward_jump_chars(
+        db, book_id, chapter_idx, state, new_frontier,
+    )
 
 
 async def _progress_response_fields(
@@ -220,11 +196,9 @@ async def update_progress(
         )
 
     if jump_type == "forward":
-        new_frontier = min(
-            body.paragraph_idx + settings.reader.lookahead_paragraphs,
-            (await paragraph_repo.get_last_paragraph_idx(
-                db, book_id, body.chapter_idx
-            )) or body.paragraph_idx,
+        new_frontier = await compute_assistant_frontier(
+            db, book_id, body.chapter_idx, body.paragraph_idx,
+            settings.reader.lookahead_paragraphs,
         )
         jump_chars = await _check_forward_jump_chars(
             db, book_id, body.chapter_idx, state,
@@ -388,7 +362,45 @@ async def _handle_agent_busy(
         and state.get("pending_paragraph_idx") is not None
     )
 
-    # Don't overwrite a valid pending with a backward jump
+    # Monotonic pending: never replace a farther legal pending with a closer one.
+    if has_existing_pending and not is_reading_at_least(
+        body.chapter_idx,
+        body.paragraph_idx,
+        ref_chapter_idx=int(state["pending_chapter_idx"]),
+        ref_paragraph_idx=int(state["pending_paragraph_idx"]),
+    ):
+        jobs, _ = await job_repo.list_jobs(
+            db, book_id=book_id, chapter_idx=body.chapter_idx, limit=5
+        )
+        frontier = state.get("assistant_frontier_paragraph_idx", 0)
+        progress = await progress_repo.upsert_progress(
+            db,
+            book_id,
+            chapter_idx=body.chapter_idx,
+            paragraph_idx=body.paragraph_idx,
+            scroll_pct=body.scroll_pct,
+        )
+        logger.info(
+            "progress.update.agent_busy.pending_preserved",
+            extra={
+                "event": "progress.update.agent_busy.pending_preserved",
+                "fields": {
+                    "book_id": book_id,
+                    "chapter_idx": body.chapter_idx,
+                    "paragraph_idx": body.paragraph_idx,
+                    "pending_chapter_idx": state.get("pending_chapter_idx"),
+                    "pending_paragraph_idx": state.get("pending_paragraph_idx"),
+                },
+            },
+        )
+        return {
+            "progress": progress,
+            "assistant_frontier_paragraph_idx": frontier,
+            "current_window": None,
+            "jobs": jobs,
+        }
+
+    # Explicit backward relative to last processed position: keep pending.
     if jump_type == "backward" and has_existing_pending:
         jobs, _ = await job_repo.list_jobs(
             db, book_id=book_id, chapter_idx=body.chapter_idx, limit=5
@@ -403,12 +415,9 @@ async def _handle_agent_busy(
 
     # Validate forward jump doesn't exceed max_context_jump_chars
     if jump_type == "forward":
-        last_p = await paragraph_repo.get_last_paragraph_idx(
-            db, book_id, body.chapter_idx
-        )
-        new_frontier = min(
-            body.paragraph_idx + settings.reader.lookahead_paragraphs,
-            last_p or body.paragraph_idx,
+        new_frontier = await compute_assistant_frontier(
+            db, book_id, body.chapter_idx, body.paragraph_idx,
+            settings.reader.lookahead_paragraphs,
         )
         jump_chars = await _check_forward_jump_chars(
             db, book_id, body.chapter_idx, state,
@@ -427,12 +436,9 @@ async def _handle_agent_busy(
             }
 
     # Compute new assistant frontier for the pending position
-    last_p = await paragraph_repo.get_last_paragraph_idx(
-        db, book_id, body.chapter_idx
-    )
-    new_assistant_frontier = min(
-        body.paragraph_idx + settings.reader.lookahead_paragraphs,
-        last_p or body.paragraph_idx,
+    new_assistant_frontier = await compute_assistant_frontier(
+        db, book_id, body.chapter_idx, body.paragraph_idx,
+        settings.reader.lookahead_paragraphs,
     )
 
     # Compute jump chars for forward jumps (0 for normal)
@@ -444,6 +450,15 @@ async def _handle_agent_busy(
         )
 
     from datetime import datetime, timezone
+
+    progress = await progress_repo.upsert_progress(
+        db,
+        book_id,
+        chapter_idx=body.chapter_idx,
+        paragraph_idx=body.paragraph_idx,
+        scroll_pct=body.scroll_pct,
+    )
+
     await context_state.update_state(
         db, book_id,
         pending_chapter_idx=body.chapter_idx,
@@ -473,7 +488,7 @@ async def _handle_agent_busy(
         },
     )
     return {
-        "progress": await progress_repo.get_progress(db, book_id),
+        "progress": progress,
         "assistant_frontier_paragraph_idx": frontier,
         "current_window": None,
         "jobs": jobs,

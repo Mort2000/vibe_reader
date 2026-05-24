@@ -27,6 +27,47 @@ from .job_runner import JobRunner
 logger = logging.getLogger(__name__)
 
 
+async def _has_running_compaction(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+) -> bool:
+    from ..repos import jobs as job_repo
+
+    jobs, _ = await job_repo.list_jobs(
+        db,
+        book_id=book_id,
+        chapter_idx=chapter_idx,
+        job_type="compact_context",
+        status="running",
+        limit=1,
+    )
+    return bool(jobs)
+
+
+async def _wait_for_running_compaction(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    *,
+    timeout_s: float,
+    poll_interval_s: float = 0.25,
+) -> bool:
+    """Wait for a running compact_context job to finish.
+
+    Pending compaction jobs are not polled: this handler runs under the
+    per-book lock, so a pending compaction cannot start until we release it.
+    """
+    import asyncio
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not await _has_running_compaction(db, book_id, chapter_idx):
+            return True
+        await asyncio.sleep(poll_interval_s)
+    return False
+
+
 def _build_density_hint(
     active_count: int,
     stat_start: int,
@@ -90,6 +131,54 @@ def _validate_and_dedupe(
         )
 
     return valid, discarded, discarded_by_reason, validation_failed_count
+
+
+async def _build_comment_context(
+    db: aiosqlite.Connection,
+    *,
+    book_id: int,
+    chapter_idx: int,
+    reading_pidx: int,
+    settings: Settings,
+    focus_start: int,
+    focus_end: int,
+    target_paragraphs: list[int],
+    density_hint: CommentDensityHint,
+    book_title: str | None,
+    chapter_title: str | None,
+    overflow_used: bool,
+) -> tuple[Any, str, bool]:
+    compaction_cleared = True
+    if await _has_running_compaction(db, book_id, chapter_idx):
+        compaction_cleared = await _wait_for_running_compaction(
+            db,
+            book_id,
+            chapter_idx,
+            timeout_s=settings.context_l3.compaction_timeout_s,
+        )
+
+    build_kwargs = dict(
+        book_id=book_id,
+        chapter_idx=chapter_idx,
+        reading_pidx=reading_pidx,
+        settings=settings,
+        task_type="comment",
+        focus_start=focus_start,
+        focus_end=focus_end,
+        target_paragraphs=target_paragraphs,
+        density_hint=density_hint,
+        book_title=book_title,
+        chapter_title=chapter_title,
+        overflow_already_used=overflow_used,
+    )
+
+    ctx_result = await build_context(db, **build_kwargs)
+
+    context_degraded = ctx_result.context_degraded
+    if ctx_result.hard_triggered and not compaction_cleared:
+        context_degraded = True
+
+    return ctx_result, ctx_result.prompt, context_degraded
 
 
 async def run_comment_task(
@@ -156,22 +245,20 @@ async def run_comment_task(
     book_state = await context_state.get_or_create(db, book_id)
     overflow_used = bool(book_state.get("emergency_overflow_used", 0))
 
-    ctx_result = await build_context(
+    ctx_result, prompt, context_degraded = await _build_comment_context(
         db,
         book_id=book_id,
         chapter_idx=chapter_idx,
         reading_pidx=reading_pidx,
         settings=settings,
-        task_type="comment",
         focus_start=focus_start,
         focus_end=focus_end,
         target_paragraphs=target_paragraphs,
         density_hint=density_hint,
         book_title=book.get("title"),
         chapter_title=chapter.get("title"),
-        overflow_already_used=overflow_used,
+        overflow_used=overflow_used,
     )
-    prompt = ctx_result.prompt
 
     if ctx_result.emergency_overflow_used and not overflow_used:
         await context_state.update_state(
@@ -185,6 +272,19 @@ async def run_comment_task(
                 "event": "comment_task.preflight_compaction",
                 "fields": {
                     "job_id": job_id,
+                    "estimated_tokens": ctx_result.estimated_tokens,
+                },
+            },
+        )
+
+    if context_degraded:
+        logger.warning(
+            "comment_task.context_degraded",
+            extra={
+                "event": "comment_task.context_degraded",
+                "fields": {
+                    "job_id": job_id,
+                    "hard_triggered": ctx_result.hard_triggered,
                     "estimated_tokens": ctx_result.estimated_tokens,
                 },
             },
@@ -321,6 +421,7 @@ async def run_comment_task(
             validation_failed_count=validation_failed_count,
             no_call=no_call,
             usage_source="estimate",
+            context_manifest=ctx_result.prompt_manifest,
         )
         interaction_path = persist_interaction_packet(
             settings.data_dir,
@@ -351,6 +452,8 @@ async def run_comment_task(
         "interaction_path": interaction_path,
         "context_estimated_tokens": ctx_result.estimated_tokens,
         "preflight_triggered": ctx_result.preflight_triggered,
+        "hard_triggered": ctx_result.hard_triggered,
+        "context_degraded": context_degraded,
         "prompt_manifest": ctx_result.prompt_manifest,
     }
 
