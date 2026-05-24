@@ -10,6 +10,7 @@ from ..repos import verify_telemetry as telemetry_repo
 
 COMMENT_AGENT_NAME = "ParagraphCommentAgent"
 PROMPT_VERSION = "paragraph_comment_v1"
+COMPACTION_PROMPT_VERSION = "chapter_compaction_v1"
 
 
 def _load_interaction_for_run(

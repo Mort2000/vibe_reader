@@ -794,6 +794,12 @@ async def run_r1_a3_compaction(
         timeout_s=60.0,
     )
     builder.add_step(
+        "export_comment_audit",
+        "Export comment audit samples from compaction reading flow",
+        _step_export_comment_audit_a3,
+        timeout_s=60.0,
+    )
+    builder.add_step(
         "budget_check",
         "Verify real LLM budget guardrails including compaction",
         _step_budget_check_a3,
@@ -809,6 +815,7 @@ async def run_r1_a3_compaction(
         "scenario_id": "R1_real_happy_path",
         "reading_trace": ReadingTrace(),
         "compaction_audit_exporter": CompactionAuditExporter(run_manager, config),
+        "comment_audit_exporter": CommentAuditExporter(run_manager, config),
     }
     merge_suite_ctx(ctx, suite_ctx)
 
@@ -1061,6 +1068,63 @@ async def _step_export_compaction_audit(ctx: dict[str, Any]) -> None:
             step_id="export_agent_audit_compaction",
         )
         ctx["audit_export_counts"].update(agent_counts)
+
+
+async def _step_export_comment_audit_a3(ctx: dict[str, Any]) -> None:
+    config: VerifyConfig = ctx["config"]
+    exporter: CommentAuditExporter = ctx["comment_audit_exporter"]
+    chapter_idx = int(ctx.get("long_chapter_idx") or ctx["chapter_idx"])
+
+    async with TargetClient(
+        config.target.base_url,
+        ctx["run_manager"],
+        "R1_real_happy_path",
+        "export_comment_audit",
+        context=ctx,
+    ) as client:
+        body, rec = await client.list_comments(ctx["book_id"], chapter_idx)
+        validate_comments_response(body, rec)
+        validate_no_span_in_comments(body, rec)
+        comments = body.get("items") or []
+        jobs = await fetch_verify_jobs(
+            client,
+            ctx["book_id"],
+            chapter_idx,
+            scenario_id="R1_real_happy_path",
+            step_id="export_comment_audit",
+            run_id=ctx["run_manager"].run_id,
+        )
+        trace_ids = unique_trace_ids(comments, jobs)
+        (
+            tokens_by_trace,
+            latency_by_trace,
+            trace_meta_by_trace_id,
+        ) = await collect_usage_by_trace(client, trace_ids)
+
+    paragraphs = await load_chapter_paragraphs(ctx, ctx["book_id"], chapter_idx)
+    exporter.add_comments_from_window(
+        comments,
+        scenario_id="R1_real_happy_path",
+        book=ctx["book"],
+        chapter_idx=chapter_idx,
+        window=None,
+        paragraphs=paragraphs,
+        model=config.effective_model() or config.real_llm.model,
+        llm_mode=config.llm.mode,
+        stub_profile=config.llm.stub_profile if not config.is_real_llm else None,
+        usage_source="provider"
+        if config.metrics.collect_provider_usage
+        else "estimate",
+        latency_by_trace=latency_by_trace,
+        tokens_by_trace=tokens_by_trace,
+        trace_meta_by_trace_id=trace_meta_by_trace_id,
+    )
+    ndjson_count, md_count = exporter.export()
+    ctx["audit_export_counts"] = {
+        **(ctx.get("audit_export_counts") or {}),
+        "comments_ndjson": ndjson_count,
+        "comment_markdown": md_count,
+    }
 
 
 async def _step_budget_check_a3(ctx: dict[str, Any]) -> None:

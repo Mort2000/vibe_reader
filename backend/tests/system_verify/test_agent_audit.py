@@ -8,8 +8,9 @@ from .agent_audit_exporter import (
     AgentAuditExporter,
     assert_agent_audit_artifacts,
     enrich_comment_records_with_agent_refs,
+    normalize_audit_packet,
 )
-from .agent_audit_report import render_agent_audit_markdown
+from .agent_audit_report import render_agent_audit_markdown, render_reading_position
 from .config import VerifyConfig
 from .run import RunManager
 
@@ -211,3 +212,95 @@ def test_enrich_comment_records_with_agent_refs(tmp_path: Path) -> None:
     row = comments_path.read_text(encoding="utf-8")
     assert "agent_invocation_id" in row
     assert "agent_report_path" in row
+
+
+def test_normalize_audit_packet_maps_legacy_compaction_fields() -> None:
+    normalized = normalize_audit_packet(
+        {
+            "agent": "ContextCompactionAgent",
+            "verify_run_id": "run_1",
+            "verify_scenario_id": "R1_real_happy_path",
+            "verify_step_id": "advance_for_compaction",
+            "book_id": 1,
+            "llm_rounds": [{"request": {"model": "deepseek-v4-flash"}}],
+        }
+    )
+    assert normalized["run_id"] == "run_1"
+    assert normalized["scenario_id"] == "R1_real_happy_path"
+    assert normalized["step_id"] == "advance_for_compaction"
+    assert normalized["book"] == {"id": 1}
+    assert normalized["model"] == "deepseek-v4-flash"
+    assert normalized["prompt_version"] == "chapter_compaction_v1"
+
+
+def test_render_reading_position_uses_source_chunk_for_compaction() -> None:
+    lines = render_reading_position(
+        {
+            "book": {"id": 1, "title": "Test Book"},
+            "chapter_idx": 1,
+            "source_chunk": {
+                "id": 2,
+                "chunk_seq": 0,
+                "start_paragraph_idx": 0,
+                "end_paragraph_idx": 179,
+            },
+        }
+    )
+    text = "\n".join(lines)
+    assert "Test Book" in text
+    assert "Source chunk: P0-P179" in text
+    assert "Window:" not in text
+
+
+def test_render_reading_position_prefers_window_when_both_present() -> None:
+    lines = render_reading_position(
+        {
+            "book": {"id": 1, "title": "Test Book"},
+            "chapter_idx": 1,
+            "source_chunk": {"id": 2, "start_paragraph_idx": 0, "end_paragraph_idx": 179},
+            "window": {
+                "id": 5,
+                "seq": 4,
+                "start_paragraph_idx": 436,
+                "end_paragraph_idx": 521,
+                "focus_start_paragraph_idx": 440,
+                "focus_end_paragraph_idx": 521,
+            },
+        }
+    )
+    text = "\n".join(lines)
+    assert "Window: P436-P521" in text
+    assert "Source chunk:" not in text
+
+
+def test_render_compaction_audit_markdown_includes_metadata() -> None:
+    markdown = render_agent_audit_markdown(
+        normalize_audit_packet(
+            {
+                "invocation_id": "inv_compaction_R1_0005",
+                "agent": "ContextCompactionAgent",
+                "verify_run_id": "run_1",
+                "verify_scenario_id": "R1_real_happy_path",
+                "verify_step_id": "advance_for_compaction",
+                "trace_id": "trace_x",
+                "llm_mode": "real",
+                "book_id": 1,
+                "book": {"id": 1, "title": "Test Book"},
+                "chapter_idx": 1,
+                "model": "deepseek-v4-flash",
+                "prompt_version": "chapter_compaction_v1",
+                "source_chunk": {
+                    "id": 2,
+                    "chunk_seq": 0,
+                    "start_paragraph_idx": 0,
+                    "end_paragraph_idx": 179,
+                },
+                "prompt_messages": [],
+                "usage": {"source": "provider", "input_tokens": 100, "output_tokens": 10},
+            }
+        )
+    )
+    assert "| Scenario | R1_real_happy_path |" in markdown
+    assert "| Model | deepseek-v4-flash |" in markdown
+    assert "Test Book" in markdown
+    assert "Source chunk: P0-P179" in markdown

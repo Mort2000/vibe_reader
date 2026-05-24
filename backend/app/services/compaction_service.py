@@ -15,6 +15,7 @@ from ..observability import (
     get_verify_scenario_id,
     get_verify_step_id,
 )
+from ..repos import books as book_repo
 from ..repos import chunks as chunk_repo
 from ..repos import context_state
 from ..repos import paragraphs as paragraph_repo
@@ -357,6 +358,9 @@ async def run_compaction_task(
             if usage.response_tokens is not None
             else usage.output_tokens
         )
+        # Audit-only lookup (verify_mode): enrich markdown report with book title.
+        # Not on the production hot path; book_id alone is insufficient for human-readable exports.
+        book = await book_repo.get_book(db, book_id)
         interaction = build_compaction_interaction_packet(
             invocation_id=invocation_id,
             trace_id=trace_id,
@@ -365,6 +369,7 @@ async def run_compaction_task(
             verify_step_id=get_verify_step_id(),
             job_id=job_id,
             book_id=book_id,
+            book=book or {"id": book_id},
             chapter_idx=chapter_idx,
             source_chunk=source_chunk,
             previous_summary_row=previous_summary_row,

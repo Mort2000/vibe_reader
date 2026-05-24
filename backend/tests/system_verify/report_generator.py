@@ -157,6 +157,8 @@ def _build_summary_md(
         for row in _read_ndjson(run_dir / "audit" / "comments.ndjson"):
             if row.get("llm_mode") == "real":
                 real_comments += 1
+    elif (run_dir / "audit" / "agent_invocations.ndjson").exists():
+        audit_comments, real_comments = _count_comment_invocations(run_dir)
 
     lines = [
         "# Vibe Reader Verify Summary",
@@ -253,6 +255,15 @@ def _build_summary_md(
             f"- agent_invocations: {_count_ndjson_lines(run_dir / 'audit' / 'agent_invocations.ndjson')}",
             f"- agent_reports: {_count_markdown_files(run_dir / 'audit' / 'agent_reports')}",
             f"- audit_safety: {_count_ndjson_lines(run_dir / 'audit' / 'audit_safety_report.ndjson')}",
+        ]
+    )
+    compaction_jobs_lines = _compaction_jobs_summary_lines(run_dir)
+    if compaction_jobs_lines:
+        lines.extend(["", "## Compaction Jobs", ""])
+        lines.extend(compaction_jobs_lines)
+
+    lines.extend(
+        [
             "",
             "## Failures",
             "",
@@ -357,6 +368,46 @@ def _count_markdown_files(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(1 for item in path.glob("*.md") if item.name != "index.md")
+
+
+def _count_comment_invocations(run_dir: Path) -> tuple[int, int]:
+    """Fallback counts when comments.ndjson was not exported (e.g. A3-only runs)."""
+    total = 0
+    real_total = 0
+    for row in _read_ndjson(run_dir / "audit" / "agent_invocations.ndjson"):
+        agent = str(row.get("agent") or row.get("agent_name") or "")
+        if "ParagraphCommentAgent" not in agent:
+            continue
+        total += 1
+        if row.get("llm_mode") == "real":
+            real_total += 1
+    return total, real_total
+
+
+def _compaction_jobs_summary_lines(run_dir: Path) -> list[str]:
+    path = run_dir / "audit" / "compaction_jobs.ndjson"
+    if not path.exists():
+        return []
+
+    totals = {"done": 0, "skipped": 0, "failed": 0, "other": 0}
+    lines: list[str] = []
+    for row in _read_ndjson(path):
+        summary = row.get("summary") or {}
+        for key in totals:
+            totals[key] += int(summary.get(key) or 0)
+        scenario_id = row.get("scenario_id") or "unknown"
+        lines.append(
+            f"- `{scenario_id}`: done={summary.get('done', 0)} "
+            f"skipped={summary.get('skipped', 0)} "
+            f"failed={summary.get('failed', 0)} "
+            f"(min_job_id={row.get('min_job_id', 0)})"
+        )
+    lines.append(
+        "- total: "
+        f"done={totals['done']} skipped={totals['skipped']} "
+        f"failed={totals['failed']} other={totals['other']}"
+    )
+    return lines
 
 
 def _percentile(sorted_values: list[float], p: float) -> float:

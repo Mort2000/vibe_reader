@@ -190,10 +190,42 @@ def render_final_result(packet: dict[str, Any]) -> list[str]:
     return lines
 
 
+def render_reading_position(packet: dict[str, Any]) -> list[str]:
+    window = packet.get("window") or {}
+    source_chunk = packet.get("source_chunk") or {}
+    lines = [
+        "## Reading Position",
+        "",
+        f"- Book: {((packet.get('book') or {}).get('title'))} (id={(packet.get('book') or {}).get('id')})",
+        f"- Chapter: {packet.get('chapter_idx')}",
+    ]
+    # Compaction agents carry source_chunk but no L1 window; comment agents do the opposite.
+    if "source_chunk" in packet and "window" not in packet:
+        lines.append(
+            f"- Source chunk: P{source_chunk.get('start_paragraph_idx')}-"
+            f"P{source_chunk.get('end_paragraph_idx')} "
+            f"(id={source_chunk.get('id')}, seq={source_chunk.get('chunk_seq')})"
+        )
+    else:
+        lines.extend(
+            [
+                (
+                    f"- Window: P{window.get('start_paragraph_idx')}-"
+                    f"P{window.get('end_paragraph_idx')} (id={window.get('id')}, seq={window.get('seq')})"
+                ),
+                (
+                    f"- Focus: P{window.get('focus_start_paragraph_idx')}-"
+                    f"P{window.get('focus_end_paragraph_idx')}"
+                ),
+            ]
+        )
+    lines.append("")
+    return lines
+
+
 def render_agent_audit_markdown(packet: dict[str, Any]) -> str:
     invocation_id = packet.get("invocation_id", "unknown")
     agent = packet.get("agent", "Agent")
-    window = packet.get("window") or {}
 
     header = [
         f"# {agent} · {invocation_id}",
@@ -210,22 +242,6 @@ def render_agent_audit_markdown(packet: dict[str, Any]) -> str:
         "",
     ]
 
-    reading = [
-        "## Reading Position",
-        "",
-        f"- Book: {((packet.get('book') or {}).get('title'))} (id={(packet.get('book') or {}).get('id')})",
-        f"- Chapter: {packet.get('chapter_idx')}",
-        (
-            f"- Window: P{window.get('start_paragraph_idx')}-"
-            f"P{window.get('end_paragraph_idx')} (id={window.get('id')}, seq={window.get('seq')})"
-        ),
-        (
-            f"- Focus: P{window.get('focus_start_paragraph_idx')}-"
-            f"P{window.get('focus_end_paragraph_idx')}"
-        ),
-        "",
-    ]
-
     links = [
         "## Related Artifacts",
         "",
@@ -235,7 +251,7 @@ def render_agent_audit_markdown(packet: dict[str, Any]) -> str:
         "",
     ]
 
-    parts = header + render_usage_timing_table(packet) + reading
+    parts = header + render_usage_timing_table(packet) + render_reading_position(packet)
     parts.extend(render_prompt_messages(packet.get("prompt_messages") or []))
     parts.extend(render_injected_context(packet.get("injected_context") or {}))
     parts.extend(render_thinking_section(packet))

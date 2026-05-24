@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .config import ContextConfig, VerifyConfig
@@ -60,6 +61,119 @@ def l2_chunk_signature(chunks: list[dict[str, Any]]) -> list[tuple[Any, Any, Any
     return sorted(signature, key=lambda item: (item[1] or 0, item[2] or 0))
 
 
+def _parse_nested_compaction_payload(value: Any) -> dict[str, Any] | None:
+    """Normalize compaction tool payload, including double-encoded raw JSON."""
+    if not isinstance(value, dict):
+        return None
+    if str(value.get("summary") or "").strip():
+        return value
+
+    nested = value.get("payload")
+    if isinstance(nested, dict):
+        if str(nested.get("summary") or "").strip():
+            return nested
+        raw = nested.get("raw")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+            if isinstance(parsed, dict):
+                inner = parsed.get("payload")
+                if isinstance(inner, dict):
+                    return inner if str(inner.get("summary") or "").strip() else None
+                return parsed if str(parsed.get("summary") or "").strip() else None
+    return None
+
+
+def _summary_from_tool_events(tool_events: list[Any]) -> dict[str, Any] | None:
+    for event in tool_events:
+        if not isinstance(event, dict):
+            continue
+        arguments = event.get("arguments") or {}
+        for candidate in (arguments.get("payload"), arguments):
+            parsed = _parse_nested_compaction_payload(candidate)
+            if parsed:
+                return parsed
+    return None
+
+
+def _merge_summary_metadata(
+    base: dict[str, Any], extra: dict[str, Any] | None
+) -> dict[str, Any]:
+    if not extra:
+        return base
+    merged = dict(extra)
+    for key, value in base.items():
+        if key not in merged or merged.get(key) in (None, "", []):
+            merged[key] = value
+    if base.get("summary"):
+        merged["summary"] = base["summary"]
+    if base.get("anchor_excerpts") is not None:
+        merged["anchor_excerpts"] = base["anchor_excerpts"]
+    if base.get("chapter_title"):
+        merged["chapter_title"] = base["chapter_title"]
+    if base.get("covered_start_paragraph_idx") is not None:
+        merged["covered_start_paragraph_idx"] = base["covered_start_paragraph_idx"]
+    elif base.get("covered_start") is not None:
+        merged["covered_start_paragraph_idx"] = base["covered_start"]
+    if base.get("covered_end_paragraph_idx") is not None:
+        merged["covered_end_paragraph_idx"] = base["covered_end_paragraph_idx"]
+    elif base.get("covered_end") is not None:
+        merged["covered_end_paragraph_idx"] = base["covered_end"]
+    return merged
+
+
+def _summary_from_final_result(final_result: dict[str, Any]) -> dict[str, Any] | None:
+    for key in (
+        "chapter_compressed_summary",
+        "summary_payload",
+        "compaction_result",
+    ):
+        value = final_result.get(key)
+        if isinstance(value, dict):
+            return value
+    if final_result.get("summary") and (
+        final_result.get("anchor_excerpts") is not None
+        or final_result.get("covered_end_paragraph_idx") is not None
+    ):
+        return final_result
+    return None
+
+
+def _summary_from_injected_context(payload: dict[str, Any]) -> dict[str, Any] | None:
+    injected = payload.get("injected_context") or {}
+    component = _component_by_name(
+        injected,
+        "chapter_compressed_summary",
+        "chapter_summary",
+        "rolling_summary",
+    )
+    if not component:
+        return None
+    content = component.get("content")
+    if not isinstance(content, dict):
+        return None
+    if str(content.get("summary") or "").strip():
+        return content
+    tool_summary = _summary_from_tool_events(payload.get("tool_events") or [])
+    if tool_summary:
+        return _merge_summary_metadata(tool_summary, content)
+    return None
+
+
+def _summary_from_next_summary(payload: dict[str, Any]) -> dict[str, Any] | None:
+    next_summary = payload.get("next_summary")
+    if not isinstance(next_summary, dict) or next_summary.get("id") is None:
+        return None
+    if str(next_summary.get("summary") or "").strip():
+        return next_summary
+    tool_summary = _summary_from_tool_events(payload.get("tool_events") or [])
+    if tool_summary:
+        return _merge_summary_metadata(tool_summary, next_summary)
+    return next_summary
+
+
 def extract_chapter_summary(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Extract ChapterCompressedSummary-like payload from agent interaction data."""
     for key in ("chapter_compressed_summary", "chapter_summary", "summary_payload"):
@@ -69,46 +183,19 @@ def extract_chapter_summary(payload: dict[str, Any]) -> dict[str, Any] | None:
 
     final_result = payload.get("final_result") or {}
     if isinstance(final_result, dict):
-        for key in (
-            "chapter_compressed_summary",
-            "summary_payload",
-            "compaction_result",
-        ):
-            value = final_result.get(key)
-            if isinstance(value, dict):
-                return value
-        if final_result.get("summary") and (
-            final_result.get("anchor_excerpts") is not None
-            or final_result.get("covered_end_paragraph_idx") is not None
-        ):
-            return final_result
+        summary = _summary_from_final_result(final_result)
+        if summary:
+            return summary
 
-    for event in payload.get("tool_events") or []:
-        arguments = (
-            (event.get("arguments") or {}).get("payload")
-            or event.get("arguments")
-            or {}
-        )
-        if isinstance(arguments, dict) and arguments.get("summary"):
-            return arguments
+    tool_summary = _summary_from_tool_events(payload.get("tool_events") or [])
+    if tool_summary:
+        return _merge_summary_metadata(tool_summary, payload.get("next_summary"))
 
-    injected = payload.get("injected_context") or {}
-    component = _component_by_name(
-        injected,
-        "chapter_compressed_summary",
-        "chapter_summary",
-        "rolling_summary",
-    )
-    if component:
-        content = component.get("content")
-        if isinstance(content, dict):
-            return content
+    summary = _summary_from_injected_context(payload)
+    if summary:
+        return summary
 
-    next_summary = payload.get("next_summary")
-    if isinstance(next_summary, dict) and next_summary.get("id") is not None:
-        return next_summary
-
-    return None
+    return _summary_from_next_summary(payload)
 
 
 def _compaction_run_has_evidence(run: dict[str, Any]) -> bool:

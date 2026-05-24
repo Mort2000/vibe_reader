@@ -20,6 +20,11 @@ data directory and verify mode, for example:
 
 Pre/post data directory reset is handled by the vibe-verify CLI run command;
 pytest fixtures do not manage backend process lifecycle unless ``--spawn-backend``.
+
+When backend / verify mode / stub LLM / corpus prerequisites are missing,
+``test_scenarios.py`` skips via the ``require_integration_ready`` fixture
+instead of failing after long scenario runs. Use ``--require-integration`` to
+fail fast in CI that expects a live backend.
 """
 
 from __future__ import annotations
@@ -65,6 +70,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Spawn backend subprocess with stub LLM env (stub mode only)",
     )
+    parser.addoption(
+        "--require-integration",
+        action="store_true",
+        default=False,
+        help="Fail instead of skip when integration prerequisites are not met",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -100,7 +111,6 @@ def aimock_sidecar(verify_config: VerifyConfig, request: pytest.FixtureRequest):
     from .llm_stub.aimock_launcher import AIMockSidecar
     from .llm_stub.env import (
         BackendProcess,
-        assert_backend_stub_llm_ready,
         inject_stub_backend_env,
         print_stub_backend_env_notice,
         spawn_backend,
@@ -114,11 +124,32 @@ def aimock_sidecar(verify_config: VerifyConfig, request: pytest.FixtureRequest):
         print_stub_backend_env_notice(session, verify_config)
         if spawn:
             backend_proc = spawn_backend(verify_config, session)
-        else:
-            assert_backend_stub_llm_ready(verify_config, session)
         yield session
         if backend_proc is not None:
             backend_proc.stop()
+
+
+@pytest.fixture(scope="session")
+def require_integration_ready(
+    verify_config: VerifyConfig,
+    corpus_manager: CorpusManager,
+    aimock_sidecar,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Skip (or fail with --require-integration) when live backend prerequisites missing."""
+    from .integration_prerequisites import check_integration_prerequisites
+
+    issues = check_integration_prerequisites(
+        verify_config,
+        corpus_manager,
+        aimock_session=aimock_sidecar,
+    )
+    if not issues:
+        return
+    message = "Integration prerequisites not met: " + "; ".join(issues)
+    if request.config.getoption("--require-integration"):
+        pytest.fail(message)
+    pytest.skip(message)
 
 
 @pytest.fixture(scope="session")
