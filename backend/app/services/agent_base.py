@@ -116,16 +116,17 @@ def get_comment_agent(settings: Settings) -> Agent[CommentDeps, str | None]:
 
     @_comment_agent.tool
     async def emit_comment(
-        ctx: RunContext[CommentDeps], payload: dict[str, Any]
+        ctx: RunContext[CommentDeps],
+        paragraph_idx: int,
+        comment: str,
+        comment_type: COMMENT_TYPES = "observation",
     ) -> str:
-        """Submit one paragraph comment draft.
-
-        Expected payload:
-        - paragraph_idx: target paragraph index
-        - comment: short Chinese comment
-        - comment_type: observation/question/humor/craft/warning
-        """
-        ctx.deps.raw_tool_payloads.append(payload)
+        """Submit one paragraph comment draft."""
+        ctx.deps.raw_tool_payloads.append({
+            "paragraph_idx": paragraph_idx,
+            "comment": comment,
+            "comment_type": comment_type,
+        })
         return "accepted"
 
     return _comment_agent

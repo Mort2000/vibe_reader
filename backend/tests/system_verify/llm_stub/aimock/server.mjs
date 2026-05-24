@@ -205,11 +205,9 @@ function buildCommentToolCalls(req) {
       id: "call_emit_comment_out_of_target",
       name: "emit_comment",
       arguments: {
-        payload: {
-          paragraph_idx: anchor + offset,
-          comment: `[stub:${profileName}] out_of_target`,
-          comment_type: "observation",
-        },
+        paragraph_idx: anchor + offset,
+        comment: `[stub:${profileName}] out_of_target`,
+        comment_type: "observation",
       },
     });
     return { toolCalls, usage: estimateUsage(content, inputDivisor, outputDivisor) };
@@ -221,9 +219,7 @@ function buildCommentToolCalls(req) {
     toolCalls.push({
       id: `call_emit_comment_invalid_${variant}`,
       name: "emit_comment",
-      arguments: {
-        payload: invalidPayload(paragraphIdx, variant),
-      },
+      arguments: invalidPayload(paragraphIdx, variant),
     });
     return { toolCalls, usage: estimateUsage(content, inputDivisor, outputDivisor) };
   }
@@ -234,11 +230,9 @@ function buildCommentToolCalls(req) {
       id: `call_emit_comment_${paragraphIdx}`,
       name: "emit_comment",
       arguments: {
-        payload: {
-          paragraph_idx: paragraphIdx,
-          comment: buildCommentText(paragraphIdx, commentType, ctxHash),
-          comment_type: commentType,
-        },
+        paragraph_idx: paragraphIdx,
+        comment: buildCommentText(paragraphIdx, commentType, ctxHash),
+        comment_type: commentType,
       },
     });
   });

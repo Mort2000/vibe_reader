@@ -335,8 +335,6 @@ async def select_eligible_compaction_source(
     frontier_pidx: int,
     *,
     min_live_chunks_after_compaction: int = 2,
-    preferred_live_chunks_after_compaction: int = 3,
-    context_pressure: bool = False,
 ) -> dict[str, Any] | None:
     all_active = await list_chunks(db, book_id, chapter_idx, status="active")
     if not all_active:
@@ -357,10 +355,6 @@ async def select_eligible_compaction_source(
     remaining = total_active - 1
 
     if remaining < min_live_chunks_after_compaction:
-        return None
-
-    # Three-tier: below preferred, only compact under explicit pressure.
-    if remaining < preferred_live_chunks_after_compaction and not context_pressure:
         return None
 
     return complete_unreclaimed[0]

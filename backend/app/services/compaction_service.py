@@ -221,8 +221,6 @@ async def run_compaction_task(
         chapter_idx,
         frontier_pidx,
         min_live_chunks_after_compaction=settings.context_l2.min_live_chunks_after_compaction,
-        preferred_live_chunks_after_compaction=settings.context_l2.preferred_live_chunks_after_compaction,
-        context_pressure=True,
     )
     if source_chunk is None:
         logger.info(
@@ -453,8 +451,6 @@ async def select_compaction_source_for_chapter(
     book_id: int,
     chapter_idx: int,
     settings: Settings,
-    *,
-    context_pressure: bool = True,
 ) -> dict[str, Any] | None:
     """Return the earliest eligible L2 chunk for compaction, if any."""
     frontier_pidx = await _compaction_frontier_paragraph_idx(db, book_id, chapter_idx)
@@ -464,8 +460,6 @@ async def select_compaction_source_for_chapter(
         chapter_idx,
         frontier_pidx,
         min_live_chunks_after_compaction=settings.context_l2.min_live_chunks_after_compaction,
-        preferred_live_chunks_after_compaction=settings.context_l2.preferred_live_chunks_after_compaction,
-        context_pressure=context_pressure,
     )
 
 
@@ -487,7 +481,6 @@ async def maybe_enqueue_compaction(
         book_id,
         chapter_idx,
         settings,
-        context_pressure=True,
     )
     if source_chunk is None:
         logger.info(

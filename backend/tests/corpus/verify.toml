@@ -87,7 +87,6 @@ min_chunk_tokens = 5000
 max_chunk_tokens = 9000
 max_live_original_tokens = 24000
 min_live_chunks_after_compaction = 2
-preferred_live_chunks_after_compaction = 3
 
 [context]
 provider_context_limit_tokens = 1000000
