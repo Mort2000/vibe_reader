@@ -14,9 +14,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def get_or_create(
-    db: aiosqlite.Connection, book_id: int
-) -> dict[str, Any]:
+async def get_or_create(db: aiosqlite.Connection, book_id: int) -> dict[str, Any]:
     cur = await db.execute(
         "SELECT * FROM book_context_states WHERE book_id = ?",
         (book_id,),
@@ -84,6 +82,7 @@ async def update_state(
     pending_updated_at: str | None | object = _UNSET,
     emergency_overflow_used: int | None | object = _UNSET,
     last_error: str | None | object = _UNSET,
+    auto_commit: bool = True,
 ) -> None:
     sets: list[str] = ["updated_at = ?"]
     params: list[Any] = [_now()]
@@ -127,4 +126,5 @@ async def update_state(
         f"UPDATE book_context_states SET {', '.join(sets)} WHERE book_id = ?",
         params,
     )
-    await db.commit()
+    if auto_commit:
+        await db.commit()

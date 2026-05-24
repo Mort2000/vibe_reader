@@ -78,7 +78,9 @@ class CommentAuditExporter:
 
         per_window = self.config.audit.sample_comments_per_window
         window_id = window.get("id") if window else None
-        grouped = [c for c in comments if window_id is None or c.get("window_id") == window_id]
+        grouped = [
+            c for c in comments if window_id is None or c.get("window_id") == window_id
+        ]
         if not grouped:
             grouped = comments
 
@@ -163,7 +165,9 @@ class CommentAuditExporter:
         if not self._drafts:
             return 0, 0
 
-        records = [self._to_record(sample_id, draft) for sample_id, draft in self._drafts]
+        records = [
+            self._to_record(sample_id, draft) for sample_id, draft in self._drafts
+        ]
         audit_dir = self.run_manager.base_dir / "audit"
         audit_dir.mkdir(parents=True, exist_ok=True)
         samples_dir = audit_dir / "samples"

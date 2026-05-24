@@ -14,6 +14,7 @@ from .middleware import RequestContextMiddleware
 from .observability import setup_logging
 from .repos.chunks import backfill_missing_chunks
 from .services.comment_service import register_with_runner as register_comment_handler
+from .services.token_estimator import TokenEstimator
 from .services.compaction_service import (
     register_with_runner as register_compaction_handler,
 )
@@ -40,7 +41,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="vibe-reader-mini", version="0.1.0")
     app.state.settings = settings
 
-    job_runner = JobRunner(max_concurrent=2)
+    estimator = TokenEstimator(settings.token_estimation)
+
+    job_runner = JobRunner(max_concurrent=2, token_estimator=estimator)
     register_comment_handler(job_runner)
     register_compaction_handler(job_runner)
     app.state.job_runner = job_runner
@@ -76,18 +79,37 @@ def create_app() -> FastAPI:
         db = await init_db(settings.db_path)
         app.state.db = db
         l2 = settings.context_l2
+
+        # Load calibrations first so backfill uses calibrated metadata
+        await estimator.load_calibrations(db)
+        app.state.token_estimator = estimator
+
+        est_info = estimator.get_calibration_info(settings.llm.model)
         backfilled = await backfill_missing_chunks(
             db,
             target_tokens=l2.target_chunk_tokens,
             min_tokens=l2.min_chunk_tokens,
             max_tokens=l2.max_chunk_tokens,
+            max_chunk_chars=l2.max_chunk_chars,
+            max_chunk_paragraphs=l2.max_chunk_paragraphs,
+            estimator_model=est_info.get("model", "local_v1"),
+            estimator_version=est_info.get("version", "local_v1"),
+            estimator_calibration_ratio=est_info.get("calibration_ratio", 1.0),
+            chunking_version="v1",
         )
         if backfilled:
             import logging
+
             logging.getLogger(__name__).info(
                 "startup.chunk_backfill",
-                extra={"event": "startup.chunk_backfill", "fields": {"chapters": backfilled}},
+                extra={
+                    "event": "startup.chunk_backfill",
+                    "fields": {"chapters": backfilled},
+                },
             )
+        await estimator.load_calibrations(db)
+        app.state.token_estimator = estimator
+
         await job_runner.start()
         await job_runner.recover_jobs(db)
 

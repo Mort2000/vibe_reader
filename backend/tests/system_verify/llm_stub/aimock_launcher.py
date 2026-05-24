@@ -163,7 +163,9 @@ def start_aimock(
     )
 
     try:
-        _wait_health(aimock_cfg.host, aimock_cfg.port, float(aimock_cfg.startup_timeout_s))
+        _wait_health(
+            aimock_cfg.host, aimock_cfg.port, float(aimock_cfg.startup_timeout_s)
+        )
     except AIMockLaunchError:
         proc.terminate()
         stdout = proc.stdout.read() if proc.stdout else ""

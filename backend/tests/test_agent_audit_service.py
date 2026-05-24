@@ -11,7 +11,10 @@ from app.services.agent_audit import (
     _split_user_prompt_segments,
     build_tool_events,
 )
-from app.services.agent_audit_store import load_interaction_packet, persist_interaction_packet
+from app.services.agent_audit_store import (
+    load_interaction_packet,
+    persist_interaction_packet,
+)
 
 
 def test_round_usage_marks_follow_up_rounds() -> None:

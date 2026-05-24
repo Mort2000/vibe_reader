@@ -77,19 +77,29 @@ async def check_forward_jump_chars(
     ctx_p = state.get("context_frontier_paragraph_idx", 0)
 
     if chapter_idx > ctx_ch:
-        old_last = await paragraph_repo.get_last_paragraph_idx(
-            db, book_id, ctx_ch
-        )
+        old_last = await paragraph_repo.get_last_paragraph_idx(db, book_id, ctx_ch)
         old_remaining = await paragraph_repo.count_chars_in_range(
-            db, book_id, ctx_ch, ctx_p, old_last or ctx_p,
+            db,
+            book_id,
+            ctx_ch,
+            ctx_p,
+            old_last or ctx_p,
         )
         new_prefix = await paragraph_repo.count_chars_in_range(
-            db, book_id, chapter_idx, -1, new_frontier,
+            db,
+            book_id,
+            chapter_idx,
+            -1,
+            new_frontier,
         )
         return old_remaining + new_prefix
 
     return await paragraph_repo.count_chars_in_range(
-        db, book_id, chapter_idx, ctx_p, new_frontier,
+        db,
+        book_id,
+        chapter_idx,
+        ctx_p,
+        new_frontier,
     )
 
 
@@ -100,9 +110,7 @@ async def compute_assistant_frontier(
     paragraph_idx: int,
     lookahead_paragraphs: int,
 ) -> int:
-    last_p = await paragraph_repo.get_last_paragraph_idx(
-        db, book_id, chapter_idx
-    )
+    last_p = await paragraph_repo.get_last_paragraph_idx(db, book_id, chapter_idx)
     return min(
         paragraph_idx + lookahead_paragraphs,
         last_p if last_p is not None else paragraph_idx,
@@ -128,20 +136,36 @@ async def validate_pending_progress(
 
     if assistant_frontier_paragraph_idx is not None:
         new_frontier = assistant_frontier_paragraph_idx
-        af_ch = assistant_frontier_chapter_idx if assistant_frontier_chapter_idx is not None else chapter_idx
+        af_ch = (
+            assistant_frontier_chapter_idx
+            if assistant_frontier_chapter_idx is not None
+            else chapter_idx
+        )
         if af_ch != chapter_idx:
             new_frontier = await compute_assistant_frontier(
-                db, book_id, chapter_idx, paragraph_idx, lookahead_paragraphs,
+                db,
+                book_id,
+                chapter_idx,
+                paragraph_idx,
+                lookahead_paragraphs,
             )
     else:
         new_frontier = await compute_assistant_frontier(
-            db, book_id, chapter_idx, paragraph_idx, lookahead_paragraphs,
+            db,
+            book_id,
+            chapter_idx,
+            paragraph_idx,
+            lookahead_paragraphs,
         )
 
     jump_chars = 0
     if jump_type == "forward":
         jump_chars = await check_forward_jump_chars(
-            db, book_id, chapter_idx, state, new_frontier,
+            db,
+            book_id,
+            chapter_idx,
+            state,
+            new_frontier,
         )
         if jump_chars > max_context_jump_chars:
             return "forward_rejected", jump_chars

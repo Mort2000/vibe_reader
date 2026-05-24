@@ -36,7 +36,11 @@ def extract_l2_chunks(injected_context: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         content = component.get("content") or {}
         if isinstance(content, dict):
-            chunks = content.get("chunks") or content.get("items") or content.get("live_l2_chunks")
+            chunks = (
+                content.get("chunks")
+                or content.get("items")
+                or content.get("live_l2_chunks")
+            )
             if isinstance(chunks, list):
                 return [c for c in chunks if isinstance(c, dict)]
     return []
@@ -65,7 +69,11 @@ def extract_chapter_summary(payload: dict[str, Any]) -> dict[str, Any] | None:
 
     final_result = payload.get("final_result") or {}
     if isinstance(final_result, dict):
-        for key in ("chapter_compressed_summary", "summary_payload", "compaction_result"):
+        for key in (
+            "chapter_compressed_summary",
+            "summary_payload",
+            "compaction_result",
+        ):
             value = final_result.get(key)
             if isinstance(value, dict):
                 return value
@@ -76,7 +84,11 @@ def extract_chapter_summary(payload: dict[str, Any]) -> dict[str, Any] | None:
             return final_result
 
     for event in payload.get("tool_events") or []:
-        arguments = (event.get("arguments") or {}).get("payload") or event.get("arguments") or {}
+        arguments = (
+            (event.get("arguments") or {}).get("payload")
+            or event.get("arguments")
+            or {}
+        )
         if isinstance(arguments, dict) and arguments.get("summary"):
             return arguments
 
@@ -199,8 +211,7 @@ def assert_chapter_summary_in_subsequent_context(
     component = find_chapter_summary_component(injected_context)
     if not component:
         component_names = [
-            str(c.get("name") or "")
-            for c in (injected_context.get("components") or [])
+            str(c.get("name") or "") for c in (injected_context.get("components") or [])
         ]
         raise StepAssertionError(
             assertion="chapter_summary_in_subsequent_context",
@@ -267,9 +278,7 @@ def select_post_compaction_comment_runs(
     """Return comment agent runs that likely occurred after compaction."""
     if compaction_job_id:
         post = [
-            run
-            for run in comment_runs
-            if _agent_run_job_id(run) > compaction_job_id
+            run for run in comment_runs if _agent_run_job_id(run) > compaction_job_id
         ]
         if post:
             if compaction_chapter_idx is not None:
@@ -425,7 +434,9 @@ def _is_comment_agent_run(run: dict[str, Any]) -> bool:
     )
 
 
-def find_compaction_agent_runs(agent_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def find_compaction_agent_runs(
+    agent_runs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     return [run for run in agent_runs if _is_compaction_agent_run(run)]
 
 
@@ -463,7 +474,9 @@ def assert_reclaimed_l2_chunk_present(
             return
         interaction = run.get("interaction") or run
         final_result = interaction.get("final_result") or {}
-        if final_result.get("reclaimed_chunk_id") or final_result.get("reclaimed_chunk_ids"):
+        if final_result.get("reclaimed_chunk_id") or final_result.get(
+            "reclaimed_chunk_ids"
+        ):
             return
         source = (
             interaction.get("compaction_source")
@@ -509,7 +522,7 @@ def assert_compaction_completed(
         )
 
     if compaction_runs:
-        interaction = (compaction_runs[-1].get("interaction") or compaction_runs[-1])
+        interaction = compaction_runs[-1].get("interaction") or compaction_runs[-1]
         summary = extract_chapter_summary(interaction)
         if summary:
             assert_chapter_summary_structure(summary)
@@ -534,16 +547,24 @@ def record_context_metrics_from_verify(
     step_id: str,
 ) -> None:
     mapping = {
-        "context.build_ms": (verify_metrics.get("latency") or {}).get("context.build_ms"),
+        "context.build_ms": (verify_metrics.get("latency") or {}).get(
+            "context.build_ms"
+        ),
         "context.input_token_estimate": verify_metrics.get("context", {}).get(
             "input_token_estimate"
         ),
-        "context.live_l2_tokens": verify_metrics.get("context", {}).get("live_l2_tokens"),
+        "context.live_l2_tokens": verify_metrics.get("context", {}).get(
+            "live_l2_tokens"
+        ),
         "context.chapter_summary_tokens": verify_metrics.get("context", {}).get(
             "chapter_summary_tokens"
         ),
-        "context.l2_chunk_count": verify_metrics.get("context", {}).get("l2_chunk_count"),
-        "context.compaction_epoch": verify_metrics.get("context", {}).get("compaction_epoch"),
+        "context.l2_chunk_count": verify_metrics.get("context", {}).get(
+            "l2_chunk_count"
+        ),
+        "context.compaction_epoch": verify_metrics.get("context", {}).get(
+            "compaction_epoch"
+        ),
         "compaction.e2e_latency_ms": (verify_metrics.get("latency") or {}).get(
             "compaction.e2e_latency_ms"
         ),

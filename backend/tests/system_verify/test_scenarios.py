@@ -25,7 +25,9 @@ async def test_s0_connectivity(run_manager, verify_config, metrics):
 async def test_s1_book_import(
     run_manager, verify_config, metrics, corpus_manager, suite_ctx
 ):
-    await run_s1(run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx)
+    await run_s1(
+        run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx
+    )
 
 
 @pytest.mark.system_verify
@@ -34,7 +36,9 @@ async def test_s1_book_import(
 async def test_s2_continuous_reading(
     run_manager, verify_config, metrics, corpus_manager, suite_ctx
 ):
-    await run_s2(run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx)
+    await run_s2(
+        run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx
+    )
 
 
 @pytest.mark.system_verify
@@ -43,7 +47,9 @@ async def test_s2_continuous_reading(
 async def test_s3_fast_scroll(
     run_manager, verify_config, metrics, corpus_manager, suite_ctx
 ):
-    await run_s3(run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx)
+    await run_s3(
+        run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx
+    )
 
 
 @pytest.mark.system_verify
@@ -52,7 +58,9 @@ async def test_s3_fast_scroll(
 async def test_s4_long_context(
     run_manager, verify_config, metrics, corpus_manager, suite_ctx
 ):
-    await run_s4(run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx)
+    await run_s4(
+        run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx
+    )
 
 
 @pytest.mark.system_verify

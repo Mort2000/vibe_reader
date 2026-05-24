@@ -53,10 +53,7 @@ async def _compute_window_bounds(
 
     token_sum = sum(p.get("token_estimate", 0) for p in window_paragraphs)
 
-    while (
-        start_pidx > 0
-        and len(window_paragraphs) < wc.min_focus_paragraphs
-    ):
+    while start_pidx > 0 and len(window_paragraphs) < wc.min_focus_paragraphs:
         start_pidx -= 1
         p = await paragraph_repo.get_paragraph(db, book_id, chapter_idx, start_pidx)
         if p:
@@ -101,8 +98,12 @@ async def get_or_create_window(
         end = latest_window["end_paragraph_idx"]
         in_range = start <= reading_pidx <= end
         status_ok = latest_window["status"] in ("pending", "running", "done")
-        if in_range and status_ok and not _should_advance(
-            latest_window, reading_pidx, wc.trigger_advance_ratio
+        if (
+            in_range
+            and status_ok
+            and not _should_advance(
+                latest_window, reading_pidx, wc.trigger_advance_ratio
+            )
         ):
             return latest_window, False
 
@@ -111,11 +112,14 @@ async def get_or_create_window(
     )
 
     focus_end = frontier
-    prev_done = (
-        latest_window is not None
-        and latest_window["status"] in ("pending", "running", "done")
+    prev_done = latest_window is not None and latest_window["status"] in (
+        "pending",
+        "running",
+        "done",
     )
-    focus_start = (latest_window["focus_end_paragraph_idx"] + 1) if prev_done else reading_pidx
+    focus_start = (
+        (latest_window["focus_end_paragraph_idx"] + 1) if prev_done else reading_pidx
+    )
     if focus_start > focus_end:
         focus_start = focus_end
 
@@ -128,9 +132,7 @@ async def get_or_create_window(
     if latest_window is not None and latest_window.get("text_hash") == text_hash:
         return latest_window, False
 
-    window_seq = (
-        latest_window["window_seq"] + 1 if latest_window else 0
-    )
+    window_seq = latest_window["window_seq"] + 1 if latest_window else 0
 
     window = await window_repo.create_window(
         db,

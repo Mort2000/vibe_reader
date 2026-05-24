@@ -41,7 +41,9 @@ class AgentAuditExporter:
     def trace_to_invocation(self) -> dict[str, str]:
         return dict(self._trace_to_invocation)
 
-    def export_from_agent_runs(self, agent_runs: list[dict[str, Any]]) -> dict[str, int]:
+    def export_from_agent_runs(
+        self, agent_runs: list[dict[str, Any]]
+    ) -> dict[str, int]:
         audit_cfg = self.config.audit
         if not audit_cfg.enabled or not audit_cfg.write_markdown_report:
             return {"agent_invocations": 0, "agent_reports": 0}
@@ -62,7 +64,9 @@ class AgentAuditExporter:
             usage["source"] = self.config.usage_source
             packet["usage"] = usage
             if run.get("trace_id"):
-                self._trace_to_invocation[str(run["trace_id"])] = packet["invocation_id"]
+                self._trace_to_invocation[str(run["trace_id"])] = packet[
+                    "invocation_id"
+                ]
             packets.append(packet)
 
         if not packets:
@@ -112,7 +116,11 @@ class AgentAuditExporter:
                     short = context_hash.replace("sha256:", "")[:12]
                     context_path = contexts_dir / f"context_{short}.json"
                     context_path.write_text(
-                        json.dumps(packet.get("injected_context") or {}, ensure_ascii=False, indent=2)
+                        json.dumps(
+                            packet.get("injected_context") or {},
+                            ensure_ascii=False,
+                            indent=2,
+                        )
                         + "\n",
                         encoding="utf-8",
                     )
@@ -123,12 +131,14 @@ class AgentAuditExporter:
                 {
                     "invocation_id": invocation_id,
                     "trace_id": packet.get("trace_id"),
-                    "secret_redaction_count": (packet.get("content_rendering") or {}).get(
-                        "secret_redaction_count", 0
-                    ),
+                    "secret_redaction_count": (
+                        packet.get("content_rendering") or {}
+                    ).get("secret_redaction_count", 0),
                     "secret_leak_detected": bool(leaks),
                     "secret_leak_patterns": leaks,
-                    "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "checked_at": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
                 }
             )
 
@@ -155,13 +165,17 @@ class AgentAuditExporter:
 
         invocations_path = base / "agent_invocations.ndjson"
         invocations_path.write_text(
-            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in index_records),
+            "".join(
+                json.dumps(row, ensure_ascii=False) + "\n" for row in index_records
+            ),
             encoding="utf-8",
         )
 
         safety_path = base / "audit_safety_report.ndjson"
         safety_path.write_text(
-            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in safety_records),
+            "".join(
+                json.dumps(row, ensure_ascii=False) + "\n" for row in safety_records
+            ),
             encoding="utf-8",
         )
 
@@ -180,7 +194,9 @@ class AgentAuditExporter:
                 f"{row.get('total_ms')} | [{row['invocation_id']}]({row['markdown_report_path']}) |"
             )
         index_md_lines.append("")
-        (reports_dir / "index.md").write_text("\n".join(index_md_lines), encoding="utf-8")
+        (reports_dir / "index.md").write_text(
+            "\n".join(index_md_lines), encoding="utf-8"
+        )
 
         return {
             "agent_invocations": len(index_records),
@@ -218,19 +234,27 @@ def _validate_single_invocation(run_dir: Path, row: dict[str, Any]) -> list[str]
 
     interaction = json.loads((run_dir / interaction_rel).read_text(encoding="utf-8"))
     if not interaction.get("prompt_messages"):
-        failures.append(f"audit_prompt_missing: prompt_messages missing for {invocation_id}")
+        failures.append(
+            f"audit_prompt_missing: prompt_messages missing for {invocation_id}"
+        )
     if not interaction.get("injected_context"):
         failures.append(
             f"audit_injected_context_missing: injected_context missing for {invocation_id}"
         )
     if not interaction.get("llm_rounds"):
-        failures.append(f"audit_interaction_missing: llm_rounds missing for {invocation_id}")
+        failures.append(
+            f"audit_interaction_missing: llm_rounds missing for {invocation_id}"
+        )
 
     tool_events = interaction.get("tool_events") or []
     llm_rounds = interaction.get("llm_rounds") or []
-    has_tool_calls = any((r.get("response") or {}).get("tool_calls") for r in llm_rounds)
+    has_tool_calls = any(
+        (r.get("response") or {}).get("tool_calls") for r in llm_rounds
+    )
     if has_tool_calls and not tool_events:
-        failures.append(f"audit_tool_result_missing: tool_events missing for {invocation_id}")
+        failures.append(
+            f"audit_tool_result_missing: tool_events missing for {invocation_id}"
+        )
 
     return failures
 
@@ -266,10 +290,16 @@ def assert_agent_audit_artifacts(
             interaction_rel = row.get("interaction_path")
             if not interaction_rel or not (run_dir / interaction_rel).exists():
                 continue
-            interaction = json.loads((run_dir / interaction_rel).read_text(encoding="utf-8"))
+            interaction = json.loads(
+                (run_dir / interaction_rel).read_text(encoding="utf-8")
+            )
             thinking_seen = any(
-                ((round_item.get("response") or {}).get("thinking") or {}).get("available")
-                or ((round_item.get("response") or {}).get("thinking") or {}).get("reason")
+                ((round_item.get("response") or {}).get("thinking") or {}).get(
+                    "available"
+                )
+                or ((round_item.get("response") or {}).get("thinking") or {}).get(
+                    "reason"
+                )
                 for round_item in interaction.get("llm_rounds") or []
             )
             if not thinking_seen:
@@ -297,7 +327,9 @@ def enrich_comment_records_with_agent_refs(
         invocation_id = trace_to_invocation.get(trace_id)
         if invocation_id:
             record["agent_invocation_id"] = invocation_id
-            record["agent_interaction_path"] = f"audit/agent_interactions/{invocation_id}.json"
+            record["agent_interaction_path"] = (
+                f"audit/agent_interactions/{invocation_id}.json"
+            )
             record["agent_report_path"] = f"audit/agent_reports/{invocation_id}.md"
             changed += 1
         updated.append(record)

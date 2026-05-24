@@ -11,7 +11,9 @@ from .report_generator import generate_reports
 from .run import RunManager
 
 
-def prepare_corpus(mgr: RunManager, config: VerifyConfig, corpus_path: str) -> CorpusManager:
+def prepare_corpus(
+    mgr: RunManager, config: VerifyConfig, corpus_path: str
+) -> CorpusManager:
     corpus = CorpusManager(config, corpus_path)
     corpus.load()
     if not corpus.validate():

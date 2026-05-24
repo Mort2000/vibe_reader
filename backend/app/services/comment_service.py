@@ -15,14 +15,89 @@ from ..observability import (
 )
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
+from ..repos import chunks as chunk_repo
 from ..repos import comments as comment_repo
 from ..repos import context_state
 from ..repos import paragraphs as paragraph_repo
 from .agent_audit import build_comment_interaction_packet, make_invocation_id
 from .agent_audit_store import persist_interaction_packet
-from .agent_base import CommentDensityHint, CommentDeps, EmitCommentDraft, get_comment_agent
+from .agent_base import (
+    CommentDensityHint,
+    CommentDeps,
+    EmitCommentDraft,
+    get_comment_agent,
+)
 from .context_builder import build_context
 from .job_runner import JobRunner
+
+
+def _paragraphs_with_evidence(
+    target_paragraphs: list[int],
+    ctx_result: Any,
+) -> list[int]:
+    """Return subset of target_paragraphs that have original text in live chunks."""
+    if not ctx_result.live_chunk_ids and ctx_result.partial_chunk_id is None:
+        return []
+
+    live_ranges: list[tuple[int, int]] = []
+    partial_frontier = ctx_result.partial_frontier_paragraph_idx
+
+    for chunk in getattr(ctx_result, "_live_chunks_detail", []):
+        start = chunk["start_paragraph_idx"]
+        end = chunk["end_paragraph_idx"]
+        if chunk["id"] == ctx_result.partial_chunk_id and partial_frontier is not None:
+            end = partial_frontier
+        live_ranges.append((start, end))
+
+    if not live_ranges:
+        return []
+
+    evidence: list[int] = []
+    for pidx in target_paragraphs:
+        for start, end in live_ranges:
+            if start <= pidx <= end:
+                evidence.append(pidx)
+                break
+    return evidence
+
+
+def _no_evidence_telemetry(
+    *,
+    job_id: int,
+    window_id: int,
+    target_set: set[int],
+    ctx_result: Any,
+    density_hint: CommentDensityHint,
+    missing_count: int,
+) -> dict[str, Any]:
+    return {
+        "agent_name": "ParagraphCommentAgent",
+        "duration_ms": 0,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cached_input_tokens": None,
+        "no_call": True,
+        "tool_call_count": 0,
+        "valid_count": 0,
+        "validation_failed_count": 0,
+        "discarded_count": 0,
+        "discarded_by_reason": {},
+        "candidate_lookup_count": len(target_set),
+        "context_hash": ctx_result.context_hash,
+        "comment_density_actual": density_hint.current_density,
+        "comment_density_soft_min": density_hint.soft_min_density,
+        "density_stat_start": density_hint.stat_start_paragraph_idx,
+        "density_stat_end": density_hint.stat_end_paragraph_idx,
+        "invocation_id": "",
+        "interaction_path": "",
+        "context_estimated_tokens": ctx_result.estimated_tokens,
+        "preflight_triggered": ctx_result.preflight_triggered,
+        "hard_triggered": ctx_result.hard_triggered,
+        "context_degraded": True,
+        "missing_target_original_count": missing_count,
+        "prompt_manifest": ctx_result.prompt_manifest,
+    }
+
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +151,7 @@ def _build_density_hint(
     soft_min: float,
 ) -> CommentDensityHint:
     current_density = active_count / max(1, total_target_paragraphs)
-    estimated_missing = max(
-        0, int(total_target_paragraphs * soft_min) - active_count
-    )
+    estimated_missing = max(0, int(total_target_paragraphs * soft_min) - active_count)
     return CommentDensityHint(
         stat_start_paragraph_idx=stat_start,
         stat_end_paragraph_idx=stat_end,
@@ -147,6 +220,7 @@ async def _build_comment_context(
     book_title: str | None,
     chapter_title: str | None,
     overflow_used: bool,
+    token_estimator: Any = None,
 ) -> tuple[Any, str, bool]:
     compaction_cleared = True
     if await _has_running_compaction(db, book_id, chapter_idx):
@@ -170,6 +244,7 @@ async def _build_comment_context(
         book_title=book_title,
         chapter_title=chapter_title,
         overflow_already_used=overflow_used,
+        token_estimator=token_estimator,
     )
 
     ctx_result = await build_context(db, **build_kwargs)
@@ -181,11 +256,87 @@ async def _build_comment_context(
     return ctx_result, ctx_result.prompt, context_degraded
 
 
+async def _run_comment_llm(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    window_id: int,
+    target_set: set[int],
+    density_hint: CommentDensityHint,
+    prompt: str,
+    settings: Settings,
+) -> tuple[Any, CommentDeps, float, str]:
+    deps = CommentDeps(
+        target_paragraph_ids=target_set,
+        density_hint=density_hint,
+    )
+
+    agent = get_comment_agent(settings)
+    trace_id = ensure_trace_id()
+
+    t0 = time.monotonic()
+    result = await agent.run(
+        prompt,
+        deps=deps,
+        metadata={
+            "book_id": book_id,
+            "chapter_idx": chapter_idx,
+            "window_id": window_id,
+            "trace_id": trace_id,
+        },
+    )
+    latency_ms = (time.monotonic() - t0) * 1000
+
+    return result, deps, latency_ms, trace_id
+
+
+async def _persist_valid_comments(
+    db: aiosqlite.Connection,
+    valid_comments: list[dict[str, Any]],
+    book_id: int,
+    chapter_idx: int,
+    window_id: int,
+    trace_id: str,
+) -> list[dict[str, Any]]:
+    persisted: list[dict[str, Any]] = []
+    for c in valid_comments:
+        created = await comment_repo.create_comment(
+            db,
+            book_id=book_id,
+            chapter_idx=chapter_idx,
+            paragraph_idx=c["paragraph_idx"],
+            window_id=window_id,
+            comment=c["comment"],
+            comment_type=c["comment_type"],
+            trace_id=trace_id,
+        )
+        persisted.append({**c, "comment_id": created.get("id")})
+    return persisted
+
+
+async def _enrich_with_live_chunks(
+    db: aiosqlite.Connection,
+    ctx_result: Any,
+    book_id: int,
+    chapter_idx: int,
+) -> None:
+    live_chunks = await chunk_repo.list_chunks(
+        db, book_id, chapter_idx, status="active"
+    )
+    ctx_result._live_chunks_detail = [
+        c
+        for c in live_chunks
+        if c["id"] in ctx_result.live_chunk_ids
+        or c["id"] == ctx_result.partial_chunk_id
+    ]
+
+
 async def run_comment_task(
     db: aiosqlite.Connection,
     job_id: int,
     window: dict[str, Any] | None,
     settings: Settings,
+    token_estimator: Any = None,
 ) -> dict[str, Any] | None:
     if window is None:
         raise ValueError(f"Window not found for job {job_id}")
@@ -203,7 +354,10 @@ async def run_comment_task(
     target_set = set(target_paragraphs)
 
     window_paragraphs = await paragraph_repo.get_paragraphs_range(
-        db, book_id, chapter_idx, start_pidx,
+        db,
+        book_id,
+        chapter_idx,
+        start_pidx,
         window["end_paragraph_idx"],
     )
 
@@ -258,11 +412,56 @@ async def run_comment_task(
         book_title=book.get("title"),
         chapter_title=chapter.get("title"),
         overflow_used=overflow_used,
+        token_estimator=token_estimator,
     )
+
+    await _enrich_with_live_chunks(db, ctx_result, book_id, chapter_idx)
+    evidenced_targets = _paragraphs_with_evidence(target_paragraphs, ctx_result)
+    missing_count = len(target_paragraphs) - len(evidenced_targets)
+
+    if not evidenced_targets:
+        logger.warning(
+            "comment_task.no_evidence_no_call",
+            extra={
+                "event": "comment_task.no_evidence_no_call",
+                "fields": {
+                    "job_id": job_id,
+                    "window_id": window_id,
+                    "missing_target_original_count": missing_count,
+                    "context_degraded": True,
+                },
+            },
+        )
+        return _no_evidence_telemetry(
+            job_id=job_id,
+            window_id=window_id,
+            target_set=target_set,
+            ctx_result=ctx_result,
+            density_hint=density_hint,
+            missing_count=missing_count,
+        )
+
+    if missing_count > 0:
+        target_paragraphs = evidenced_targets
+        target_set = set(evidenced_targets)
+        logger.warning(
+            "comment_task.partial_evidence",
+            extra={
+                "event": "comment_task.partial_evidence",
+                "fields": {
+                    "job_id": job_id,
+                    "window_id": window_id,
+                    "missing_target_original_count": missing_count,
+                    "remaining_targets": len(evidenced_targets),
+                },
+            },
+        )
 
     if ctx_result.emergency_overflow_used and not overflow_used:
         await context_state.update_state(
-            db, book_id, emergency_overflow_used=1,
+            db,
+            book_id,
+            emergency_overflow_used=1,
         )
 
     if ctx_result.preflight_triggered:
@@ -292,28 +491,16 @@ async def run_comment_task(
 
     await comment_repo.delete_comments_by_window(db, window_id)
 
-    deps = CommentDeps(
-        target_paragraph_ids=target_set,
-        density_hint=density_hint,
-    )
-
-    agent = get_comment_agent(settings)
-    trace_id = ensure_trace_id()
-
-    t0 = time.monotonic()
-    result = await agent.run(
+    result, deps, latency_ms, trace_id = await _run_comment_llm(
+        db,
+        book_id,
+        chapter_idx,
+        window_id,
+        target_set,
+        density_hint,
         prompt,
-        deps=deps,
-        metadata={
-            "book_id": book_id,
-            "chapter_idx": chapter_idx,
-            "window_id": window_id,
-            "trace_id": trace_id,
-        },
+        settings,
     )
-    latency_ms = (time.monotonic() - t0) * 1000
-
-    usage = result.usage()
 
     raw_payloads = deps.raw_tool_payloads
     valid_comments, discarded, discarded_by_reason, validation_failed_count = (
@@ -322,20 +509,16 @@ async def run_comment_task(
 
     no_call = len(raw_payloads) == 0
 
-    persisted_comments: list[dict[str, Any]] = []
-    for c in valid_comments:
-        created = await comment_repo.create_comment(
-            db,
-            book_id=book_id,
-            chapter_idx=chapter_idx,
-            paragraph_idx=c["paragraph_idx"],
-            window_id=window_id,
-            comment=c["comment"],
-            comment_type=c["comment_type"],
-            trace_id=trace_id,
-        )
-        persisted = {**c, "comment_id": created.get("id")}
-        persisted_comments.append(persisted)
+    persisted_comments = await _persist_valid_comments(
+        db,
+        valid_comments,
+        book_id,
+        chapter_idx,
+        window_id,
+        trace_id,
+    )
+
+    usage = result.usage()
 
     log_fields: dict[str, Any] = {
         "job_id": job_id,
@@ -383,9 +566,13 @@ async def run_comment_task(
 
     # PydanticAI RunUsage exposes both legacy (request/response_tokens) and
     # current (input/output_tokens) names; prefer legacy when set.
-    usage_input = usage.request_tokens if usage.request_tokens is not None else usage.input_tokens
+    usage_input = (
+        usage.request_tokens if usage.request_tokens is not None else usage.input_tokens
+    )
     usage_output = (
-        usage.response_tokens if usage.response_tokens is not None else usage.output_tokens
+        usage.response_tokens
+        if usage.response_tokens is not None
+        else usage.output_tokens
     )
 
     invocation_id = make_invocation_id(
@@ -433,6 +620,7 @@ async def run_comment_task(
     return {
         "agent_name": "ParagraphCommentAgent",
         "duration_ms": round(latency_ms, 1),
+        "prompt_version": "comment_v1",
         "input_tokens": usage_input,
         "output_tokens": usage_output,
         "cached_input_tokens": usage.cache_read_tokens or None,

@@ -21,10 +21,14 @@ async def create_chunks_for_chapter(
     target_tokens: int = 24_000,
     min_tokens: int = 18_000,
     max_tokens: int = 32_000,
+    max_chunk_chars: int = 8_000,
+    max_chunk_paragraphs: int = 180,
+    estimator_model: str = "",
+    estimator_version: str = "",
+    estimator_calibration_ratio: float = 1.0,
+    chunking_version: str = "",
 ) -> list[dict[str, Any]]:
-    paragraphs, _ = await paragraph_repo.list_paragraphs(
-        db, book_id, chapter_idx
-    )
+    paragraphs, _ = await paragraph_repo.list_paragraphs(db, book_id, chapter_idx)
     if not paragraphs:
         return []
 
@@ -38,20 +42,52 @@ async def create_chunks_for_chapter(
     chunk_seq = 0
     buf: list[dict[str, Any]] = []
     buf_tokens = 0
+    buf_chars = 0
+    buf_paragraphs = 0
+
+    estimator_meta = {
+        "estimator_model": estimator_model,
+        "estimator_version": estimator_version,
+        "estimator_calibration_ratio": estimator_calibration_ratio,
+        "chunking_version": chunking_version,
+    }
 
     for p in paragraphs:
         p_tokens = p.get("token_estimate", 0)
-        if buf and buf_tokens + p_tokens > max_tokens and buf_tokens >= min_tokens:
+        p_chars = p.get("char_count", len(p.get("text", "")))
+        should_flush = (
+            (buf and buf_tokens + p_tokens > max_tokens and buf_tokens >= min_tokens)
+            or (
+                buf
+                and buf_chars + p_chars > max_chunk_chars
+                and buf_tokens >= min_tokens
+            )
+            or (
+                buf
+                and buf_paragraphs + 1 > max_chunk_paragraphs
+                and buf_tokens >= min_tokens
+            )
+        )
+        if should_flush:
             chunks.append(
                 await _insert_chunk(
-                    db, book_id, chapter_idx, chunk_seq, buf
+                    db,
+                    book_id,
+                    chapter_idx,
+                    chunk_seq,
+                    buf,
+                    **estimator_meta,
                 )
             )
             chunk_seq += 1
             buf = []
             buf_tokens = 0
+            buf_chars = 0
+            buf_paragraphs = 0
         buf.append(p)
         buf_tokens += p_tokens
+        buf_chars += p_chars
+        buf_paragraphs += 1
 
     if buf:
         if chunks and buf_tokens < min_tokens:
@@ -69,13 +105,23 @@ async def create_chunks_for_chapter(
             await db.commit()
             chunks.append(
                 await _insert_chunk(
-                    db, book_id, chapter_idx, last["chunk_seq"], all_paragraphs
+                    db,
+                    book_id,
+                    chapter_idx,
+                    last["chunk_seq"],
+                    all_paragraphs,
+                    **estimator_meta,
                 )
             )
         else:
             chunks.append(
                 await _insert_chunk(
-                    db, book_id, chapter_idx, chunk_seq, buf
+                    db,
+                    book_id,
+                    chapter_idx,
+                    chunk_seq,
+                    buf,
+                    **estimator_meta,
                 )
             )
 
@@ -88,6 +134,11 @@ async def _insert_chunk(
     chapter_idx: int,
     chunk_seq: int,
     paragraphs: list[dict[str, Any]],
+    *,
+    estimator_model: str = "",
+    estimator_version: str = "",
+    estimator_calibration_ratio: float = 1.0,
+    chunking_version: str = "",
 ) -> dict[str, Any]:
     now = _now()
     start_pidx = paragraphs[0]["paragraph_idx"]
@@ -100,8 +151,11 @@ async def _insert_chunk(
     cur = await db.execute(
         """INSERT INTO original_text_chunks
            (book_id, chapter_idx, chunk_seq, start_paragraph_idx, end_paragraph_idx,
-            token_estimate, char_count, text_hash, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+            token_estimate, char_count, text_hash,
+            raw_token_estimate, estimator_model, estimator_version,
+            estimator_calibration_ratio, chunking_version,
+            status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
         (
             book_id,
             chapter_idx,
@@ -111,6 +165,11 @@ async def _insert_chunk(
             token_estimate,
             char_count,
             text_hash,
+            token_estimate,
+            estimator_model,
+            estimator_version,
+            estimator_calibration_ratio,
+            chunking_version,
             now,
             now,
         ),
@@ -126,6 +185,11 @@ async def _insert_chunk(
         "token_estimate": token_estimate,
         "char_count": char_count,
         "text_hash": text_hash,
+        "raw_token_estimate": token_estimate,
+        "estimator_model": estimator_model,
+        "estimator_version": estimator_version,
+        "estimator_calibration_ratio": estimator_calibration_ratio,
+        "chunking_version": chunking_version,
         "status": "active",
         "reclaimed_by_summary_id": None,
         "created_at": now,
@@ -264,6 +328,44 @@ async def get_live_original_tokens(
     return row[0] if row else 0
 
 
+async def select_eligible_compaction_source(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    frontier_pidx: int,
+    *,
+    min_live_chunks_after_compaction: int = 2,
+    preferred_live_chunks_after_compaction: int = 3,
+    context_pressure: bool = False,
+) -> dict[str, Any] | None:
+    all_active = await list_chunks(db, book_id, chapter_idx, status="active")
+    if not all_active:
+        return None
+
+    total_active = len(all_active)
+
+    if total_active <= 1:
+        return None
+
+    complete_unreclaimed = [
+        c for c in all_active if c["end_paragraph_idx"] <= frontier_pidx
+    ]
+
+    if not complete_unreclaimed:
+        return None
+
+    remaining = total_active - 1
+
+    if remaining < min_live_chunks_after_compaction:
+        return None
+
+    # Three-tier: below preferred, only compact under explicit pressure.
+    if remaining < preferred_live_chunks_after_compaction and not context_pressure:
+        return None
+
+    return complete_unreclaimed[0]
+
+
 async def get_chunk(db: aiosqlite.Connection, chunk_id: int) -> dict[str, Any] | None:
     cur = await db.execute(
         "SELECT * FROM original_text_chunks WHERE id = ?", (chunk_id,)
@@ -277,6 +379,12 @@ async def backfill_missing_chunks(
     target_tokens: int = 24_000,
     min_tokens: int = 18_000,
     max_tokens: int = 32_000,
+    max_chunk_chars: int = 8_000,
+    max_chunk_paragraphs: int = 180,
+    estimator_model: str = "local_v1",
+    estimator_version: str = "local_v1",
+    estimator_calibration_ratio: float = 1.0,
+    chunking_version: str = "v1",
 ) -> int:
     cur = await db.execute("SELECT id FROM books")
     book_rows = await cur.fetchall()
@@ -297,10 +405,18 @@ async def backfill_missing_chunks(
             cnt_row = await cnt_cur.fetchone()
             if cnt_row[0] == 0:
                 await create_chunks_for_chapter(
-                    db, book_id, chapter_idx,
+                    db,
+                    book_id,
+                    chapter_idx,
                     target_tokens=target_tokens,
                     min_tokens=min_tokens,
                     max_tokens=max_tokens,
+                    max_chunk_chars=max_chunk_chars,
+                    max_chunk_paragraphs=max_chunk_paragraphs,
+                    estimator_model=estimator_model,
+                    estimator_version=estimator_version,
+                    estimator_calibration_ratio=estimator_calibration_ratio,
+                    chunking_version=chunking_version,
                 )
                 backfilled += 1
     return backfilled

@@ -172,13 +172,26 @@ def test_agent_audit_exporter_writes_artifacts(tmp_path: Path, monkeypatch) -> N
 
     exporter = AgentAuditExporter(run_manager, config)
     counts = exporter.export_from_agent_runs(
-        [{"trace_id": "trace_test_001", "invocation_id": "inv_comment_S2_0001", "interaction": _sample_packet()}]
+        [
+            {
+                "trace_id": "trace_test_001",
+                "invocation_id": "inv_comment_S2_0001",
+                "interaction": _sample_packet(),
+            }
+        ]
     )
 
     assert counts["agent_reports"] == 1
     assert (run_manager.base_dir / "audit" / "agent_invocations.ndjson").exists()
-    assert (run_manager.base_dir / "audit" / "agent_reports" / "inv_comment_S2_0001.md").exists()
-    assert (run_manager.base_dir / "audit" / "agent_interactions" / "inv_comment_S2_0001.json").exists()
+    assert (
+        run_manager.base_dir / "audit" / "agent_reports" / "inv_comment_S2_0001.md"
+    ).exists()
+    assert (
+        run_manager.base_dir
+        / "audit"
+        / "agent_interactions"
+        / "inv_comment_S2_0001.json"
+    ).exists()
 
     failures = assert_agent_audit_artifacts(run_manager.base_dir)
     assert failures == []

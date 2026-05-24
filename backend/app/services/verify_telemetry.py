@@ -159,9 +159,7 @@ async def aggregate_metrics(
         db, verify_run_id=run_id, verify_scenario_id=scenario_id
     )
 
-    comment_runs = [
-        run for run in runs if run.get("agent_name") == COMMENT_AGENT_NAME
-    ]
+    comment_runs = [run for run in runs if run.get("agent_name") == COMMENT_AGENT_NAME]
 
     input_total = 0
     output_total = 0

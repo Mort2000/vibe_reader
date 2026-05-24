@@ -74,7 +74,9 @@ class CompactionAuditExporter:
                 or interaction.get("source_chunk")
                 or {}
             ),
-            trace_id=str(agent_run.get("trace_id") or interaction.get("trace_id") or ""),
+            trace_id=str(
+                agent_run.get("trace_id") or interaction.get("trace_id") or ""
+            ),
             invocation_id=str(
                 agent_run.get("invocation_id") or interaction.get("invocation_id") or ""
             ),
@@ -85,7 +87,8 @@ class CompactionAuditExporter:
             latency_ms=latency_ms,
             compaction_epoch=summary.get("compaction_epoch")
             or interaction.get("compaction_epoch"),
-            l2_chunks=l2_chunks or extract_l2_chunks(interaction.get("injected_context") or {}),
+            l2_chunks=l2_chunks
+            or extract_l2_chunks(interaction.get("injected_context") or {}),
         )
         self._drafts.append((sample_id, draft))
         return sample_id
@@ -113,7 +116,9 @@ class CompactionAuditExporter:
                     "total_input_token_estimate"
                 ),
                 "chunks": chunks,
-                "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "recorded_at": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
             }
         )
 
@@ -166,8 +171,12 @@ class CompactionAuditExporter:
                 "compaction_epoch": draft.compaction_epoch,
                 "summary_excerpt": _excerpt(str(draft.summary.get("summary") or "")),
                 "anchor_excerpt_count": len(draft.summary.get("anchor_excerpts") or []),
-                "covered_start_paragraph_idx": draft.summary.get("covered_start_paragraph_idx"),
-                "covered_end_paragraph_idx": draft.summary.get("covered_end_paragraph_idx"),
+                "covered_start_paragraph_idx": draft.summary.get(
+                    "covered_start_paragraph_idx"
+                ),
+                "covered_end_paragraph_idx": draft.summary.get(
+                    "covered_end_paragraph_idx"
+                ),
                 "source_chunk": draft.source_chunk,
                 "forbidden_fields_absent": {
                     field: field not in draft.summary
@@ -181,7 +190,9 @@ class CompactionAuditExporter:
         if ndjson_rows:
             path = audit_dir / "compaction_summaries.ndjson"
             path.write_text(
-                "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in ndjson_rows),
+                "".join(
+                    json.dumps(row, ensure_ascii=False) + "\n" for row in ndjson_rows
+                ),
                 encoding="utf-8",
             )
 

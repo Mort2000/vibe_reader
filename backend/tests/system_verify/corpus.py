@@ -156,7 +156,11 @@ class CorpusManager:
             self.load()
 
         errors: list[str] = []
-        book = self.get_book(book_alias) if book_alias else (self.books[0] if self.books else None)
+        book = (
+            self.get_book(book_alias)
+            if book_alias
+            else (self.books[0] if self.books else None)
+        )
         if book is None:
             return ["No books in corpus manifest"]
 
@@ -168,9 +172,7 @@ class CorpusManager:
             return errors
 
         if not probe.real_llm:
-            errors.append(
-                f"[{book.alias}] happy_path_current must set real_llm = true"
-            )
+            errors.append(f"[{book.alias}] happy_path_current must set real_llm = true")
 
         long_flow = self.config.real_llm.long_flow
         min_tokens = (

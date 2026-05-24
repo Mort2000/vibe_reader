@@ -16,18 +16,19 @@ from ..routers.events import publish_event
 logger = logging.getLogger(__name__)
 
 JobHandler = Callable[
-    [aiosqlite.Connection, int, dict[str, Any], Any],
+    [aiosqlite.Connection, int, dict[str, Any], Any, Any],
     Awaitable[dict[str, Any] | None],
 ]
 
 
 class JobRunner:
-    def __init__(self, max_concurrent: int = 2) -> None:
+    def __init__(self, max_concurrent: int = 2, token_estimator: Any = None) -> None:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._book_locks: dict[int, asyncio.Lock] = {}
         self._tasks: dict[int, asyncio.Task] = {}
         self._handlers: dict[str, JobHandler] = {}
         self._running = False
+        self._token_estimator = token_estimator
 
     def _get_book_lock(self, book_id: int) -> asyncio.Lock:
         lock = self._book_locks.get(book_id)
@@ -51,9 +52,7 @@ class JobRunner:
         for job_id, task in list(self._tasks.items()):
             task.cancel()
         if self._tasks:
-            await asyncio.gather(
-                *self._tasks.values(), return_exceptions=True
-            )
+            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
         self._tasks.clear()
         logger.info(
             "job_runner.stopped",
@@ -61,9 +60,7 @@ class JobRunner:
         )
 
     async def recover_jobs(self, db: aiosqlite.Connection) -> None:
-        running_jobs, _ = await job_repo.list_jobs(
-            db, status="running", limit=100
-        )
+        running_jobs, _ = await job_repo.list_jobs(db, status="running", limit=100)
         for job in running_jobs:
             await job_repo.update_job_status(db, job["id"], "pending")
             await self._enqueue_job(db, job)
@@ -75,9 +72,7 @@ class JobRunner:
                 },
             )
 
-        pending_jobs, _ = await job_repo.list_jobs(
-            db, status="pending", limit=100
-        )
+        pending_jobs, _ = await job_repo.list_jobs(db, status="pending", limit=100)
         for job in pending_jobs:
             if job["id"] not in self._tasks:
                 await self._enqueue_job(db, job)
@@ -134,9 +129,7 @@ class JobRunner:
         )
 
         event_type = (
-            "window.queued"
-            if job_type == "comment_window"
-            else "context.queued"
+            "window.queued" if job_type == "comment_window" else "context.queued"
         )
         await publish_event(
             event_type,
@@ -162,9 +155,7 @@ class JobRunner:
             raise ValueError(f"Job {job_id} not found")
 
         await job_repo.increment_attempt(db, job_id)
-        await job_repo.update_job_status(
-            db, job_id, "pending", error=None
-        )
+        await job_repo.update_job_status(db, job_id, "pending", error=None)
 
         job["status"] = "pending"
         job["attempt_count"] = job.get("attempt_count", 0) + 1
@@ -188,16 +179,12 @@ class JobRunner:
         await self._enqueue_job(db, job)
         return job
 
-    async def _enqueue_job(
-        self, db: aiosqlite.Connection, job: dict[str, Any]
-    ) -> None:
+    async def _enqueue_job(self, db: aiosqlite.Connection, job: dict[str, Any]) -> None:
         if not self._running:
             return
 
         job_id = job["id"]
-        task = asyncio.create_task(
-            self._execute_with_book_lock(db, job)
-        )
+        task = asyncio.create_task(self._execute_with_book_lock(db, job))
         self._tasks[job_id] = task
         task.add_done_callback(lambda t, jid=job_id: self._tasks.pop(jid, None))
 
@@ -218,9 +205,7 @@ class JobRunner:
                         },
                     )
 
-    async def _execute_job(
-        self, db: aiosqlite.Connection, job: dict[str, Any]
-    ) -> None:
+    async def _execute_job(self, db: aiosqlite.Connection, job: dict[str, Any]) -> None:
         job_id = job["id"]
         job_type = job["job_type"]
         window_id = job.get("window_id")
@@ -245,17 +230,13 @@ class JobRunner:
             db, book_id, status="running", running_job_id=job_id
         )
 
-        await job_repo.update_job_status(
-            db, job_id, "running", trace_id=trace_id
-        )
+        await job_repo.update_job_status(db, job_id, "running", trace_id=trace_id)
 
         if window_id:
             await window_repo.update_window_status(db, window_id, "running")
 
         running_event = (
-            "window.running"
-            if job_type == "comment_window"
-            else "context.compacting"
+            "window.running" if job_type == "comment_window" else "context.compacting"
         )
         await publish_event(
             running_event,
@@ -271,14 +252,25 @@ class JobRunner:
 
         try:
             await self._run_handler(
-                db, job_id, job_type, window_id,
-                book_id, chapter_idx, trace_id,
+                db,
+                job_id,
+                job_type,
+                window_id,
+                book_id,
+                chapter_idx,
+                trace_id,
                 handler,
             )
         except Exception as exc:
             await self._handle_failure(
-                db, job_id, job_type, window_id,
-                book_id, chapter_idx, trace_id, exc,
+                db,
+                job_id,
+                job_type,
+                window_id,
+                book_id,
+                chapter_idx,
+                trace_id,
+                exc,
             )
 
     async def _run_handler(
@@ -300,7 +292,31 @@ class JobRunner:
 
         settings = load_settings()
 
-        telemetry = await handler(db, job_id, window, settings)
+        telemetry = await handler(db, job_id, window, settings, self._token_estimator)
+
+        if telemetry and telemetry.get("input_tokens") is not None:
+            prompt_manifest = telemetry.get("prompt_manifest") or {}
+            has_live_chunks = any(
+                c.get("name") == "live_original_chunks"
+                for c in prompt_manifest.get("components", [])
+            )
+            if has_live_chunks:
+                estimator = self._token_estimator
+                if estimator is None:
+                    from .token_estimator import TokenEstimator
+
+                    estimator = TokenEstimator(settings.token_estimation)
+                await estimator.record_observation(
+                    db,
+                    model=settings.llm.model,
+                    prompt_version=telemetry.get("prompt_version", ""),
+                    language_profile="cjk_mixed",
+                    raw_estimate=telemetry.get(
+                        "context_estimated_tokens",
+                        prompt_manifest.get("total_estimate", 0),
+                    ),
+                    actual_tokens=telemetry["input_tokens"],
+                )
 
         if telemetry and settings.verify_mode:
             from ..services.verify_telemetry import persist_agent_run
@@ -318,24 +334,18 @@ class JobRunner:
         await job_repo.update_job_status(db, job_id, "done")
 
         if window_id:
-            await window_repo.update_window_status(
-                db, window_id, "done"
-            )
+            await window_repo.update_window_status(db, window_id, "done")
 
         if (
             telemetry
             and telemetry.get("preflight_triggered")
             and job_type == "comment_window"
         ):
-            await self.submit_job(
-                db, "compact_context", book_id, chapter_idx
-            )
+            await self.submit_job(db, "compact_context", book_id, chapter_idx)
 
         if telemetry or job_type == "comment_window":
             done_event = (
-                "window.done"
-                if job_type == "comment_window"
-                else "context.compacted"
+                "window.done" if job_type == "comment_window" else "context.compacted"
             )
             event_payload: dict[str, Any] = {
                 "book_id": book_id,
@@ -451,24 +461,71 @@ class JobRunner:
             await context_state.update_state(db, book_id, **_clear_pending)
             return
 
+        if jump_type == "forward_accepted":
+            from ..repos import paragraphs as paragraph_repo
+            from .token_estimator import TokenEstimator
+
+            ctx_frontier_p = state.get("context_frontier_paragraph_idx", 0)
+            jump_start_p = ctx_frontier_p + 1
+            jump_end_p = pending_af_p if pending_af_p else paragraph_idx
+
+            if jump_end_p >= jump_start_p:
+                jump_paragraphs, _ = await paragraph_repo.list_paragraphs(
+                    db,
+                    book_id,
+                    state.get("active_chapter_idx", chapter_idx),
+                )
+                jump_text = "\n".join(
+                    p["text"]
+                    for p in jump_paragraphs
+                    if jump_start_p <= p["paragraph_idx"] <= jump_end_p
+                )
+                estimator = self._token_estimator
+                if estimator is None:
+                    estimator = TokenEstimator(settings.token_estimation)
+                jump_token_est = estimator.get_safe_estimate(
+                    jump_text,
+                    settings.llm.model,
+                )
+                max_jump_tokens = settings.context.max_context_jump_tokens_estimate
+                if jump_token_est > max_jump_tokens:
+                    logger.info(
+                        "job_runner.pending_token_jump_rejected",
+                        extra={
+                            "event": "job_runner.pending_token_jump_rejected",
+                            "fields": {
+                                "book_id": book_id,
+                                "jump_token_estimate": jump_token_est,
+                                "max_jump_tokens": max_jump_tokens,
+                            },
+                        },
+                    )
+                    await context_state.update_state(db, book_id, **_clear_pending)
+                    return
+
         assistant_frontier = pending_af_p
         if assistant_frontier is None:
             from .progress_helpers import compute_assistant_frontier
 
             assistant_frontier = await compute_assistant_frontier(
-                db, book_id, chapter_idx, paragraph_idx,
+                db,
+                book_id,
+                chapter_idx,
+                paragraph_idx,
                 settings.reader.lookahead_paragraphs,
             )
 
         await progress_repo.upsert_progress(
-            db, book_id,
+            db,
+            book_id,
             chapter_idx=chapter_idx,
             paragraph_idx=paragraph_idx,
             scroll_pct=scroll_pct or 0.0,
         )
 
         await context_state.update_state(
-            db, book_id,
+            db,
+            book_id,
             active_chapter_idx=chapter_idx,
             reading_paragraph_idx=paragraph_idx,
         )
@@ -484,20 +541,23 @@ class JobRunner:
                 chapter_idx=chapter_idx,
                 reading_pidx=paragraph_idx,
                 settings=settings,
+                token_estimator=self._token_estimator,
             )
 
             if ctx_result.preflight_triggered:
-                await self.submit_job(
-                    db, "compact_context", book_id, chapter_idx
-                )
+                await self.submit_job(db, "compact_context", book_id, chapter_idx)
 
             await self.submit_job(
-                db, "comment_window", book_id, chapter_idx,
+                db,
+                "comment_window",
+                book_id,
+                chapter_idx,
                 window_id=window["id"],
             )
 
         await context_state.update_state(
-            db, book_id,
+            db,
+            book_id,
             assistant_frontier_chapter_idx=chapter_idx,
             assistant_frontier_paragraph_idx=assistant_frontier,
             context_frontier_chapter_idx=chapter_idx,
@@ -533,9 +593,7 @@ class JobRunner:
     ) -> None:
         error_msg = str(exc)[:500]
 
-        await job_repo.update_job_status(
-            db, job_id, "failed", error=error_msg
-        )
+        await job_repo.update_job_status(db, job_id, "failed", error=error_msg)
 
         if window_id:
             await window_repo.update_window_status(
@@ -543,9 +601,7 @@ class JobRunner:
             )
 
         failed_event = (
-            "window.failed"
-            if job_type == "comment_window"
-            else "context.failed"
+            "window.failed" if job_type == "comment_window" else "context.failed"
         )
         await publish_event(
             failed_event,
@@ -570,7 +626,10 @@ class JobRunner:
         )
 
         await context_state.update_state(
-            db, book_id, status="idle", running_job_id=None,
+            db,
+            book_id,
+            status="idle",
+            running_job_id=None,
             last_error=error_msg,
         )
 

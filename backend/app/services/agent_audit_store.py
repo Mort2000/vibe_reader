@@ -30,7 +30,9 @@ def persist_interaction_packet(
     """Write packet to disk; return path relative to ``data_dir``."""
     path = interaction_file_path(data_dir, verify_run_id, invocation_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(packet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(packet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     return str(path.relative_to(data_dir))
 
 

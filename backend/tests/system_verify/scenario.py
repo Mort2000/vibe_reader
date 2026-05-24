@@ -214,13 +214,9 @@ class ScenarioRunner:
             result.failure_summary = f"Failed steps: {', '.join(failed_steps)}"
         elif result.status == ScenarioStatus.FAILED and not result.failure_summary:
             last = failed_steps[-1] if failed_steps else ""
-            failed_step = next(
-                (s for s in result.steps if s.step_id == last), None
-            )
+            failed_step = next((s for s in result.steps if s.step_id == last), None)
             detail = (
-                _step_failure_detail(failed_step)
-                if failed_step is not None
-                else last
+                _step_failure_detail(failed_step) if failed_step is not None else last
             )
             result.failure_summary = f"Step '{last}' failed: {detail}"
 

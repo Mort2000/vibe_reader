@@ -141,7 +141,9 @@ async def load_chapter_paragraphs(
         "load_paragraphs",
         context=ctx,
     ) as client:
-        body, _ = await client.list_paragraphs(book_id, chapter_idx, params={"limit": 5000})
+        body, _ = await client.list_paragraphs(
+            book_id, chapter_idx, params={"limit": 5000}
+        )
         paragraphs = body.get("items", [])
         ctx[cache_key] = paragraphs
         return paragraphs
@@ -385,7 +387,9 @@ class ReadingCursor:
             self.visited_chapters.append(self.chapter_idx)
 
 
-def resolve_happy_path_start(probe: ProbeConfig, fallback: ProbeConfig) -> tuple[int, int]:
+def resolve_happy_path_start(
+    probe: ProbeConfig, fallback: ProbeConfig
+) -> tuple[int, int]:
     """Return the start chapter/paragraph for real happy-path reading."""
     chapter_idx = (
         probe.start_chapter_idx
@@ -430,7 +434,9 @@ async def load_chapters(
     return chapters
 
 
-def chapter_by_idx(chapters: list[dict[str, Any]], chapter_idx: int) -> dict[str, Any] | None:
+def chapter_by_idx(
+    chapters: list[dict[str, Any]], chapter_idx: int
+) -> dict[str, Any] | None:
     for chapter in chapters:
         if chapter.get("idx") == chapter_idx:
             return chapter
@@ -545,7 +551,10 @@ async def advance_reading_cross_chapter(
             )
 
         chapter_last = last_paragraph_idx(chapter)
-        if chapter.get("paragraph_count", 0) <= 0 or cursor.paragraph_idx > chapter_last:
+        if (
+            chapter.get("paragraph_count", 0) <= 0
+            or cursor.paragraph_idx > chapter_last
+        ):
             active_session, moved = await _cross_reading_chapter(
                 ctx,
                 cursor,
@@ -992,7 +1001,9 @@ def raise_window_failed(window: dict[str, Any]) -> None:
     )
 
 
-def window_is_no_call(window: dict[str, Any] | None, comments: list[dict[str, Any]]) -> bool:
+def window_is_no_call(
+    window: dict[str, Any] | None, comments: list[dict[str, Any]]
+) -> bool:
     if not window:
         return False
     if window.get("no_call") is True:
@@ -1058,7 +1069,9 @@ async def verify_backend_runtime(
         if require_model_match:
             expected_model = config.effective_model()
             backend_model = llm.get("model")
-            assert_that.is_not_none(backend_model, "verify runtime should expose llm.model")
+            assert_that.is_not_none(
+                backend_model, "verify runtime should expose llm.model"
+            )
             if expected_model:
                 assert_that.equal(
                     backend_model,
@@ -1160,7 +1173,9 @@ async def wait_for_comments(
     return body.get("items") or []
 
 
-def progress_update_was_deduped(first_body: dict[str, Any], second_body: dict[str, Any]) -> bool:
+def progress_update_was_deduped(
+    first_body: dict[str, Any], second_body: dict[str, Any]
+) -> bool:
     """Return True when an identical progress PUT was treated as a no-op.
 
     Relies on explicit backend markers or stable ``updated_at``. Does not infer
@@ -1258,9 +1273,7 @@ def record_comment_metrics(  # noqa: C901
         )
 
     comment_jobs = [
-        job
-        for job in (jobs or [])
-        if job.get("job_type") in (None, "comment_window")
+        job for job in (jobs or []) if job.get("job_type") in (None, "comment_window")
     ]
     for job in comment_jobs:
         queue_wait = _iso_duration_ms(job.get("created_at"), job.get("started_at"))
@@ -1303,7 +1316,8 @@ def record_comment_metrics(  # noqa: C901
         token_totals = [
             (comment.get("tokens_in") or 0) + (comment.get("tokens_out") or 0)
             for comment in comments
-            if comment.get("tokens_in") is not None or comment.get("tokens_out") is not None
+            if comment.get("tokens_in") is not None
+            or comment.get("tokens_out") is not None
         ]
         for total in token_totals:
             metrics.record(
@@ -1351,7 +1365,14 @@ def _parse_comment_telemetry(
             1,
         )
 
-    return validation_failed, discarded, discarded_by_reason, tool_call_count, candidate_lookup_count, 0
+    return (
+        validation_failed,
+        discarded,
+        discarded_by_reason,
+        tool_call_count,
+        candidate_lookup_count,
+        0,
+    )
 
 
 def _extract_window_comment_metrics(
@@ -1444,7 +1465,11 @@ async def assert_comments_not_regenerated(
     validate_comments_response(body, rec)
     for paragraph_idx, comment_id in comments_before.items():
         current = next(
-            (item for item in body.get("items") or [] if item.get("paragraph_idx") == paragraph_idx),
+            (
+                item
+                for item in body.get("items") or []
+                if item.get("paragraph_idx") == paragraph_idx
+            ),
             None,
         )
         if current is None:
@@ -1640,9 +1665,7 @@ async def sync_real_llm_tracker_from_verify_metrics(
     *,
     scenario_id: str | None = None,
 ) -> dict[str, Any]:
-    body, rec = await client.verify_metrics(
-        run_manager.run_id, scenario_id=scenario_id
-    )
+    body, rec = await client.verify_metrics(run_manager.run_id, scenario_id=scenario_id)
     if rec.status_code >= 400:
         logger.warning(
             "verify_metrics unavailable for run_id=%s: HTTP %s",
@@ -1745,7 +1768,9 @@ def record_verify_metrics_coverage(
                     step_id=step_id,
                 )
 
-    agent_tokens = (verify_metrics.get("tokens") or {}).get("ParagraphCommentAgent") or {}
+    agent_tokens = (verify_metrics.get("tokens") or {}).get(
+        "ParagraphCommentAgent"
+    ) or {}
     requests = int(agent_tokens.get("requests") or 0)
     total_tokens = int(agent_tokens.get("total") or 0)
     if requests > 0 and total_tokens > 0:
@@ -2066,9 +2091,11 @@ async def wait_for_compaction(
         await asyncio.sleep(0.5)
 
     session.ingest_events(trace)
-    return None, await _poll_compaction_verify_jobs(
-        client, book_id, chapter_idx, run_id=run_id
-    ), last_failed
+    return (
+        None,
+        await _poll_compaction_verify_jobs(client, book_id, chapter_idx, run_id=run_id),
+        last_failed,
+    )
 
 
 async def advance_until_compaction(
@@ -2457,10 +2484,11 @@ async def collect_latest_injected_contexts(
         scenario_id=scenario_id,
     )
     contexts: list[dict[str, Any]] = []
-    for run in find_comment_agent_runs(agent_runs) + find_compaction_agent_runs(agent_runs):
+    for run in find_comment_agent_runs(agent_runs) + find_compaction_agent_runs(
+        agent_runs
+    ):
         interaction = run.get("interaction") or run
         injected = interaction.get("injected_context")
         if isinstance(injected, dict):
             contexts.append(injected)
     return contexts
-
