@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
@@ -12,30 +10,6 @@ from fastapi import APIRouter, Query, Request
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["events"])
-
-_event_subscribers: list[asyncio.Queue[dict[str, Any]]] = []
-
-
-def _event_id() -> str:
-    return f"evt_{uuid.uuid4().hex[:12]}"
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-async def publish_event(event: str, data: dict[str, Any]) -> None:
-    evt = {
-        "event_id": _event_id(),
-        "event": event,
-        "created_at": _now_iso(),
-        **data,
-    }
-    for q in _event_subscribers:
-        try:
-            q.put_nowait(evt)
-        except asyncio.QueueFull:
-            pass
 
 
 @router.get("/events")
@@ -46,8 +20,10 @@ async def event_stream(
 ) -> Any:
     from sse_starlette.sse import EventSourceResponse
 
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
-    _event_subscribers.append(queue)
+    from ..infrastructure.events import SSEEventPublisher
+
+    publisher: SSEEventPublisher = request.app.state.event_publisher
+    queue = publisher.subscribe()
 
     async def generate():
         try:
@@ -71,6 +47,6 @@ async def event_stream(
                     "data": json.dumps(evt, ensure_ascii=False),
                 }
         finally:
-            _event_subscribers.remove(queue)
+            publisher.unsubscribe(queue)
 
     return EventSourceResponse(generate())

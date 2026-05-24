@@ -7,6 +7,7 @@ from typing import Any
 import aiosqlite
 
 from ..config import Settings
+from ..domain.models import ReadingWindow
 from ..repos import paragraphs as paragraph_repo
 from ..repos import windows as window_repo
 
@@ -25,12 +26,12 @@ def compute_text_hash(paragraphs: list[dict[str, Any]]) -> str:
 
 
 def _should_advance(
-    window: dict[str, Any],
+    window: ReadingWindow,
     reading_pidx: int,
     trigger_ratio: float,
 ) -> bool:
-    start = window["start_paragraph_idx"]
-    end = window["end_paragraph_idx"]
+    start = window.start_paragraph_idx
+    end = window.end_paragraph_idx
     span = max(1, end - start)
     progress = (reading_pidx - start) / span
     return progress >= trigger_ratio
@@ -84,7 +85,7 @@ async def get_or_create_window(
     chapter_idx: int,
     reading_pidx: int,
     settings: Settings,
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[ReadingWindow, bool]:
     last_pidx = await paragraph_repo.get_last_paragraph_idx(db, book_id, chapter_idx)
     if last_pidx is None:
         raise ValueError(f"No paragraphs for book={book_id} chapter={chapter_idx}")
@@ -94,10 +95,10 @@ async def get_or_create_window(
     wc = settings.window_l1
 
     if latest_window is not None:
-        start = latest_window["start_paragraph_idx"]
-        end = latest_window["end_paragraph_idx"]
+        start = latest_window.start_paragraph_idx
+        end = latest_window.end_paragraph_idx
         in_range = start <= reading_pidx <= end
-        status_ok = latest_window["status"] in ("pending", "running", "done")
+        status_ok = latest_window.status in ("pending", "running", "done")
         if (
             in_range
             and status_ok
@@ -112,13 +113,13 @@ async def get_or_create_window(
     )
 
     focus_end = frontier
-    prev_done = latest_window is not None and latest_window["status"] in (
+    prev_done = latest_window is not None and latest_window.status in (
         "pending",
         "running",
         "done",
     )
     focus_start = (
-        (latest_window["focus_end_paragraph_idx"] + 1) if prev_done else reading_pidx
+        (latest_window.focus_end_paragraph_idx + 1) if prev_done else reading_pidx
     )
     if focus_start > focus_end:
         focus_start = focus_end
@@ -129,10 +130,10 @@ async def get_or_create_window(
 
     text_hash = compute_text_hash(window_paragraphs)
 
-    if latest_window is not None and latest_window.get("text_hash") == text_hash:
+    if latest_window is not None and latest_window.text_hash == text_hash:
         return latest_window, False
 
-    window_seq = latest_window["window_seq"] + 1 if latest_window else 0
+    window_seq = latest_window.window_seq + 1 if latest_window else 0
 
     window = await window_repo.create_window(
         db,
@@ -154,7 +155,7 @@ async def get_or_create_window(
             "fields": {
                 "book_id": book_id,
                 "chapter_idx": chapter_idx,
-                "window_id": window["id"],
+                "window_id": window.id,
                 "window_seq": window_seq,
                 "start": start_pidx,
                 "end": end_pidx,

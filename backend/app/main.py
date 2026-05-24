@@ -7,18 +7,20 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from .application.agent_run_recorder import AgentRunRecorder
+from .application.job_handlers import CommentJobHandler, CompactionJobHandler
+from .application.pending_progress import PendingProgressProcessor
 from .config import Settings, load_settings
 from .db import init_db
 from .errors import AppError, app_error_handler, generic_error_handler
+from .infrastructure.audit import DefaultAuditSink
+from .infrastructure.events import SSEEventPublisher
+from .infrastructure.settings import SettingsProvider
 from .middleware import RequestContextMiddleware
 from .observability import setup_logging
 from .repos.chunks import backfill_missing_chunks
-from .services.comment_service import register_with_runner as register_comment_handler
-from .services.token_estimator import TokenEstimator
-from .services.compaction_service import (
-    register_with_runner as register_compaction_handler,
-)
 from .services.job_runner import JobRunner
+from .services.token_estimator import TokenEstimator
 
 _settings: Settings | None = None
 
@@ -40,12 +42,31 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="vibe-reader-mini", version="0.1.0")
     app.state.settings = settings
+    settings_provider = SettingsProvider(settings)
+    app.state.settings_provider = settings_provider
+
+    event_publisher = SSEEventPublisher()
+    app.state.event_publisher = event_publisher
 
     estimator = TokenEstimator(settings.token_estimation)
 
-    job_runner = JobRunner(max_concurrent=2, token_estimator=estimator)
-    register_comment_handler(job_runner)
-    register_compaction_handler(job_runner)
+    audit_sink = DefaultAuditSink()
+    recorder = AgentRunRecorder(
+        token_estimator=estimator,
+        audit_sink=audit_sink,
+    )
+    pending_processor = PendingProgressProcessor(token_estimator=estimator)
+
+    job_runner = JobRunner(
+        settings_provider=settings_provider,
+        max_concurrent=2,
+        token_estimator=estimator,
+        event_publisher=event_publisher,
+        recorder=recorder,
+        pending_processor=pending_processor,
+    )
+    job_runner.register_handler("comment_window", CommentJobHandler(job_runner))
+    job_runner.register_handler("compact_context", CompactionJobHandler())
     app.state.job_runner = job_runner
 
     app.add_middleware(RequestContextMiddleware)

@@ -5,6 +5,8 @@ from typing import Any
 
 import aiosqlite
 
+from ..domain.models import ChapterCompressedSummary
+
 
 def _now() -> str:
     from datetime import datetime, timezone
@@ -27,7 +29,7 @@ async def create_summary(
     context_version: int = 1,
     compaction_epoch: int = 0,
     auto_commit: bool = True,
-) -> dict[str, Any]:
+) -> ChapterCompressedSummary:
     now = _now()
     cur = await db.execute(
         """INSERT INTO chapter_compressed_summaries
@@ -52,21 +54,21 @@ async def create_summary(
     )
     if auto_commit:
         await db.commit()
-    return {
-        "id": cur.lastrowid,
-        "book_id": book_id,
-        "chapter_idx": chapter_idx,
-        "covered_start_paragraph_idx": covered_start_paragraph_idx,
-        "covered_end_paragraph_idx": covered_end_paragraph_idx,
-        "source_chunk_ids_json": json.dumps(source_chunk_ids),
-        "source_text_hash": source_text_hash,
-        "summary": summary,
-        "anchor_excerpts_json": json.dumps(anchor_excerpts, ensure_ascii=False),
-        "token_estimate": token_estimate,
-        "context_version": context_version,
-        "compaction_epoch": compaction_epoch,
-        "created_at": now,
-    }
+    return ChapterCompressedSummary(
+        id=cur.lastrowid,
+        book_id=book_id,
+        chapter_idx=chapter_idx,
+        covered_start_paragraph_idx=covered_start_paragraph_idx,
+        covered_end_paragraph_idx=covered_end_paragraph_idx,
+        source_chunk_ids=source_chunk_ids,
+        source_text_hash=source_text_hash,
+        summary=summary,
+        anchor_excerpts=anchor_excerpts,
+        token_estimate=token_estimate,
+        context_version=context_version,
+        compaction_epoch=compaction_epoch,
+        created_at=now,
+    )
 
 
 async def get_latest_summary(
@@ -74,7 +76,7 @@ async def get_latest_summary(
     book_id: int,
     chapter_idx: int,
     frontier_pidx: int | None = None,
-) -> dict[str, Any] | None:
+) -> ChapterCompressedSummary | None:
     sql = """SELECT * FROM chapter_compressed_summaries
              WHERE book_id = ? AND chapter_idx = ?"""
     params: list[Any] = [book_id, chapter_idx]
@@ -84,15 +86,15 @@ async def get_latest_summary(
     sql += " ORDER BY compaction_epoch DESC, created_at DESC LIMIT 1"
     cur = await db.execute(sql, params)
     row = await cur.fetchone()
-    return dict(row) if row else None
+    return ChapterCompressedSummary.from_row(dict(row)) if row else None
 
 
 async def get_summary(
     db: aiosqlite.Connection, summary_id: int
-) -> dict[str, Any] | None:
+) -> ChapterCompressedSummary | None:
     cur = await db.execute(
         "SELECT * FROM chapter_compressed_summaries WHERE id = ?",
         (summary_id,),
     )
     row = await cur.fetchone()
-    return dict(row) if row else None
+    return ChapterCompressedSummary.from_row(dict(row)) if row else None

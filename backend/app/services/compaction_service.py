@@ -1,35 +1,27 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import time
 from typing import Any
 
 import aiosqlite
 
+from ..application.agent_run_result import AgentRunResult, CompactionAuditContext
+from ..application.job_handlers import JobSubmitter
 from ..config import Settings
-from ..observability import (
-    ensure_trace_id,
-    get_verify_run_id,
-    get_verify_scenario_id,
-    get_verify_step_id,
-)
-from ..repos import books as book_repo
+from ..domain.models import ChapterCompressedSummary, OriginalTextChunk
+from ..observability import ensure_trace_id
 from ..repos import chunks as chunk_repo
 from ..repos import context_state
 from ..repos import paragraphs as paragraph_repo
 from ..repos import summaries as summary_repo
-from .agent_audit import build_compaction_interaction_packet, make_invocation_id
-from .agent_audit_store import persist_interaction_packet
 from .agent_base import (
     ChapterCompressedSummaryOutput,
     CompactionDeps,
     get_compaction_agent,
 )
 from .context_builder import _estimate_text_tokens
-from .job_runner import JobRunner
-
 logger = logging.getLogger(__name__)
 
 
@@ -138,20 +130,20 @@ async def _run_compaction_llm(
     book_id: int,
     chapter_idx: int,
     job_id: int,
-    source_chunk: dict[str, Any],
-    previous_summary_row: dict[str, Any] | None,
+    source_chunk: OriginalTextChunk,
+    previous_summary_row: ChapterCompressedSummary | None,
     settings: Settings,
 ) -> tuple[Any, CompactionDeps, str, float, str, Any]:
     previous_summary_text = (
-        previous_summary_row["summary"] if previous_summary_row else None
+        previous_summary_row.summary if previous_summary_row else None
     )
 
     paragraphs = await paragraph_repo.get_paragraphs_range(
         db,
         book_id,
         chapter_idx,
-        source_chunk["start_paragraph_idx"],
-        source_chunk["end_paragraph_idx"],
+        source_chunk.start_paragraph_idx,
+        source_chunk.end_paragraph_idx,
     )
     chunk_text = "\n".join(p["text"] for p in paragraphs)
 
@@ -206,7 +198,7 @@ async def run_compaction_task(
     window: dict[str, Any] | None,
     settings: Settings,
     token_estimator: Any = None,
-) -> dict[str, Any] | None:
+) -> AgentRunResult | None:
     job_row = await _get_job(db, job_id)
     if job_row is None:
         raise ValueError(f"Job {job_id} not found")
@@ -236,16 +228,14 @@ async def run_compaction_task(
     previous_summary_row = await summary_repo.get_latest_summary(
         db, book_id, chapter_idx
     )
-    previous_covered_start = source_chunk["start_paragraph_idx"]
+    previous_covered_start = source_chunk.start_paragraph_idx
     previous_source_chunk_ids: list[int] = []
     previous_source_hash = ""
 
     if previous_summary_row:
-        previous_covered_start = previous_summary_row["covered_start_paragraph_idx"]
-        previous_source_chunk_ids = json.loads(
-            previous_summary_row.get("source_chunk_ids_json", "[]")
-        )
-        previous_source_hash = previous_summary_row.get("source_text_hash", "")
+        previous_covered_start = previous_summary_row.covered_start_paragraph_idx
+        previous_source_chunk_ids = previous_summary_row.source_chunk_ids
+        previous_source_hash = previous_summary_row.source_text_hash
 
     result, deps, prompt, latency_ms, trace_id, output = await _run_compaction_llm(
         db,
@@ -259,8 +249,8 @@ async def run_compaction_task(
 
     usage = result.usage()
 
-    source_chunk_ids = previous_source_chunk_ids + [source_chunk["id"]]
-    combined_hash = previous_source_hash + source_chunk["text_hash"]
+    source_chunk_ids = previous_source_chunk_ids + [source_chunk.id]
+    combined_hash = previous_source_hash + source_chunk.text_hash
     source_hash = hashlib.sha256(combined_hash.encode("utf-8")).hexdigest()[:16]
 
     anchor_excerpts_data = [e.model_dump() for e in output.anchor_excerpts]
@@ -270,7 +260,7 @@ async def run_compaction_task(
     )
 
     compaction_epoch = (
-        (previous_summary_row.get("compaction_epoch", 0) + 1)
+        (previous_summary_row.compaction_epoch + 1)
         if previous_summary_row
         else 1
     )
@@ -280,7 +270,7 @@ async def run_compaction_task(
         book_id=book_id,
         chapter_idx=chapter_idx,
         covered_start_paragraph_idx=previous_covered_start,
-        covered_end_paragraph_idx=source_chunk["end_paragraph_idx"],
+        covered_end_paragraph_idx=source_chunk.end_paragraph_idx,
         source_chunk_ids=source_chunk_ids,
         source_text_hash=source_hash,
         summary=summary_text,
@@ -292,18 +282,18 @@ async def run_compaction_task(
     )
 
     await chunk_repo.mark_reclaimed(
-        db, source_chunk["id"], summary_row["id"], auto_commit=False
+        db, source_chunk.id, summary_row.id, auto_commit=False
     )
 
     live_chunks = await chunk_repo.list_chunks(
         db, book_id, chapter_idx, status="active"
     )
-    live_chunk_ids = [c["id"] for c in live_chunks]
+    live_chunk_ids = [c.id for c in live_chunks]
 
     await context_state.update_state(
         db,
         book_id,
-        latest_summary_id=summary_row["id"],
+        latest_summary_id=summary_row.id,
         compaction_epoch=compaction_epoch,
         live_l2_chunk_ids=live_chunk_ids,
         auto_commit=False,
@@ -321,12 +311,12 @@ async def run_compaction_task(
                 "job_id": job_id,
                 "book_id": book_id,
                 "chapter_idx": chapter_idx,
-                "source_chunk_id": source_chunk["id"],
+                "source_chunk_id": source_chunk.id,
                 "source_chunk_range": (
-                    f"{source_chunk['start_paragraph_idx']}-"
-                    f"{source_chunk['end_paragraph_idx']}"
+                    f"{source_chunk.start_paragraph_idx}-"
+                    f"{source_chunk.end_paragraph_idx}"
                 ),
-                "summary_id": summary_row["id"],
+                "summary_id": summary_row.id,
                 "summary_tokens": token_estimate,
                 "compaction_epoch": compaction_epoch,
                 "latency_ms": round(latency_ms, 1),
@@ -337,89 +327,48 @@ async def run_compaction_task(
     )
 
     source_paragraph_count = (
-        source_chunk["end_paragraph_idx"] - source_chunk["start_paragraph_idx"] + 1
+        source_chunk.end_paragraph_idx - source_chunk.start_paragraph_idx + 1
     )
-    source_token_estimate = int(source_chunk.get("token_estimate") or token_estimate)
+    source_token_estimate = source_chunk.token_estimate or token_estimate
 
-    invocation_id = make_invocation_id(
-        "ContextCompactionAgent",
-        get_verify_scenario_id(),
-        job_id,
-    )
-    interaction_path = ""
-    if settings.verify_mode:
-        usage_input = (
-            usage.request_tokens
-            if usage.request_tokens is not None
-            else usage.input_tokens
-        )
-        usage_output = (
-            usage.response_tokens
-            if usage.response_tokens is not None
-            else usage.output_tokens
-        )
-        # Audit-only lookup (verify_mode): enrich markdown report with book title.
-        # Not on the production hot path; book_id alone is insufficient for human-readable exports.
-        book = await book_repo.get_book(db, book_id)
-        interaction = build_compaction_interaction_packet(
-            invocation_id=invocation_id,
+    return AgentRunResult(
+        agent_name="ContextCompactionAgent",
+        duration_ms=round(latency_ms, 1),
+        prompt_version="chapter_compaction_v1",
+        input_tokens=usage.request_tokens or usage.input_tokens,
+        output_tokens=usage.response_tokens or usage.output_tokens,
+        cached_input_tokens=usage.cache_read_tokens or None,
+        context_hash=source_hash,
+        source_chunk_id=source_chunk.id,
+        reclaimed_chunk_id=source_chunk.id,
+        summary_id=summary_row.id,
+        compaction_epoch=compaction_epoch,
+        source_chunk_tokens=source_token_estimate,
+        source_paragraph_count=source_paragraph_count,
+        source_chunk_hash=source_chunk.text_hash,
+        source_chunk_start=source_chunk.start_paragraph_idx,
+        source_chunk_end=source_chunk.end_paragraph_idx,
+        previous_summary_id=(
+            previous_summary_row.id if previous_summary_row else None
+        ),
+        transaction_committed=transaction_committed,
+        compaction_source={
+            "token_estimate": source_token_estimate,
+            "paragraph_count": source_paragraph_count,
+            "start_paragraph_idx": source_chunk.start_paragraph_idx,
+            "end_paragraph_idx": source_chunk.end_paragraph_idx,
+        },
+        audit_context=CompactionAuditContext(
             trace_id=trace_id,
-            verify_run_id=get_verify_run_id(),
-            verify_scenario_id=get_verify_scenario_id(),
-            verify_step_id=get_verify_step_id(),
-            job_id=job_id,
-            book_id=book_id,
-            book=book or {"id": book_id},
-            chapter_idx=chapter_idx,
             source_chunk=source_chunk,
             previous_summary_row=previous_summary_row,
             next_summary_row=summary_row,
             prompt=prompt,
             agent_result=result,
-            settings=settings,
-            duration_ms=round(latency_ms, 1),
-            input_tokens=usage_input,
-            output_tokens=usage_output,
-            cached_input_tokens=usage.cache_read_tokens or None,
             transaction_committed=transaction_committed,
-        )
-        interaction_path = persist_interaction_packet(
-            settings.data_dir,
-            verify_run_id=get_verify_run_id(),
-            invocation_id=invocation_id,
-            packet=interaction,
-        )
-
-    return {
-        "agent_name": "ContextCompactionAgent",
-        "duration_ms": round(latency_ms, 1),
-        "input_tokens": usage.request_tokens or usage.input_tokens,
-        "output_tokens": usage.response_tokens or usage.output_tokens,
-        "cached_input_tokens": usage.cache_read_tokens or None,
-        "source_chunk_id": source_chunk["id"],
-        "reclaimed_chunk_id": source_chunk["id"],
-        "summary_id": summary_row["id"],
-        "compaction_epoch": compaction_epoch,
-        "context_hash": source_hash,
-        "source_chunk_tokens": source_token_estimate,
-        "source_paragraph_count": source_paragraph_count,
-        "source_chunk_hash": source_chunk.get("text_hash", ""),
-        "source_chunk_start": source_chunk["start_paragraph_idx"],
-        "source_chunk_end": source_chunk["end_paragraph_idx"],
-        "previous_summary_id": previous_summary_row["id"]
-        if previous_summary_row
-        else None,
-        "transaction_committed": transaction_committed,
-        "invocation_id": invocation_id,
-        "interaction_path": interaction_path,
-        "prompt_version": "chapter_compaction_v1",
-        "compaction_source": {
-            "token_estimate": source_token_estimate,
-            "paragraph_count": source_paragraph_count,
-            "start_paragraph_idx": source_chunk["start_paragraph_idx"],
-            "end_paragraph_idx": source_chunk["end_paragraph_idx"],
-        },
-    }
+            prompt_manifest=None,
+        ),
+    )
 
 
 async def _get_job(db: aiosqlite.Connection, job_id: int) -> dict[str, Any] | None:
@@ -441,9 +390,9 @@ async def _compaction_frontier_paragraph_idx(
     from ..repos import chapters as chapter_repo
 
     state = await _get_book_state(db, book_id)
-    active_chapter = state.get("assistant_frontier_chapter_idx")
+    active_chapter = state.assistant_frontier_chapter_idx
     if active_chapter == chapter_idx:
-        return int(state.get("assistant_frontier_paragraph_idx") or 0)
+        return state.assistant_frontier_paragraph_idx
 
     chapter = await chapter_repo.get_chapter(db, book_id, chapter_idx)
     if not chapter:
@@ -456,7 +405,7 @@ async def select_compaction_source_for_chapter(
     book_id: int,
     chapter_idx: int,
     settings: Settings,
-) -> dict[str, Any] | None:
+) -> OriginalTextChunk | None:
     """Return the earliest eligible L2 chunk for compaction, if any."""
     frontier_pidx = await _compaction_frontier_paragraph_idx(db, book_id, chapter_idx)
     return await chunk_repo.select_eligible_compaction_source(
@@ -470,7 +419,7 @@ async def select_compaction_source_for_chapter(
 
 async def maybe_enqueue_compaction(
     db: aiosqlite.Connection,
-    job_runner: JobRunner,
+    job_submitter: JobSubmitter,
     book_id: int,
     chapter_idx: int,
     settings: Settings,
@@ -501,9 +450,5 @@ async def maybe_enqueue_compaction(
         )
         return False
 
-    await job_runner.submit_job(db, "compact_context", book_id, chapter_idx)
+    await job_submitter.submit_job(db, "compact_context", book_id, chapter_idx)
     return True
-
-
-def register_with_runner(runner: JobRunner) -> None:
-    runner.register_handler("compact_context", run_compaction_task)

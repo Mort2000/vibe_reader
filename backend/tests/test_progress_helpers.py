@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.domain.models import BookContextState
 from app.services.progress_helpers import (
     compare_reading_positions,
     detect_jump_type,
@@ -7,33 +8,46 @@ from app.services.progress_helpers import (
 )
 
 
-def test_detect_jump_type_backward_by_chapter() -> None:
-    state = {
-        "active_chapter_idx": 2,
+def _state(**overrides: object) -> BookContextState:
+    defaults = {
+        "id": 1,
+        "book_id": 1,
+        "active_chapter_idx": 0,
         "reading_paragraph_idx": 10,
-        "context_frontier_chapter_idx": 2,
+        "context_frontier_chapter_idx": 0,
         "context_frontier_paragraph_idx": 10,
     }
+    defaults.update(overrides)
+    return BookContextState(**defaults)  # type: ignore[arg-type]
+
+
+def test_detect_jump_type_backward_by_chapter() -> None:
+    state = _state(
+        active_chapter_idx=2,
+        reading_paragraph_idx=10,
+        context_frontier_chapter_idx=2,
+        context_frontier_paragraph_idx=10,
+    )
     assert detect_jump_type(state, 1, 50) == "backward"
 
 
 def test_detect_jump_type_forward_by_context_frontier() -> None:
-    state = {
-        "active_chapter_idx": 0,
-        "reading_paragraph_idx": 10,
-        "context_frontier_chapter_idx": 0,
-        "context_frontier_paragraph_idx": 10,
-    }
+    state = _state(
+        active_chapter_idx=0,
+        reading_paragraph_idx=10,
+        context_frontier_chapter_idx=0,
+        context_frontier_paragraph_idx=10,
+    )
     assert detect_jump_type(state, 0, 20) == "forward"
 
 
 def test_detect_jump_type_normal_at_frontier() -> None:
-    state = {
-        "active_chapter_idx": 0,
-        "reading_paragraph_idx": 10,
-        "context_frontier_chapter_idx": 0,
-        "context_frontier_paragraph_idx": 15,
-    }
+    state = _state(
+        active_chapter_idx=0,
+        reading_paragraph_idx=10,
+        context_frontier_chapter_idx=0,
+        context_frontier_paragraph_idx=15,
+    )
     assert detect_jump_type(state, 0, 12) == "normal"
 
 

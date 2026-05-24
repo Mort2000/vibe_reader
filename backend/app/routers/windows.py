@@ -37,8 +37,8 @@ async def get_current_window(
             details={"book_id": book_id, "chapter_idx": chapter_idx},
         )
 
-    focus_start = window["focus_start_paragraph_idx"]
-    focus_end = window["focus_end_paragraph_idx"]
+    focus_start = window.focus_start_paragraph_idx
+    focus_end = window.focus_end_paragraph_idx
     comments, total = await comment_repo.list_comments(
         db, book_id, chapter_idx, start=focus_start, end=focus_end
     )
@@ -97,8 +97,8 @@ async def retry_window(
 
     jobs, _ = await job_repo.list_jobs(
         db,
-        book_id=window["book_id"],
-        chapter_idx=window["chapter_idx"],
+        book_id=window.book_id,
+        chapter_idx=window.chapter_idx,
         job_type="comment_window",
         status="running",
         limit=10,
@@ -113,8 +113,8 @@ async def retry_window(
 
     failed_jobs, _ = await job_repo.list_jobs(
         db,
-        book_id=window["book_id"],
-        chapter_idx=window["chapter_idx"],
+        book_id=window.book_id,
+        chapter_idx=window.chapter_idx,
         job_type="comment_window",
         status="failed",
         limit=10,
@@ -129,8 +129,8 @@ async def retry_window(
         job = await job_runner.submit_job(
             db,
             "comment_window",
-            window["book_id"],
-            window["chapter_idx"],
+            window.book_id,
+            window.chapter_idx,
             window_id=window_id,
         )
 

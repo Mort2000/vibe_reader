@@ -7,20 +7,15 @@ from typing import Any
 import aiosqlite
 
 from ..config import Settings
-from ..observability import (
-    ensure_trace_id,
-    get_verify_run_id,
-    get_verify_scenario_id,
-    get_verify_step_id,
-)
+from ..domain.models import ReadingWindow
+from ..application.agent_run_result import AgentRunResult, CommentAuditContext
+from ..observability import ensure_trace_id
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import chunks as chunk_repo
 from ..repos import comments as comment_repo
 from ..repos import context_state
 from ..repos import paragraphs as paragraph_repo
-from .agent_audit import build_comment_interaction_packet, make_invocation_id
-from .agent_audit_store import persist_interaction_packet
 from .agent_base import (
     CommentDensityHint,
     CommentDeps,
@@ -28,7 +23,6 @@ from .agent_base import (
     get_comment_agent,
 )
 from .context_builder import build_context
-from .job_runner import JobRunner
 
 
 def _paragraphs_with_evidence(
@@ -43,9 +37,9 @@ def _paragraphs_with_evidence(
     partial_frontier = ctx_result.partial_frontier_paragraph_idx
 
     for chunk in getattr(ctx_result, "_live_chunks_detail", []):
-        start = chunk["start_paragraph_idx"]
-        end = chunk["end_paragraph_idx"]
-        if chunk["id"] == ctx_result.partial_chunk_id and partial_frontier is not None:
+        start = chunk.start_paragraph_idx
+        end = chunk.end_paragraph_idx
+        if chunk.id == ctx_result.partial_chunk_id and partial_frontier is not None:
             end = partial_frontier
         live_ranges.append((start, end))
 
@@ -69,34 +63,25 @@ def _no_evidence_telemetry(
     ctx_result: Any,
     density_hint: CommentDensityHint,
     missing_count: int,
-) -> dict[str, Any]:
-    return {
-        "agent_name": "ParagraphCommentAgent",
-        "duration_ms": 0,
-        "input_tokens": None,
-        "output_tokens": None,
-        "cached_input_tokens": None,
-        "no_call": True,
-        "tool_call_count": 0,
-        "valid_count": 0,
-        "validation_failed_count": 0,
-        "discarded_count": 0,
-        "discarded_by_reason": {},
-        "candidate_lookup_count": len(target_set),
-        "context_hash": ctx_result.context_hash,
-        "comment_density_actual": density_hint.current_density,
-        "comment_density_soft_min": density_hint.soft_min_density,
-        "density_stat_start": density_hint.stat_start_paragraph_idx,
-        "density_stat_end": density_hint.stat_end_paragraph_idx,
-        "invocation_id": "",
-        "interaction_path": "",
-        "context_estimated_tokens": ctx_result.estimated_tokens,
-        "preflight_triggered": ctx_result.preflight_triggered,
-        "hard_triggered": ctx_result.hard_triggered,
-        "context_degraded": True,
-        "missing_target_original_count": missing_count,
-        "prompt_manifest": ctx_result.prompt_manifest,
-    }
+) -> AgentRunResult:
+    return AgentRunResult(
+        agent_name="ParagraphCommentAgent",
+        invocation_id="",
+        duration_ms=0,
+        no_call=True,
+        context_hash=ctx_result.context_hash,
+        context_estimated_tokens=ctx_result.estimated_tokens,
+        preflight_triggered=ctx_result.preflight_triggered,
+        hard_triggered=ctx_result.hard_triggered,
+        context_degraded=True,
+        missing_target_original_count=missing_count,
+        prompt_manifest=ctx_result.prompt_manifest,
+        comment_density_actual=density_hint.current_density,
+        comment_density_soft_min=density_hint.soft_min_density,
+        density_stat_start=density_hint.stat_start_paragraph_idx,
+        density_stat_end=density_hint.stat_end_paragraph_idx,
+        candidate_lookup_count=len(target_set),
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -326,29 +311,29 @@ async def _enrich_with_live_chunks(
     ctx_result._live_chunks_detail = [
         c
         for c in live_chunks
-        if c["id"] in ctx_result.live_chunk_ids
-        or c["id"] == ctx_result.partial_chunk_id
+        if c.id in ctx_result.live_chunk_ids
+        or c.id == ctx_result.partial_chunk_id
     ]
 
 
 async def run_comment_task(
     db: aiosqlite.Connection,
     job_id: int,
-    window: dict[str, Any] | None,
+    window: ReadingWindow | None,
     settings: Settings,
     token_estimator: Any = None,
-) -> dict[str, Any] | None:
+) -> AgentRunResult:
     if window is None:
         raise ValueError(f"Window not found for job {job_id}")
 
-    window_id = window["id"]
-    book_id = window["book_id"]
-    chapter_idx = window["chapter_idx"]
+    window_id = window.id
+    book_id = window.book_id
+    chapter_idx = window.chapter_idx
 
-    focus_start = window["focus_start_paragraph_idx"]
-    focus_end = window["focus_end_paragraph_idx"]
-    start_pidx = window["start_paragraph_idx"]
-    frontier = window["assistant_frontier_paragraph_idx"]
+    focus_start = window.focus_start_paragraph_idx
+    focus_end = window.focus_end_paragraph_idx
+    start_pidx = window.start_paragraph_idx
+    frontier = window.assistant_frontier_paragraph_idx
 
     target_paragraphs = list(range(focus_start, focus_end + 1))
     target_set = set(target_paragraphs)
@@ -358,7 +343,7 @@ async def run_comment_task(
         book_id,
         chapter_idx,
         start_pidx,
-        window["end_paragraph_idx"],
+        window.end_paragraph_idx,
     )
 
     book = await book_repo.get_book(db, book_id)
@@ -397,7 +382,7 @@ async def run_comment_task(
     )
 
     book_state = await context_state.get_or_create(db, book_id)
-    overflow_used = bool(book_state.get("emergency_overflow_used", 0))
+    overflow_used = bool(book_state.emergency_overflow_used)
 
     ctx_result, prompt, context_degraded = await _build_comment_context(
         db,
@@ -575,20 +560,32 @@ async def run_comment_task(
         else usage.output_tokens
     )
 
-    invocation_id = make_invocation_id(
-        "ParagraphCommentAgent",
-        get_verify_scenario_id(),
-        job_id,
-    )
-    interaction_path = ""
-    if settings.verify_mode:
-        interaction = build_comment_interaction_packet(
-            invocation_id=invocation_id,
+    return AgentRunResult(
+        agent_name="ParagraphCommentAgent",
+        duration_ms=round(latency_ms, 1),
+        prompt_version="comment_v1",
+        input_tokens=usage_input,
+        output_tokens=usage_output,
+        cached_input_tokens=usage.cache_read_tokens or None,
+        no_call=no_call,
+        tool_call_count=len(raw_payloads),
+        valid_count=len(valid_comments),
+        validation_failed_count=validation_failed_count,
+        discarded_count=len(discarded),
+        discarded_by_reason=discarded_by_reason,
+        candidate_lookup_count=len(target_set),
+        context_hash=ctx_result.context_hash,
+        comment_density_actual=density_hint.current_density,
+        comment_density_soft_min=density_hint.soft_min_density,
+        density_stat_start=density_hint.stat_start_paragraph_idx,
+        density_stat_end=density_hint.stat_end_paragraph_idx,
+        context_estimated_tokens=ctx_result.estimated_tokens,
+        preflight_triggered=ctx_result.preflight_triggered,
+        hard_triggered=ctx_result.hard_triggered,
+        context_degraded=context_degraded,
+        prompt_manifest=ctx_result.prompt_manifest,
+        audit_context=CommentAuditContext(
             trace_id=trace_id,
-            verify_run_id=get_verify_run_id(),
-            verify_scenario_id=get_verify_scenario_id(),
-            verify_step_id=get_verify_step_id(),
-            job_id=job_id,
             book=book,
             chapter_idx=chapter_idx,
             window=window,
@@ -597,11 +594,6 @@ async def run_comment_task(
             density_hint=density_hint,
             prompt=prompt,
             agent_result=result,
-            settings=settings,
-            duration_ms=round(latency_ms, 1),
-            input_tokens=usage_input,
-            output_tokens=usage_output,
-            cached_input_tokens=usage.cache_read_tokens or None,
             raw_payloads=raw_payloads,
             valid_comments=persisted_comments,
             discarded=discarded,
@@ -609,42 +601,5 @@ async def run_comment_task(
             no_call=no_call,
             usage_source="estimate",
             context_manifest=ctx_result.prompt_manifest,
-        )
-        interaction_path = persist_interaction_packet(
-            settings.data_dir,
-            verify_run_id=get_verify_run_id(),
-            invocation_id=invocation_id,
-            packet=interaction,
-        )
-
-    return {
-        "agent_name": "ParagraphCommentAgent",
-        "duration_ms": round(latency_ms, 1),
-        "prompt_version": "comment_v1",
-        "input_tokens": usage_input,
-        "output_tokens": usage_output,
-        "cached_input_tokens": usage.cache_read_tokens or None,
-        "no_call": no_call,
-        "tool_call_count": len(raw_payloads),
-        "valid_count": len(valid_comments),
-        "validation_failed_count": validation_failed_count,
-        "discarded_count": len(discarded),
-        "discarded_by_reason": discarded_by_reason,
-        "candidate_lookup_count": len(target_set),
-        "context_hash": ctx_result.context_hash,
-        "comment_density_actual": density_hint.current_density,
-        "comment_density_soft_min": density_hint.soft_min_density,
-        "density_stat_start": density_hint.stat_start_paragraph_idx,
-        "density_stat_end": density_hint.stat_end_paragraph_idx,
-        "invocation_id": invocation_id,
-        "interaction_path": interaction_path,
-        "context_estimated_tokens": ctx_result.estimated_tokens,
-        "preflight_triggered": ctx_result.preflight_triggered,
-        "hard_triggered": ctx_result.hard_triggered,
-        "context_degraded": context_degraded,
-        "prompt_manifest": ctx_result.prompt_manifest,
-    }
-
-
-def register_with_runner(runner: JobRunner) -> None:
-    runner.register_handler("comment_window", run_comment_task)
+        ),
+    )

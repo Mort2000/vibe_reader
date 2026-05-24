@@ -5,6 +5,7 @@ from typing import Any
 
 import aiosqlite
 
+from ..domain.models import OriginalTextChunk
 from . import paragraphs as paragraph_repo
 
 
@@ -27,7 +28,7 @@ async def create_chunks_for_chapter(
     estimator_version: str = "",
     estimator_calibration_ratio: float = 1.0,
     chunking_version: str = "",
-) -> list[dict[str, Any]]:
+) -> list[OriginalTextChunk]:
     paragraphs, _ = await paragraph_repo.list_paragraphs(db, book_id, chapter_idx)
     if not paragraphs:
         return []
@@ -125,7 +126,7 @@ async def create_chunks_for_chapter(
                 )
             )
 
-    return chunks
+    return [OriginalTextChunk.from_row(c) for c in chunks]
 
 
 async def _insert_chunk(
@@ -204,7 +205,7 @@ async def list_chunks(
     chapter_idx: int,
     *,
     status: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[OriginalTextChunk]:
     sql = "SELECT * FROM original_text_chunks WHERE book_id = ? AND chapter_idx = ?"
     params: list[Any] = [book_id, chapter_idx]
     if status:
@@ -213,7 +214,7 @@ async def list_chunks(
     sql += " ORDER BY chunk_seq"
     cur = await db.execute(sql, params)
     rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    return [OriginalTextChunk.from_row(dict(r)) for r in rows]
 
 
 async def get_chunks_intersecting(
@@ -222,7 +223,7 @@ async def get_chunks_intersecting(
     chapter_idx: int,
     start_pidx: int,
     end_pidx: int,
-) -> list[dict[str, Any]]:
+) -> list[OriginalTextChunk]:
     cur = await db.execute(
         """SELECT * FROM original_text_chunks
            WHERE book_id = ? AND chapter_idx = ?
@@ -233,7 +234,7 @@ async def get_chunks_intersecting(
         (book_id, chapter_idx, end_pidx, start_pidx),
     )
     rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    return [OriginalTextChunk.from_row(dict(r)) for r in rows]
 
 
 async def get_earliest_complete_unreclaimed(
@@ -241,7 +242,7 @@ async def get_earliest_complete_unreclaimed(
     book_id: int,
     chapter_idx: int,
     frontier_pidx: int,
-) -> dict[str, Any] | None:
+) -> OriginalTextChunk | None:
     cur = await db.execute(
         """SELECT * FROM original_text_chunks
            WHERE book_id = ? AND chapter_idx = ?
@@ -252,7 +253,7 @@ async def get_earliest_complete_unreclaimed(
         (book_id, chapter_idx, frontier_pidx),
     )
     row = await cur.fetchone()
-    return dict(row) if row else None
+    return OriginalTextChunk.from_row(dict(row)) if row else None
 
 
 async def count_completed_unreclaimed(
@@ -335,7 +336,7 @@ async def select_eligible_compaction_source(
     frontier_pidx: int,
     *,
     min_live_chunks_after_compaction: int = 2,
-) -> dict[str, Any] | None:
+) -> OriginalTextChunk | None:
     all_active = await list_chunks(db, book_id, chapter_idx, status="active")
     if not all_active:
         return None
@@ -346,7 +347,7 @@ async def select_eligible_compaction_source(
         return None
 
     complete_unreclaimed = [
-        c for c in all_active if c["end_paragraph_idx"] <= frontier_pidx
+        c for c in all_active if c.end_paragraph_idx <= frontier_pidx
     ]
 
     if not complete_unreclaimed:
@@ -360,12 +361,12 @@ async def select_eligible_compaction_source(
     return complete_unreclaimed[0]
 
 
-async def get_chunk(db: aiosqlite.Connection, chunk_id: int) -> dict[str, Any] | None:
+async def get_chunk(db: aiosqlite.Connection, chunk_id: int) -> OriginalTextChunk | None:
     cur = await db.execute(
         "SELECT * FROM original_text_chunks WHERE id = ?", (chunk_id,)
     )
     row = await cur.fetchone()
-    return dict(row) if row else None
+    return OriginalTextChunk.from_row(dict(row)) if row else None
 
 
 async def backfill_missing_chunks(

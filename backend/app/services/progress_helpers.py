@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
-
 import aiosqlite
 
+from ..domain.models import BookContextState
 from ..repos import paragraphs as paragraph_repo
 
 
@@ -42,18 +41,18 @@ def is_reading_at_least(
 
 
 def detect_jump_type(
-    state: dict[str, Any],
+    state: BookContextState,
     chapter_idx: int,
     paragraph_idx: int,
 ) -> str:
-    current_ch = state.get("active_chapter_idx", 0)
-    current_p = state.get("reading_paragraph_idx", 0)
+    current_ch = state.active_chapter_idx
+    current_p = state.reading_paragraph_idx
     if chapter_idx < current_ch:
         return "backward"
     if chapter_idx == current_ch and paragraph_idx < current_p:
         return "backward"
-    ctx_ch = state.get("context_frontier_chapter_idx", 0)
-    ctx_p = state.get("context_frontier_paragraph_idx", 0)
+    ctx_ch = state.context_frontier_chapter_idx
+    ctx_p = state.context_frontier_paragraph_idx
     if chapter_idx > ctx_ch:
         return "forward"
     if chapter_idx == ctx_ch and paragraph_idx > ctx_p:
@@ -65,7 +64,7 @@ async def check_forward_jump_chars(
     db: aiosqlite.Connection,
     book_id: int,
     chapter_idx: int,
-    state: dict[str, Any],
+    state: BookContextState,
     new_frontier: int,
 ) -> int:
     """Count chars in (context_frontier, new_assistant_frontier] per design §6.
@@ -73,8 +72,8 @@ async def check_forward_jump_chars(
     ``count_chars_in_range`` uses an exclusive start (paragraph_idx > start),
     so ``context_frontier_paragraph_idx`` itself is not double-counted.
     """
-    ctx_ch = state.get("context_frontier_chapter_idx", 0)
-    ctx_p = state.get("context_frontier_paragraph_idx", 0)
+    ctx_ch = state.context_frontier_chapter_idx
+    ctx_p = state.context_frontier_paragraph_idx
 
     if chapter_idx > ctx_ch:
         old_last = await paragraph_repo.get_last_paragraph_idx(db, book_id, ctx_ch)
@@ -120,7 +119,7 @@ async def compute_assistant_frontier(
 async def validate_pending_progress(
     db: aiosqlite.Connection,
     book_id: int,
-    state: dict[str, Any],
+    state: BookContextState,
     *,
     chapter_idx: int,
     paragraph_idx: int,

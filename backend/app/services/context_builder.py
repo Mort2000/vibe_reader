@@ -8,6 +8,14 @@ from typing import Any
 import aiosqlite
 
 from ..config import Settings
+from ..domain.budget_policy import (
+    TriggerDecision,
+    can_use_emergency_overflow,
+    evaluate_triggers,
+    exceeds_compression_threshold,
+)
+from ..domain.context_plan import ContextPlan, LiveOriginalChunkSelection
+from ..domain.models import ChapterCompressedSummary, OriginalTextChunk
 from ..repos import chunks as chunk_repo
 from ..repos import comments as comment_repo
 from ..repos import paragraphs as paragraph_repo
@@ -37,13 +45,13 @@ class ContextBuildResult:
 
 def _render_chunk_block(
     paragraphs: list[dict[str, Any]],
-    chunk: dict[str, Any],
+    chunk: OriginalTextChunk,
     frontier_pidx: int | None = None,
 ) -> str:
     lines: list[str] = []
-    seq = chunk["chunk_seq"]
-    start_p = chunk["start_paragraph_idx"]
-    end_p = chunk["end_paragraph_idx"]
+    seq = chunk.chunk_seq
+    start_p = chunk.start_paragraph_idx
+    end_p = chunk.end_paragraph_idx
     is_partial = frontier_pidx is not None and end_p > frontier_pidx
 
     if is_partial:
@@ -70,17 +78,17 @@ async def _build_summary_section(
     book_id: int,
     chapter_idx: int,
     frontier: int,
-) -> tuple[dict[str, Any] | None, int | None, str, int, int]:
+) -> tuple[ChapterCompressedSummary | None, int | None, str, int, int]:
     summary = await summary_repo.get_latest_summary(
         db, book_id, chapter_idx, frontier_pidx=frontier
     )
     if not summary:
         return None, None, "", 0, 0
 
-    text = summary["summary"]
-    tokens = summary.get("token_estimate", 0)
-    epoch = summary.get("compaction_epoch", 0)
-    return summary, summary["id"], text, tokens, epoch
+    text = summary.summary
+    tokens = summary.token_estimate
+    epoch = summary.compaction_epoch
+    return summary, summary.id, text, tokens, epoch
 
 
 async def _build_original_block(
@@ -95,7 +103,7 @@ async def _build_original_block(
         db, book_id, chapter_idx, live_start, frontier
     )
     if skip_chunk_ids:
-        live_chunks = [c for c in live_chunks if c["id"] not in skip_chunk_ids]
+        live_chunks = [c for c in live_chunks if c.id not in skip_chunk_ids]
 
     lines: list[str] = ["<LIVE_ORIGINAL_CHUNKS>"]
     live_chunk_ids: list[int] = []
@@ -104,10 +112,10 @@ async def _build_original_block(
     original_tokens = 0
 
     for chunk in live_chunks:
-        chunk_id = chunk["id"]
+        chunk_id = chunk.id
         live_chunk_ids.append(chunk_id)
-        chunk_start = max(chunk["start_paragraph_idx"], live_start)
-        chunk_end = chunk["end_paragraph_idx"]
+        chunk_start = max(chunk.start_paragraph_idx, live_start)
+        chunk_end = chunk.end_paragraph_idx
         is_partial = chunk_end > frontier and chunk_start <= frontier
         fetch_end = frontier if is_partial else chunk_end
 
@@ -128,7 +136,7 @@ async def _build_original_block(
                 "\n".join(p["text"] for p in paragraphs)
             )
         else:
-            original_tokens += chunk.get("token_estimate", 0)
+            original_tokens += chunk.token_estimate
 
     lines.append("</LIVE_ORIGINAL_CHUNKS>")
     return (
@@ -145,14 +153,12 @@ def _estimate_text_tokens(text: str) -> int:
     return int(cjk * 1.5 + (len(text) - cjk) * 0.25)
 
 
-def _make_estimator(settings: Settings) -> TokenEstimator:
-    return TokenEstimator(settings.token_estimation)
-
-
 def _get_estimator(
     settings: Settings, shared: TokenEstimator | None = None
 ) -> TokenEstimator:
-    return shared if shared is not None else _make_estimator(settings)
+    if shared is not None:
+        return shared
+    return TokenEstimator(settings.token_estimation)
 
 
 def _build_comments_block(
@@ -225,56 +231,67 @@ def _build_task_block(
     return text, _estimate_text_tokens(text)
 
 
-async def _apply_overflow_strategy(
+async def _fetch_trigger_inputs(
     db: aiosqlite.Connection,
     book_id: int,
     chapter_idx: int,
-    live_start: int,
     frontier: int,
-    live_chunk_ids: list[int],
-    partial_chunk_id: int | None,
-    partial_frontier_pidx: int | None,
-    original_block: str,
-    original_tokens: int,
-    estimated_tokens: int,
-    system_tokens: int,
-    metadata_tokens: int,
-    reserved_tokens: int,
-    summary_tokens: int,
-    ephemeral_comment_tokens: int,
-    task_tokens: int,
+    safe_estimated_tokens: int,
     settings: Settings,
-    context_degraded: bool,
+) -> TriggerDecision:
+    live_original_tokens = await chunk_repo.get_live_original_tokens(
+        db, book_id, chapter_idx, frontier
+    )
+    completed_chunks = await chunk_repo.count_completed_unreclaimed(
+        db, book_id, chapter_idx, frontier
+    )
+    l3_cfg = settings.context_l3
+    l2_cfg = settings.context_l2
+    return evaluate_triggers(
+        safe_estimated_tokens,
+        live_original_tokens,
+        completed_chunks,
+        preflight_trigger_tokens=l3_cfg.preflight_trigger_input_tokens,
+        max_live_original_tokens=l2_cfg.max_live_original_tokens,
+        max_completed_before_compaction=l3_cfg.max_completed_l2_chunks_before_compaction,
+        min_completed_before_compaction=l3_cfg.min_completed_l2_chunks_before_compaction,
+        compression_trigger_tokens=l3_cfg.compression_trigger_input_tokens,
+    )
+
+
+async def _apply_overflow(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    plan: ContextPlan,
+    safe_estimated_tokens: int,
+    settings: Settings,
     overflow_already_used: bool,
     target_paragraphs: list[int] | None = None,
-) -> tuple[str, list[int], int | None, int | None, int, int, bool, bool]:
-    ctx_cfg = settings.context
-    l3_cfg = settings.context_l3
-    emergency_used_now = False
+) -> tuple[ContextPlan, int, bool, bool]:
+    """Apply overflow/degradation strategy.
 
-    if estimated_tokens <= l3_cfg.compression_trigger_input_tokens:
-        return (
-            original_block,
-            live_chunk_ids,
-            partial_chunk_id,
-            partial_frontier_pidx,
-            original_tokens,
-            estimated_tokens,
-            context_degraded,
-            overflow_already_used,
-        )
+    Returns (plan, estimated_tokens, context_degraded, emergency_overflow_used).
+    """
+    l3_cfg = settings.context_l3
+    ctx_cfg = settings.context
+
+    if not exceeds_compression_threshold(
+        safe_estimated_tokens, l3_cfg.compression_trigger_input_tokens
+    ):
+        return plan, safe_estimated_tokens, False, False
 
     newer_summary = await summary_repo.get_latest_summary(
-        db, book_id, chapter_idx, frontier_pidx=frontier
+        db, book_id, chapter_idx, frontier_pidx=plan.frontier
     )
 
     if (
         newer_summary
-        and newer_summary.get("compaction_epoch", 0) > 0
-        and live_chunk_ids
+        and newer_summary.compaction_epoch > 0
+        and plan.live_chunks.chunk_ids
     ):
-        new_live_start = newer_summary["covered_end_paragraph_idx"] + 1
-        if new_live_start > live_start:
+        new_live_start = newer_summary.covered_end_paragraph_idx + 1
+        if new_live_start > plan.live_start:
             (
                 original_block,
                 live_chunk_ids,
@@ -282,60 +299,44 @@ async def _apply_overflow_strategy(
                 partial_frontier_pidx,
                 original_tokens,
             ) = await _build_original_block(
-                db, book_id, chapter_idx, new_live_start, frontier
+                db, book_id, chapter_idx, new_live_start, plan.frontier
             )
-            summary_tokens_new = newer_summary.get("token_estimate", 0)
-            estimated_tokens = (
-                system_tokens
-                + metadata_tokens
-                + reserved_tokens
-                + summary_tokens_new
-                + original_tokens
-                + ephemeral_comment_tokens
-                + task_tokens
+            plan.live_chunks = LiveOriginalChunkSelection(
+                block_text=original_block,
+                chunk_ids=live_chunk_ids,
+                partial_chunk_id=partial_chunk_id,
+                partial_frontier_paragraph_idx=partial_frontier_pidx,
+                estimated_tokens=original_tokens,
             )
+            plan.live_start = new_live_start
+            plan.summary_tokens = newer_summary.token_estimate
 
-    if estimated_tokens <= l3_cfg.compression_trigger_input_tokens:
-        return (
-            original_block,
-            live_chunk_ids,
-            partial_chunk_id,
-            partial_frontier_pidx,
-            original_tokens,
-            estimated_tokens,
-            context_degraded,
-            overflow_already_used,
-        )
+            if not exceeds_compression_threshold(
+                plan.estimated_tokens, l3_cfg.compression_trigger_input_tokens
+            ):
+                return plan, plan.estimated_tokens, False, False
 
-    can_emergency = (
-        l3_cfg.allow_emergency_overflow_once
-        and not overflow_already_used
-        and estimated_tokens <= ctx_cfg.emergency_input_cap_tokens
-    )
-    if can_emergency:
-        emergency_used_now = True
-        return (
-            original_block,
-            live_chunk_ids,
-            partial_chunk_id,
-            partial_frontier_pidx,
-            original_tokens,
-            estimated_tokens,
-            context_degraded,
-            True,
-        )
+    if can_use_emergency_overflow(
+        safe_estimated_tokens,
+        overflow_already_used,
+        allow_emergency_overflow=l3_cfg.allow_emergency_overflow_once,
+        emergency_cap_tokens=ctx_cfg.emergency_input_cap_tokens,
+        compression_trigger_tokens=l3_cfg.compression_trigger_input_tokens,
+    ):
+        return plan, safe_estimated_tokens, False, True
 
-    if live_chunk_ids:
+    context_degraded = True
+    if plan.live_chunks.chunk_ids:
         target_set = set(target_paragraphs) if target_paragraphs else set()
         skip_id: int | None = None
-        for cid in live_chunk_ids:
-            if cid == partial_chunk_id:
+        for cid in plan.live_chunks.chunk_ids:
+            if cid == plan.live_chunks.partial_chunk_id:
                 continue
             chunk = await chunk_repo.get_chunk(db, cid)
             if chunk is None:
                 continue
-            c_start = chunk["start_paragraph_idx"]
-            c_end = chunk["end_paragraph_idx"]
+            c_start = chunk.start_paragraph_idx
+            c_end = chunk.end_paragraph_idx
             if target_set and target_set & set(range(c_start, c_end + 1)):
                 continue
             skip_id = cid
@@ -343,8 +344,6 @@ async def _apply_overflow_strategy(
 
         if skip_id is not None:
             skip_ids = {skip_id}
-            live_chunk_ids = [cid for cid in live_chunk_ids if cid != skip_id]
-            context_degraded = True
             (
                 original_block,
                 live_chunk_ids,
@@ -355,170 +354,98 @@ async def _apply_overflow_strategy(
                 db,
                 book_id,
                 chapter_idx,
-                live_start,
-                frontier,
+                plan.live_start,
+                plan.frontier,
                 skip_chunk_ids=skip_ids,
             )
-            estimated_tokens = (
-                system_tokens
-                + metadata_tokens
-                + reserved_tokens
-                + summary_tokens
-                + original_tokens
-                + ephemeral_comment_tokens
-                + task_tokens
+            plan.live_chunks = LiveOriginalChunkSelection(
+                block_text=original_block,
+                chunk_ids=live_chunk_ids,
+                partial_chunk_id=partial_chunk_id,
+                partial_frontier_paragraph_idx=partial_frontier_pidx,
+                estimated_tokens=original_tokens,
             )
-        else:
-            context_degraded = True
 
-    return (
-        original_block,
-        live_chunk_ids,
-        partial_chunk_id,
-        partial_frontier_pidx,
-        original_tokens,
-        estimated_tokens,
-        context_degraded,
-        overflow_already_used or emergency_used_now,
-    )
+    return plan, safe_estimated_tokens, context_degraded, False
 
 
-def _compaction_preflight_thresholds(
-    settings: Settings,
-) -> tuple[int, int, int]:
-    l3_cfg = settings.context_l3
-    l2_cfg = settings.context_l2
-    return (
-        l3_cfg.preflight_trigger_input_tokens,
-        l2_cfg.max_live_original_tokens,
-        l3_cfg.max_completed_l2_chunks_before_compaction,
-    )
-
-
-async def _check_trigger_conditions(
-    db: aiosqlite.Connection,
-    book_id: int,
-    chapter_idx: int,
-    frontier: int,
-    estimated_tokens: int,
-    settings: Settings,
-) -> tuple[bool, bool]:
-    live_original_tokens = await chunk_repo.get_live_original_tokens(
-        db, book_id, chapter_idx, frontier
-    )
-    completed_chunks = await chunk_repo.count_completed_unreclaimed(
-        db, book_id, chapter_idx, frontier
-    )
-
-    (
-        preflight_input_tokens,
-        max_live_original_tokens,
-        max_completed_before_compaction,
-    ) = _compaction_preflight_thresholds(settings)
-    min_completed = settings.context_l3.min_completed_l2_chunks_before_compaction
-    volume_pressure = (
-        estimated_tokens > preflight_input_tokens
-        or live_original_tokens > max_live_original_tokens
-        or completed_chunks >= max_completed_before_compaction
-    )
-    preflight_triggered = volume_pressure and completed_chunks >= min_completed
-    hard_triggered = (
-        estimated_tokens > settings.context_l3.compression_trigger_input_tokens
-    )
-    return preflight_triggered, hard_triggered
-
-
-def _assemble_result(
+def render_context(
+    plan: ContextPlan,
     *,
-    chapter_idx: int,
-    book_title: str | None,
-    chapter_title: str | None,
-    summary_text: str,
-    original_block: str,
-    comment_block: str,
-    task_block: str,
-    system_tokens: int,
-    metadata_tokens: int,
-    reserved_tokens: int,
-    summary_tokens: int,
-    original_tokens: int,
-    ephemeral_comment_tokens: int,
-    task_tokens: int,
     estimated_tokens: int,
-    live_chunk_ids: list[int],
-    partial_chunk_id: int | None,
-    partial_frontier_pidx: int | None,
-    summary_id: int | None,
-    compaction_epoch: int,
-    preflight_triggered: bool,
-    hard_triggered: bool,
+    trigger: TriggerDecision,
     context_degraded: bool,
-    overflow_used: bool,
+    emergency_overflow_used: bool,
+    estimator: TokenEstimator,
     settings: Settings,
-    ctx_cfg: Any,
-    estimator: TokenEstimator | None = None,
 ) -> ContextBuildResult:
+    """Render a ContextPlan into a prompt string and manifest."""
     prompt_parts: list[str] = []
 
-    if book_title or chapter_title:
+    if plan.book_title or plan.chapter_title:
         m_lines = ["<BOOK_AND_CHAPTER_METADATA>"]
-        if book_title:
-            m_lines.append(f"book_title = {book_title}")
-        m_lines.append(f"chapter_idx = {chapter_idx}")
-        if chapter_title:
-            m_lines.append(f"chapter_title = {chapter_title}")
+        if plan.book_title:
+            m_lines.append(f"book_title = {plan.book_title}")
+        m_lines.append(f"chapter_idx = {plan.chapter_idx}")
+        if plan.chapter_title:
+            m_lines.append(f"chapter_title = {plan.chapter_title}")
         m_lines.append("</BOOK_AND_CHAPTER_METADATA>")
         prompt_parts.append("\n".join(m_lines))
         prompt_parts.append("")
 
-    if summary_text:
+    if plan.summary_text:
         prompt_parts.append("<CHAPTER_COMPRESSED_SUMMARY>")
-        prompt_parts.append(summary_text)
+        prompt_parts.append(plan.summary_text)
         prompt_parts.append("</CHAPTER_COMPRESSED_SUMMARY>")
         prompt_parts.append("")
 
-    prompt_parts.append(original_block)
+    prompt_parts.append(plan.live_chunks.block_text)
     prompt_parts.append("")
 
-    if comment_block:
-        prompt_parts.append(comment_block)
+    if plan.comments_text:
+        prompt_parts.append(plan.comments_text)
         prompt_parts.append("")
 
-    if task_block:
-        prompt_parts.append(task_block)
+    if plan.task_text:
+        prompt_parts.append(plan.task_text)
 
     full_prompt = "\n".join(prompt_parts)
     ctx_hash = hashlib.sha256(full_prompt.encode("utf-8")).hexdigest()[:16]
 
-    est = _get_estimator(settings, estimator)
     model = settings.llm.model
     raw_total = _estimate_text_tokens(full_prompt)
-    safe_total = est.get_safe_estimate(full_prompt, model)
+    safe_total = estimator.get_safe_estimate(full_prompt, model)
+    estimator_info = estimator.get_calibration_info(model)
 
-    estimator_info = est.get_calibration_info(model)
-
+    ctx_cfg = settings.context
     manifest = {
         "components": [
-            {"name": "system_policy", "tokens": system_tokens},
-            {"name": "metadata", "tokens": metadata_tokens},
-            {"name": "reserved", "tokens": reserved_tokens},
-            {"name": "chapter_compressed_summary", "tokens": summary_tokens},
-            {"name": "live_original_chunks", "tokens": original_tokens},
-            {"name": "ephemeral_recent_comments", "tokens": ephemeral_comment_tokens},
+            {"name": "system_policy", "tokens": plan.system_tokens},
+            {"name": "metadata", "tokens": plan.metadata_tokens},
+            {"name": "reserved", "tokens": plan.reserved_tokens},
+            {"name": "chapter_compressed_summary", "tokens": plan.summary_tokens},
+            {
+                "name": "live_original_chunks",
+                "tokens": plan.live_chunks.estimated_tokens,
+            },
+            {
+                "name": "ephemeral_recent_comments",
+                "tokens": plan.comments_tokens,
+            },
             {"name": "ephemeral_recent_chat", "tokens": 0},
-            {"name": "current_task", "tokens": task_tokens},
+            {"name": "current_task", "tokens": plan.task_tokens},
         ],
         "total_estimate": estimated_tokens,
         "safe_total_estimate": safe_total,
         "raw_total_estimate": raw_total,
         "hard_cap": ctx_cfg.emergency_input_cap_tokens,
         "attention_target": ctx_cfg.attention_target_input_tokens,
-        "live_chunk_ids": live_chunk_ids,
-        "summary_id": summary_id,
-        "compaction_epoch": compaction_epoch,
+        "live_chunk_ids": plan.live_chunks.chunk_ids,
+        "summary_id": plan.summary_id,
+        "compaction_epoch": plan.compaction_epoch,
         "context_hash": ctx_hash,
-        "preflight_triggered": preflight_triggered,
-        "hard_triggered": hard_triggered,
+        "preflight_triggered": trigger.preflight_triggered,
+        "hard_triggered": trigger.hard_triggered,
         "context_degraded": context_degraded,
         "token_estimator": estimator_info,
     }
@@ -528,15 +455,17 @@ def _assemble_result(
         estimated_tokens=estimated_tokens,
         context_hash=ctx_hash,
         prompt_manifest=manifest,
-        live_chunk_ids=live_chunk_ids,
-        partial_chunk_id=partial_chunk_id,
-        partial_frontier_paragraph_idx=partial_frontier_pidx,
-        summary_id=summary_id,
-        compaction_epoch=compaction_epoch,
-        preflight_triggered=preflight_triggered,
-        hard_triggered=hard_triggered,
+        live_chunk_ids=plan.live_chunks.chunk_ids,
+        partial_chunk_id=plan.live_chunks.partial_chunk_id,
+        partial_frontier_paragraph_idx=(
+            plan.live_chunks.partial_frontier_paragraph_idx
+        ),
+        summary_id=plan.summary_id,
+        compaction_epoch=plan.compaction_epoch,
+        preflight_triggered=trigger.preflight_triggered,
+        hard_triggered=trigger.hard_triggered,
         context_degraded=context_degraded,
-        emergency_overflow_used=overflow_used,
+        emergency_overflow_used=emergency_overflow_used,
         token_estimator_info=estimator_info,
     )
 
@@ -563,7 +492,10 @@ async def build_context(
     eph_comments_cfg = settings.ephemeral_comments
     est = _get_estimator(settings, token_estimator)
 
-    last_pidx = await paragraph_repo.get_last_paragraph_idx(db, book_id, chapter_idx)
+    # --- PLAN ---
+    last_pidx = await paragraph_repo.get_last_paragraph_idx(
+        db, book_id, chapter_idx
+    )
     if last_pidx is None:
         raise ValueError(f"No paragraphs for book={book_id} chapter={chapter_idx}")
 
@@ -579,7 +511,7 @@ async def build_context(
 
     live_start = 0
     if summary_row is not None:
-        live_start = summary_row["covered_end_paragraph_idx"] + 1
+        live_start = summary_row.covered_end_paragraph_idx + 1
 
     (
         original_block,
@@ -609,17 +541,34 @@ async def build_context(
     system_tokens = 3_000
     metadata_tokens = 800
     reserved_tokens = ctx_cfg.reserved_tokens
-    estimated_tokens = (
-        system_tokens
-        + metadata_tokens
-        + reserved_tokens
-        + summary_tokens
-        + original_tokens
-        + ephemeral_comment_tokens
-        + task_tokens
+
+    plan = ContextPlan(
+        chapter_idx=chapter_idx,
+        frontier=frontier,
+        live_start=live_start,
+        summary_text=summary_text,
+        summary_id=summary_id,
+        summary_tokens=summary_tokens,
+        compaction_epoch=compaction_epoch,
+        live_chunks=LiveOriginalChunkSelection(
+            block_text=original_block,
+            chunk_ids=live_chunk_ids,
+            partial_chunk_id=partial_chunk_id,
+            partial_frontier_paragraph_idx=partial_frontier_pidx,
+            estimated_tokens=original_tokens,
+        ),
+        comments_text=comment_block,
+        comments_tokens=ephemeral_comment_tokens,
+        task_text=task_block,
+        task_tokens=task_tokens,
+        book_title=book_title,
+        chapter_title=chapter_title,
+        system_tokens=system_tokens,
+        metadata_tokens=metadata_tokens,
+        reserved_tokens=reserved_tokens,
     )
 
-    # Apply calibration for budget/trigger decisions
+    # --- BUDGET ---
     safe_estimated_tokens = (
         est.get_safe_estimate(original_block, settings.llm.model)
         + system_tokens
@@ -630,74 +579,30 @@ async def build_context(
         + task_tokens
     )
 
-    preflight_triggered, hard_triggered = await _check_trigger_conditions(
-        db,
-        book_id,
-        chapter_idx,
-        frontier,
-        safe_estimated_tokens,
-        settings,
+    trigger = await _fetch_trigger_inputs(
+        db, book_id, chapter_idx, frontier, safe_estimated_tokens, settings
     )
 
-    (
-        original_block,
-        live_chunk_ids,
-        partial_chunk_id,
-        partial_frontier_pidx,
-        original_tokens,
-        estimated_tokens,
-        context_degraded,
-        overflow_used,
-    ) = await _apply_overflow_strategy(
-        db,
-        book_id,
-        chapter_idx,
-        live_start,
-        frontier,
-        live_chunk_ids,
-        partial_chunk_id,
-        partial_frontier_pidx,
-        original_block,
-        original_tokens,
-        safe_estimated_tokens,
-        system_tokens,
-        metadata_tokens,
-        reserved_tokens,
-        summary_tokens,
-        ephemeral_comment_tokens,
-        task_tokens,
-        settings,
-        False,
-        overflow_already_used,
-        target_paragraphs=target_paragraphs,
+    plan, estimated_tokens, context_degraded, emergency_now = (
+        await _apply_overflow(
+            db,
+            book_id,
+            chapter_idx,
+            plan,
+            safe_estimated_tokens,
+            settings,
+            overflow_already_used,
+            target_paragraphs=target_paragraphs,
+        )
     )
 
-    return _assemble_result(
-        chapter_idx=chapter_idx,
-        book_title=book_title,
-        chapter_title=chapter_title,
-        summary_text=summary_text,
-        original_block=original_block,
-        comment_block=comment_block,
-        task_block=task_block,
-        system_tokens=system_tokens,
-        metadata_tokens=metadata_tokens,
-        reserved_tokens=reserved_tokens,
-        summary_tokens=summary_tokens,
-        original_tokens=original_tokens,
-        ephemeral_comment_tokens=ephemeral_comment_tokens,
-        task_tokens=task_tokens,
+    # --- RENDER ---
+    return render_context(
+        plan,
         estimated_tokens=estimated_tokens,
-        live_chunk_ids=live_chunk_ids,
-        partial_chunk_id=partial_chunk_id,
-        partial_frontier_pidx=partial_frontier_pidx,
-        summary_id=summary_id,
-        compaction_epoch=compaction_epoch,
-        preflight_triggered=preflight_triggered,
-        hard_triggered=hard_triggered,
+        trigger=trigger,
         context_degraded=context_degraded,
-        overflow_used=overflow_used,
-        settings=settings,
-        ctx_cfg=ctx_cfg,
+        emergency_overflow_used=overflow_already_used or emergency_now,
         estimator=est,
+        settings=settings,
     )

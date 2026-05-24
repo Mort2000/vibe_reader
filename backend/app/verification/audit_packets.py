@@ -1,4 +1,9 @@
-"""Verify agent interaction audit capture for ParagraphCommentAgent."""
+"""Verify agent interaction audit packet construction.
+
+Moved from ``services/agent_audit`` during R3 so that the audit persistence
+layer (``infrastructure/audit``) imports from the verification package instead
+of depending on the services layer.
+"""
 
 from __future__ import annotations
 
@@ -18,8 +23,9 @@ from pydantic_ai.messages import (
 )
 
 from ..config import Settings
-from .agent_base import COMMENT_INSTRUCTIONS, CommentDensityHint
-from .verify_telemetry import COMPACTION_PROMPT_VERSION, PROMPT_VERSION
+from ..domain.models import ChapterCompressedSummary, OriginalTextChunk, ReadingWindow
+from ..services.agent_base import COMMENT_INSTRUCTIONS, CommentDensityHint
+from ..services.verify_telemetry import COMPACTION_PROMPT_VERSION, PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +37,22 @@ _SECRET_PATTERNS = (
 )
 
 _SCHEMA_VERSION = "verify_agent_interaction_v1"
+
+
+def make_invocation_id(agent: str, scenario_id: str, job_id: int) -> str:
+    """Build a per-verify-run invocation id.
+
+    Uses monotonic ``job_id`` as the sequence suffix. Verify runs are one-shot,
+    so this is sufficient for in-run correlation; cross-run replay after job
+    table reset may reuse suffixes.
+    """
+    short = scenario_id.split("_")[0] if scenario_id else "unknown"
+    agent_slug = {
+        "ParagraphCommentAgent": "comment",
+        "ReadingChatAgent": "chat",
+        "ContextCompactionAgent": "compaction",
+    }.get(agent, agent.lower())
+    return f"inv_{agent_slug}_{short}_{job_id:04d}"
 
 
 def _now() -> str:
@@ -569,7 +591,7 @@ def build_tool_events(
         if discarded_match:
             reason = discarded_match.get("reason", "discarded")
             business_status = "discarded"
-            persistence = {"status": "not_inserted"}
+            persistence = {"status": "notinserted"}
             business = {
                 "status": business_status,
                 "reason": reason,
@@ -614,7 +636,7 @@ def build_tool_events(
                     "status": "discarded",
                     "reason": "validation_failed",
                 },
-                "persistence": {"status": "not_inserted"},
+                "persistence": {"status": "notinserted"},
                 "created_at": _now(),
             }
         )
@@ -632,7 +654,7 @@ def build_comment_interaction_packet(
     job_id: int,
     book: dict[str, Any],
     chapter_idx: int,
-    window: dict[str, Any],
+    window: ReadingWindow,
     window_paragraphs: list[dict[str, Any]],
     target_paragraphs: list[int],
     density_hint: CommentDensityHint | None,
@@ -653,7 +675,7 @@ def build_comment_interaction_packet(
     edge_paragraph_max_chars: int = 800,
     context_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    context_hash = window.get("context_hash") or sha256_text(prompt)
+    context_hash = window.context_hash or sha256_text(prompt)
     user_segments = _split_user_prompt_segments(
         prompt,
         window_paragraphs,
@@ -743,12 +765,12 @@ def build_comment_interaction_packet(
         },
         "chapter_idx": chapter_idx,
         "window": {
-            "id": window.get("id"),
-            "seq": window.get("window_seq", window.get("seq")),
-            "start_paragraph_idx": window.get("start_paragraph_idx"),
-            "end_paragraph_idx": window.get("end_paragraph_idx"),
-            "focus_start_paragraph_idx": window.get("focus_start_paragraph_idx"),
-            "focus_end_paragraph_idx": window.get("focus_end_paragraph_idx"),
+            "id": window.id,
+            "seq": window.window_seq,
+            "start_paragraph_idx": window.start_paragraph_idx,
+            "end_paragraph_idx": window.end_paragraph_idx,
+            "focus_start_paragraph_idx": window.focus_start_paragraph_idx,
+            "focus_end_paragraph_idx": window.focus_end_paragraph_idx,
         },
         "prompt_version": PROMPT_VERSION,
         "context_hash": context_hash,
@@ -785,22 +807,6 @@ def build_comment_interaction_packet(
     return cleaned
 
 
-def make_invocation_id(agent: str, scenario_id: str, job_id: int) -> str:
-    """Build a per-verify-run invocation id.
-
-    Uses monotonic ``job_id`` as the sequence suffix. Verify runs are one-shot,
-    so this is sufficient for in-run correlation; cross-run replay after job
-    table reset may reuse suffixes.
-    """
-    short = scenario_id.split("_")[0] if scenario_id else "unknown"
-    agent_slug = {
-        "ParagraphCommentAgent": "comment",
-        "ReadingChatAgent": "chat",
-        "ContextCompactionAgent": "compaction",
-    }.get(agent, agent.lower())
-    return f"inv_{agent_slug}_{short}_{job_id:04d}"
-
-
 def build_compaction_interaction_packet(
     *,
     invocation_id: str,
@@ -812,9 +818,9 @@ def build_compaction_interaction_packet(
     book_id: int,
     book: dict[str, Any],
     chapter_idx: int,
-    source_chunk: dict[str, Any],
-    previous_summary_row: dict[str, Any] | None,
-    next_summary_row: dict[str, Any],
+    source_chunk: OriginalTextChunk,
+    previous_summary_row: ChapterCompressedSummary | None,
+    next_summary_row: ChapterCompressedSummary,
     prompt: str,
     agent_result: Any,
     settings: Any,
@@ -837,7 +843,7 @@ def build_compaction_interaction_packet(
         cached_input_tokens=cached_input_tokens,
     )
 
-    from .agent_base import COMPACTION_INSTRUCTIONS
+    from ..services.agent_base import COMPACTION_INSTRUCTIONS
 
     prompt_messages = [
         {
@@ -863,7 +869,7 @@ def build_compaction_interaction_packet(
                 "business_validation": {"status": "passed"},
                 "persistence": {
                     "status": "inserted",
-                    "summary_id": next_summary_row["id"],
+                    "summary_id": next_summary_row.id,
                 },
                 "created_at": _now(),
             }
@@ -874,29 +880,25 @@ def build_compaction_interaction_packet(
             {
                 "name": "source_original_chunk",
                 "content": {
-                    "chunk_id": source_chunk["id"],
-                    "start_paragraph_idx": source_chunk["start_paragraph_idx"],
-                    "end_paragraph_idx": source_chunk["end_paragraph_idx"],
-                    "token_estimate": source_chunk.get("token_estimate", 0),
+                    "chunk_id": source_chunk.id,
+                    "start_paragraph_idx": source_chunk.start_paragraph_idx,
+                    "end_paragraph_idx": source_chunk.end_paragraph_idx,
+                    "token_estimate": source_chunk.token_estimate,
                 },
             },
             {
                 "name": "chapter_compressed_summary",
                 "content": {
-                    "id": next_summary_row["id"],
-                    "covered_start_paragraph_idx": next_summary_row[
-                        "covered_start_paragraph_idx"
-                    ],
-                    "covered_end_paragraph_idx": next_summary_row[
-                        "covered_end_paragraph_idx"
-                    ],
-                    "token_estimate": next_summary_row.get("token_estimate", 0),
-                    "compaction_epoch": next_summary_row.get("compaction_epoch", 0),
+                    "id": next_summary_row.id,
+                    "covered_start_paragraph_idx": next_summary_row.covered_start_paragraph_idx,
+                    "covered_end_paragraph_idx": next_summary_row.covered_end_paragraph_idx,
+                    "token_estimate": next_summary_row.token_estimate,
+                    "compaction_epoch": next_summary_row.compaction_epoch,
                 },
             },
         ],
         "total_input_token_estimate": input_tokens
-        or source_chunk.get("token_estimate", 0),
+        or source_chunk.token_estimate,
     }
     context_hash = sha256_text(prompt)
     book_payload = {
@@ -908,9 +910,6 @@ def build_compaction_interaction_packet(
     packet: dict[str, Any] = {
         "schema_version": "compaction_v1",
         "invocation_id": invocation_id,
-        # Canonical audit fields (aligned with build_comment_interaction_packet).
-        # Pre-P6 compaction packets used verify_* keys only; verify-side
-        # normalize_audit_packet() maps those when re-exporting legacy runs.
         "run_id": verify_run_id,
         "scenario_id": verify_scenario_id,
         "step_id": verify_step_id,
@@ -926,30 +925,30 @@ def build_compaction_interaction_packet(
         "job_id": job_id,
         "book_id": book_id,
         "source_chunk": {
-            "id": source_chunk["id"],
-            "chunk_seq": source_chunk.get("chunk_seq"),
-            "start_paragraph_idx": source_chunk["start_paragraph_idx"],
-            "end_paragraph_idx": source_chunk["end_paragraph_idx"],
-            "text_hash": source_chunk.get("text_hash", ""),
-            "token_estimate": source_chunk.get("token_estimate", 0),
+            "id": source_chunk.id,
+            "chunk_seq": source_chunk.chunk_seq,
+            "start_paragraph_idx": source_chunk.start_paragraph_idx,
+            "end_paragraph_idx": source_chunk.end_paragraph_idx,
+            "text_hash": source_chunk.text_hash,
+            "token_estimate": source_chunk.token_estimate,
         },
         "previous_summary": (
             {
-                "id": previous_summary_row["id"],
-                "covered_start": previous_summary_row["covered_start_paragraph_idx"],
-                "covered_end": previous_summary_row["covered_end_paragraph_idx"],
-                "token_estimate": previous_summary_row.get("token_estimate", 0),
-                "compaction_epoch": previous_summary_row.get("compaction_epoch", 0),
+                "id": previous_summary_row.id,
+                "covered_start": previous_summary_row.covered_start_paragraph_idx,
+                "covered_end": previous_summary_row.covered_end_paragraph_idx,
+                "token_estimate": previous_summary_row.token_estimate,
+                "compaction_epoch": previous_summary_row.compaction_epoch,
             }
             if previous_summary_row
             else None
         ),
         "next_summary": {
-            "id": next_summary_row["id"],
-            "covered_start": next_summary_row["covered_start_paragraph_idx"],
-            "covered_end": next_summary_row["covered_end_paragraph_idx"],
-            "token_estimate": next_summary_row.get("token_estimate", 0),
-            "compaction_epoch": next_summary_row.get("compaction_epoch", 0),
+            "id": next_summary_row.id,
+            "covered_start": next_summary_row.covered_start_paragraph_idx,
+            "covered_end": next_summary_row.covered_end_paragraph_idx,
+            "token_estimate": next_summary_row.token_estimate,
+            "compaction_epoch": next_summary_row.compaction_epoch,
         },
         "prompt_manifest": prompt_manifest or {},
         "prompt_messages": prompt_messages,

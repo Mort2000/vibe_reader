@@ -2,33 +2,44 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiosqlite
 
+from ..application.agent_run_recorder import AgentRunRecorder
+from ..application.job_handlers import JobHandler
+from ..domain.models import ReadingWindow
+from ..application.pending_progress import PendingProgressProcessor
+from ..infrastructure.events import EventPublisher, SSEEventPublisher
+from ..infrastructure.settings import SettingsProvider
 from ..observability import new_trace_id
 from ..repos import context_state
 from ..repos import jobs as job_repo
 from ..repos import windows as window_repo
-from ..routers.events import publish_event
 
 logger = logging.getLogger(__name__)
 
-JobHandler = Callable[
-    [aiosqlite.Connection, int, dict[str, Any], Any, Any],
-    Awaitable[dict[str, Any] | None],
-]
-
 
 class JobRunner:
-    def __init__(self, max_concurrent: int = 2, token_estimator: Any = None) -> None:
+    def __init__(
+        self,
+        settings_provider: SettingsProvider,
+        max_concurrent: int = 2,
+        token_estimator: Any = None,
+        event_publisher: EventPublisher | None = None,
+        recorder: AgentRunRecorder | None = None,
+        pending_processor: PendingProgressProcessor | None = None,
+    ) -> None:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._book_locks: dict[int, asyncio.Lock] = {}
         self._tasks: dict[int, asyncio.Task] = {}
         self._handlers: dict[str, JobHandler] = {}
         self._running = False
         self._token_estimator = token_estimator
+        self._event_publisher: EventPublisher = event_publisher or SSEEventPublisher()
+        self._settings_provider = settings_provider
+        self._recorder = recorder
+        self._pending_processor = pending_processor
 
     def _get_book_lock(self, book_id: int) -> asyncio.Lock:
         lock = self._book_locks.get(book_id)
@@ -131,7 +142,7 @@ class JobRunner:
         event_type = (
             "window.queued" if job_type == "comment_window" else "context.queued"
         )
-        await publish_event(
+        await self._event_publisher.publish(
             event_type,
             {
                 "book_id": book_id,
@@ -165,7 +176,7 @@ class JobRunner:
             if job.get("job_type") == "comment_window"
             else "context.queued"
         )
-        await publish_event(
+        await self._event_publisher.publish(
             retry_event,
             {
                 "book_id": job["book_id"],
@@ -238,7 +249,7 @@ class JobRunner:
         running_event = (
             "window.running" if job_type == "comment_window" else "context.compacting"
         )
-        await publish_event(
+        await self._event_publisher.publish(
             running_event,
             {
                 "book_id": book_id,
@@ -279,7 +290,6 @@ class JobRunner:
         job_id: int,
         book_id: int,
         chapter_idx: int,
-        settings: Any,
     ) -> None:
         await job_repo.update_job_status(db, job_id, "skipped")
         logger.info(
@@ -293,39 +303,7 @@ class JobRunner:
                 },
             },
         )
-        await self._finalize_job(db, book_id, None, settings)
-
-    async def _record_comment_token_calibration(
-        self,
-        db: aiosqlite.Connection,
-        telemetry: dict[str, Any],
-        settings: Any,
-    ) -> None:
-        if telemetry.get("input_tokens") is None:
-            return
-        prompt_manifest = telemetry.get("prompt_manifest") or {}
-        has_live_chunks = any(
-            c.get("name") == "live_original_chunks"
-            for c in prompt_manifest.get("components", [])
-        )
-        if not has_live_chunks:
-            return
-        estimator = self._token_estimator
-        if estimator is None:
-            from .token_estimator import TokenEstimator
-
-            estimator = TokenEstimator(settings.token_estimation)
-        await estimator.record_observation(
-            db,
-            model=settings.llm.model,
-            prompt_version=telemetry.get("prompt_version", ""),
-            language_profile="cjk_mixed",
-            raw_estimate=telemetry.get(
-                "context_estimated_tokens",
-                prompt_manifest.get("total_estimate", 0),
-            ),
-            actual_tokens=telemetry["input_tokens"],
-        )
+        await self._finalize_job(db, book_id)
 
     async def _run_handler(
         self,
@@ -338,58 +316,38 @@ class JobRunner:
         trace_id: str,
         handler: JobHandler,
     ) -> None:
-        window: dict[str, Any] | None = None
+        window: ReadingWindow | None = None
         if window_id:
             window = await window_repo.get_window(db, window_id)
 
-        from ..config import load_settings
+        settings = self._settings_provider.current()
 
-        settings = load_settings()
+        result = await handler.run(
+            db, job_id, window, settings, self._token_estimator
+        )
 
-        telemetry = await handler(db, job_id, window, settings, self._token_estimator)
-
-        if job_type == "compact_context" and telemetry is None:
-            await self._skip_compaction_job(
-                db, job_id, book_id, chapter_idx, settings
-            )
+        if result is None:
+            await self._skip_compaction_job(db, job_id, book_id, chapter_idx)
             return
 
-        if telemetry:
-            await self._record_comment_token_calibration(db, telemetry, settings)
+        telemetry = result.telemetry
 
-        if telemetry and settings.verify_mode:
-            from ..services.verify_telemetry import persist_agent_run
-
-            await persist_agent_run(
+        if telemetry and self._recorder is not None:
+            await self._recorder.record(
                 db,
+                result=telemetry,
+                settings=settings,
                 trace_id=trace_id,
                 job_id=job_id,
                 book_id=book_id,
                 chapter_idx=chapter_idx,
                 window_id=window_id,
-                payload=telemetry,
             )
 
         await job_repo.update_job_status(db, job_id, "done")
 
         if window_id:
             await window_repo.update_window_status(db, window_id, "done")
-
-        if (
-            telemetry
-            and telemetry.get("preflight_triggered")
-            and job_type == "comment_window"
-        ):
-            from .compaction_service import maybe_enqueue_compaction
-
-            await maybe_enqueue_compaction(
-                db,
-                self,
-                book_id,
-                chapter_idx,
-                settings,
-                preflight_triggered=True,
-            )
 
         if telemetry or job_type == "comment_window":
             done_event = (
@@ -403,16 +361,8 @@ class JobRunner:
                 "job_type": job_type,
                 "trace_id": trace_id,
             }
-            if telemetry and job_type == "compact_context":
-                for key in (
-                    "reclaimed_chunk_id",
-                    "reclaimed_chunk_ids",
-                    "source_chunk_id",
-                    "summary_id",
-                ):
-                    if telemetry.get(key) is not None:
-                        event_payload[key] = telemetry[key]
-            await publish_event(
+            event_payload.update(result.done_event_extras)
+            await self._event_publisher.publish(
                 done_event,
                 event_payload,
             )
@@ -425,217 +375,25 @@ class JobRunner:
             },
         )
 
-        await self._finalize_job(db, book_id, telemetry, settings)
+        await self._finalize_job(db, book_id)
 
     async def _finalize_job(
         self,
         db: aiosqlite.Connection,
         book_id: int,
-        telemetry: dict[str, Any] | None,
-        settings: Any,
     ) -> None:
         state = await context_state.get_or_create(db, book_id)
-        has_pending = state.get("pending_chapter_idx") is not None
+        has_pending = state.pending_chapter_idx is not None
 
-        if has_pending:
-            await self._process_pending_progress(db, book_id, state, settings)
+        if has_pending and self._pending_processor is not None:
+            settings = self._settings_provider.current()
+            await self._pending_processor.process(
+                db, book_id, state, settings, self
+            )
         else:
             await context_state.update_state(
                 db, book_id, status="idle", running_job_id=None
             )
-
-    async def _process_pending_progress(
-        self,
-        db: aiosqlite.Connection,
-        book_id: int,
-        state: dict[str, Any],
-        settings: Any,
-    ) -> None:
-        from ..repos import progress as progress_repo
-        from . import window_service
-        from .context_builder import build_context
-        from .progress_helpers import validate_pending_progress
-
-        chapter_idx = state["pending_chapter_idx"]
-        paragraph_idx = state["pending_paragraph_idx"]
-        scroll_pct = state["pending_scroll_pct"]
-        pending_af_ch = state.get("pending_assistant_frontier_chapter_idx")
-        pending_af_p = state.get("pending_assistant_frontier_paragraph_idx")
-        pending_jump_chars = state.get("pending_context_jump_chars")
-
-        _clear_pending = {
-            "status": "idle",
-            "running_job_id": None,
-            "pending_chapter_idx": None,
-            "pending_paragraph_idx": None,
-            "pending_scroll_pct": None,
-            "pending_assistant_frontier_chapter_idx": None,
-            "pending_assistant_frontier_paragraph_idx": None,
-            "pending_context_jump_chars": None,
-            "pending_updated_at": None,
-        }
-
-        if chapter_idx is None or paragraph_idx is None:
-            await context_state.update_state(db, book_id, **_clear_pending)
-            return
-
-        jump_type, jump_chars = await validate_pending_progress(
-            db,
-            book_id,
-            state,
-            chapter_idx=chapter_idx,
-            paragraph_idx=paragraph_idx,
-            assistant_frontier_chapter_idx=pending_af_ch,
-            assistant_frontier_paragraph_idx=pending_af_p,
-            max_context_jump_chars=settings.context.max_context_jump_chars,
-            lookahead_paragraphs=settings.reader.lookahead_paragraphs,
-        )
-
-        if jump_type in ("backward", "forward_rejected"):
-            logger.info(
-                "job_runner.pending_discarded",
-                extra={
-                    "event": "job_runner.pending_discarded",
-                    "fields": {
-                        "book_id": book_id,
-                        "chapter_idx": chapter_idx,
-                        "paragraph_idx": paragraph_idx,
-                        "jump_type": jump_type,
-                        "jump_chars": jump_chars,
-                        "stored_jump_chars": pending_jump_chars,
-                    },
-                },
-            )
-            await context_state.update_state(db, book_id, **_clear_pending)
-            return
-
-        if jump_type == "forward_accepted":
-            from ..repos import paragraphs as paragraph_repo
-            from .token_estimator import TokenEstimator
-
-            ctx_frontier_p = state.get("context_frontier_paragraph_idx", 0)
-            jump_start_p = ctx_frontier_p + 1
-            jump_end_p = pending_af_p if pending_af_p else paragraph_idx
-
-            if jump_end_p >= jump_start_p:
-                jump_paragraphs, _ = await paragraph_repo.list_paragraphs(
-                    db,
-                    book_id,
-                    state.get("active_chapter_idx", chapter_idx),
-                )
-                jump_text = "\n".join(
-                    p["text"]
-                    for p in jump_paragraphs
-                    if jump_start_p <= p["paragraph_idx"] <= jump_end_p
-                )
-                estimator = self._token_estimator
-                if estimator is None:
-                    estimator = TokenEstimator(settings.token_estimation)
-                jump_token_est = estimator.get_safe_estimate(
-                    jump_text,
-                    settings.llm.model,
-                )
-                max_jump_tokens = settings.context.max_context_jump_tokens_estimate
-                if jump_token_est > max_jump_tokens:
-                    logger.info(
-                        "job_runner.pending_token_jump_rejected",
-                        extra={
-                            "event": "job_runner.pending_token_jump_rejected",
-                            "fields": {
-                                "book_id": book_id,
-                                "jump_token_estimate": jump_token_est,
-                                "max_jump_tokens": max_jump_tokens,
-                            },
-                        },
-                    )
-                    await context_state.update_state(db, book_id, **_clear_pending)
-                    return
-
-        assistant_frontier = pending_af_p
-        if assistant_frontier is None:
-            from .progress_helpers import compute_assistant_frontier
-
-            assistant_frontier = await compute_assistant_frontier(
-                db,
-                book_id,
-                chapter_idx,
-                paragraph_idx,
-                settings.reader.lookahead_paragraphs,
-            )
-
-        await progress_repo.upsert_progress(
-            db,
-            book_id,
-            chapter_idx=chapter_idx,
-            paragraph_idx=paragraph_idx,
-            scroll_pct=scroll_pct or 0.0,
-        )
-
-        await context_state.update_state(
-            db,
-            book_id,
-            active_chapter_idx=chapter_idx,
-            reading_paragraph_idx=paragraph_idx,
-        )
-
-        window, is_new = await window_service.get_or_create_window(
-            db, book_id, chapter_idx, paragraph_idx, settings
-        )
-
-        if is_new:
-            ctx_result = await build_context(
-                db,
-                book_id=book_id,
-                chapter_idx=chapter_idx,
-                reading_pidx=paragraph_idx,
-                settings=settings,
-                token_estimator=self._token_estimator,
-            )
-
-            if ctx_result.preflight_triggered:
-                from ..services.compaction_service import maybe_enqueue_compaction
-
-                await maybe_enqueue_compaction(
-                    db,
-                    self,
-                    book_id,
-                    chapter_idx,
-                    settings,
-                    preflight_triggered=True,
-                )
-
-            await self.submit_job(
-                db,
-                "comment_window",
-                book_id,
-                chapter_idx,
-                window_id=window["id"],
-            )
-
-        await context_state.update_state(
-            db,
-            book_id,
-            assistant_frontier_chapter_idx=chapter_idx,
-            assistant_frontier_paragraph_idx=assistant_frontier,
-            context_frontier_chapter_idx=chapter_idx,
-            context_frontier_paragraph_idx=assistant_frontier,
-            **_clear_pending,
-        )
-
-        logger.info(
-            "job_runner.pending_processed",
-            extra={
-                "event": "job_runner.pending_processed",
-                "fields": {
-                    "book_id": book_id,
-                    "chapter_idx": chapter_idx,
-                    "paragraph_idx": paragraph_idx,
-                    "assistant_frontier": assistant_frontier,
-                    "jump_type": jump_type,
-                    "jump_chars": jump_chars,
-                },
-            },
-        )
 
     async def _handle_failure(
         self,
@@ -660,7 +418,7 @@ class JobRunner:
         failed_event = (
             "window.failed" if job_type == "comment_window" else "context.failed"
         )
-        await publish_event(
+        await self._event_publisher.publish(
             failed_event,
             {
                 "book_id": book_id,
@@ -672,7 +430,7 @@ class JobRunner:
             },
         )
 
-        await publish_event(
+        await self._event_publisher.publish(
             "job.failed",
             {
                 "job_id": job_id,

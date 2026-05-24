@@ -5,6 +5,8 @@ from typing import Any
 
 import aiosqlite
 
+from ..domain.models import BookContextState
+
 _UNSET = object()
 
 
@@ -14,14 +16,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def get_or_create(db: aiosqlite.Connection, book_id: int) -> dict[str, Any]:
+async def get_or_create(db: aiosqlite.Connection, book_id: int) -> BookContextState:
     cur = await db.execute(
         "SELECT * FROM book_context_states WHERE book_id = ?",
         (book_id,),
     )
     row = await cur.fetchone()
     if row:
-        return dict(row)
+        return BookContextState.from_row(dict(row))
 
     now = _now()
     cur = await db.execute(
@@ -31,31 +33,30 @@ async def get_or_create(db: aiosqlite.Connection, book_id: int) -> dict[str, Any
         (book_id, now, now),
     )
     await db.commit()
-    return {
-        "id": cur.lastrowid,
-        "book_id": book_id,
-        "active_chapter_idx": 0,
-        "reading_paragraph_idx": 0,
-        "assistant_frontier_chapter_idx": 0,
-        "assistant_frontier_paragraph_idx": 0,
-        "context_frontier_chapter_idx": 0,
-        "context_frontier_paragraph_idx": 0,
-        "latest_summary_id": None,
-        "live_l2_chunk_ids_json": None,
-        "compaction_epoch": 0,
-        "status": "idle",
-        "running_job_id": None,
-        "pending_chapter_idx": None,
-        "pending_paragraph_idx": None,
-        "pending_scroll_pct": None,
-        "pending_assistant_frontier_chapter_idx": None,
-        "pending_assistant_frontier_paragraph_idx": None,
-        "pending_context_jump_chars": None,
-        "pending_updated_at": None,
-        "last_error": None,
-        "created_at": now,
-        "updated_at": now,
-    }
+    return BookContextState(
+        id=cur.lastrowid,
+        book_id=book_id,
+        active_chapter_idx=0,
+        reading_paragraph_idx=0,
+        assistant_frontier_chapter_idx=0,
+        assistant_frontier_paragraph_idx=0,
+        context_frontier_chapter_idx=0,
+        context_frontier_paragraph_idx=0,
+        latest_summary_id=None,
+        compaction_epoch=0,
+        status="idle",
+        running_job_id=None,
+        pending_chapter_idx=None,
+        pending_paragraph_idx=None,
+        pending_scroll_pct=None,
+        pending_assistant_frontier_chapter_idx=None,
+        pending_assistant_frontier_paragraph_idx=None,
+        pending_context_jump_chars=None,
+        pending_updated_at=None,
+        last_error=None,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 async def update_state(

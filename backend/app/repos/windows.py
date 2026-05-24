@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 import aiosqlite
+
+from ..domain.models import ReadingWindow
 
 
 def _now() -> str:
@@ -23,7 +24,7 @@ async def create_window(
     assistant_frontier_paragraph_idx: int,
     text_hash: str = "",
     context_hash: str = "",
-) -> dict[str, Any]:
+) -> ReadingWindow:
     now = _now()
     cur = await db.execute(
         """INSERT INTO reading_windows
@@ -47,39 +48,39 @@ async def create_window(
         ),
     )
     await db.commit()
-    return {
-        "id": cur.lastrowid,
-        "book_id": book_id,
-        "chapter_idx": chapter_idx,
-        "window_seq": window_seq,
-        "start_paragraph_idx": start_paragraph_idx,
-        "end_paragraph_idx": end_paragraph_idx,
-        "focus_start_paragraph_idx": focus_start_paragraph_idx,
-        "focus_end_paragraph_idx": focus_end_paragraph_idx,
-        "assistant_frontier_paragraph_idx": assistant_frontier_paragraph_idx,
-        "status": "pending",
-        "error": None,
-        "created_at": now,
-        "updated_at": now,
-        "completed_at": None,
-    }
+    return ReadingWindow(
+        id=cur.lastrowid,
+        book_id=book_id,
+        chapter_idx=chapter_idx,
+        window_seq=window_seq,
+        start_paragraph_idx=start_paragraph_idx,
+        end_paragraph_idx=end_paragraph_idx,
+        focus_start_paragraph_idx=focus_start_paragraph_idx,
+        focus_end_paragraph_idx=focus_end_paragraph_idx,
+        assistant_frontier_paragraph_idx=assistant_frontier_paragraph_idx,
+        status="pending",
+        error=None,
+        created_at=now,
+        updated_at=now,
+        completed_at=None,
+    )
 
 
-async def get_window(db: aiosqlite.Connection, window_id: int) -> dict[str, Any] | None:
+async def get_window(db: aiosqlite.Connection, window_id: int) -> ReadingWindow | None:
     cur = await db.execute("SELECT * FROM reading_windows WHERE id = ?", (window_id,))
     row = await cur.fetchone()
-    return dict(row) if row else None
+    return ReadingWindow.from_row(dict(row)) if row else None
 
 
 async def find_latest_window(
     db: aiosqlite.Connection, book_id: int, chapter_idx: int
-) -> dict[str, Any] | None:
+) -> ReadingWindow | None:
     cur = await db.execute(
         "SELECT * FROM reading_windows WHERE book_id = ? AND chapter_idx = ? ORDER BY window_seq DESC LIMIT 1",
         (book_id, chapter_idx),
     )
     row = await cur.fetchone()
-    return dict(row) if row else None
+    return ReadingWindow.from_row(dict(row)) if row else None
 
 
 async def update_window_status(

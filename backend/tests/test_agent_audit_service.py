@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.services.agent_audit import (
+from app.domain.models import ChapterCompressedSummary, OriginalTextChunk
+from app.verification.audit_packets import (
     CURRENT_WINDOW_TAG,
     _round_usage,
     _split_user_prompt_segments,
@@ -115,22 +116,30 @@ def test_build_compaction_interaction_packet_includes_report_metadata() -> None:
         book_id=1,
         book={"id": 1, "title": "Test Book", "file_hash": "abc"},
         chapter_idx=1,
-        source_chunk={
-            "id": 2,
-            "chunk_seq": 0,
-            "start_paragraph_idx": 0,
-            "end_paragraph_idx": 179,
-            "token_estimate": 7106,
-            "text_hash": "deadbeef",
-        },
+        source_chunk=OriginalTextChunk.from_row(
+            {
+                "id": 2,
+                "book_id": 1,
+                "chapter_idx": 1,
+                "chunk_seq": 0,
+                "start_paragraph_idx": 0,
+                "end_paragraph_idx": 179,
+                "token_estimate": 7106,
+                "text_hash": "deadbeef",
+            }
+        ),
         previous_summary_row=None,
-        next_summary_row={
-            "id": 1,
-            "covered_start_paragraph_idx": 0,
-            "covered_end_paragraph_idx": 179,
-            "token_estimate": 331,
-            "compaction_epoch": 1,
-        },
+        next_summary_row=ChapterCompressedSummary.from_row(
+            {
+                "id": 1,
+                "book_id": 1,
+                "chapter_idx": 1,
+                "covered_start_paragraph_idx": 0,
+                "covered_end_paragraph_idx": 179,
+                "token_estimate": 331,
+                "compaction_epoch": 1,
+            }
+        ),
         prompt="compaction prompt",
         agent_result=_Result(),
         settings=settings,
