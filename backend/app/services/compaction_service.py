@@ -213,8 +213,7 @@ async def run_compaction_task(
     book_id = job_row["book_id"]
     chapter_idx = job_row["chapter_idx"]
 
-    state = await _get_book_state(db, book_id)
-    frontier_pidx = state.get("assistant_frontier_paragraph_idx", 0)
+    frontier_pidx = await _compaction_frontier_paragraph_idx(db, book_id, chapter_idx)
 
     source_chunk = await chunk_repo.select_eligible_compaction_source(
         db,
@@ -428,6 +427,84 @@ async def _get_job(db: aiosqlite.Connection, job_id: int) -> dict[str, Any] | No
 
 async def _get_book_state(db: aiosqlite.Connection, book_id: int) -> dict[str, Any]:
     return await context_state.get_or_create(db, book_id)
+
+
+async def _compaction_frontier_paragraph_idx(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+) -> int:
+    """Frontier used to decide which L2 chunks are complete for *chapter_idx*."""
+    from ..repos import chapters as chapter_repo
+
+    state = await _get_book_state(db, book_id)
+    active_chapter = state.get("assistant_frontier_chapter_idx")
+    if active_chapter == chapter_idx:
+        return int(state.get("assistant_frontier_paragraph_idx") or 0)
+
+    chapter = await chapter_repo.get_chapter(db, book_id, chapter_idx)
+    if not chapter:
+        return 0
+    return max(0, int(chapter.get("paragraph_count") or 1) - 1)
+
+
+async def select_compaction_source_for_chapter(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    settings: Settings,
+    *,
+    context_pressure: bool = True,
+) -> dict[str, Any] | None:
+    """Return the earliest eligible L2 chunk for compaction, if any."""
+    frontier_pidx = await _compaction_frontier_paragraph_idx(db, book_id, chapter_idx)
+    return await chunk_repo.select_eligible_compaction_source(
+        db,
+        book_id,
+        chapter_idx,
+        frontier_pidx,
+        min_live_chunks_after_compaction=settings.context_l2.min_live_chunks_after_compaction,
+        preferred_live_chunks_after_compaction=settings.context_l2.preferred_live_chunks_after_compaction,
+        context_pressure=context_pressure,
+    )
+
+
+async def maybe_enqueue_compaction(
+    db: aiosqlite.Connection,
+    job_runner: JobRunner,
+    book_id: int,
+    chapter_idx: int,
+    settings: Settings,
+    *,
+    preflight_triggered: bool,
+) -> bool:
+    """Enqueue ``compact_context`` only when preflight fired and a source chunk exists."""
+    if not preflight_triggered:
+        return False
+
+    source_chunk = await select_compaction_source_for_chapter(
+        db,
+        book_id,
+        chapter_idx,
+        settings,
+        context_pressure=True,
+    )
+    if source_chunk is None:
+        logger.info(
+            "compaction.enqueue_skipped",
+            extra={
+                "event": "compaction.enqueue_skipped",
+                "fields": {
+                    "book_id": book_id,
+                    "chapter_idx": chapter_idx,
+                    "reason": "no_eligible_source",
+                },
+            },
+        )
+        return False
+
+    await job_runner.submit_job(db, "compact_context", book_id, chapter_idx)
+    return True
 
 
 def register_with_runner(runner: JobRunner) -> None:

@@ -168,6 +168,16 @@ def test_assert_compaction_completed_requires_job_or_run() -> None:
     assert exc.value.assertion == "compaction_completed"
 
 
+def test_assert_compaction_completed_requires_agent_run() -> None:
+    with pytest.raises(StepAssertionError) as exc:
+        assert_compaction_completed(
+            compaction_jobs=[{"status": "done", "job_type": "compact_context"}],
+            compaction_runs=[],
+            require_agent_run=True,
+        )
+    assert exc.value.assertion == "compaction_agent_run"
+
+
 def test_assert_reclaimed_l2_chunk_present_from_context() -> None:
     assert_reclaimed_l2_chunk_present(
         injected_contexts=[

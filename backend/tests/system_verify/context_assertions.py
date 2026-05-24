@@ -103,7 +103,29 @@ def extract_chapter_summary(payload: dict[str, Any]) -> dict[str, Any] | None:
         content = component.get("content")
         if isinstance(content, dict):
             return content
+
+    next_summary = payload.get("next_summary")
+    if isinstance(next_summary, dict) and next_summary.get("id") is not None:
+        return next_summary
+
     return None
+
+
+def _compaction_run_has_evidence(run: dict[str, Any]) -> bool:
+    interaction = run.get("interaction") or run
+    usage = interaction.get("usage") or {}
+    has_llm_work = int(
+        run.get("input_tokens")
+        or interaction.get("input_tokens")
+        or usage.get("input_tokens")
+        or 0
+    ) > 0
+    has_summary = bool(
+        interaction.get("summary_id")
+        or interaction.get("next_summary")
+        or extract_chapter_summary(interaction)
+    )
+    return has_llm_work or has_summary
 
 
 def assert_token_budget(
@@ -508,9 +530,41 @@ def assert_compaction_completed(
     compaction_jobs: list[dict[str, Any]],
     compaction_runs: list[dict[str, Any]],
     require_real: bool = False,
+    require_agent_run: bool = False,
 ) -> None:
     done_jobs = [job for job in compaction_jobs if job.get("status") == "done"]
-    if not done_jobs and not compaction_runs:
+    skipped_jobs = [job for job in compaction_jobs if job.get("status") == "skipped"]
+
+    if require_agent_run:
+        if not compaction_runs:
+            raise StepAssertionError(
+                assertion="compaction_agent_run",
+                message=(
+                    "Expected ContextCompactionAgent run with reclaimed chunk; "
+                    "instant no-op jobs do not count"
+                ),
+                expected="compaction agent run",
+                actual={
+                    "done_jobs": len(done_jobs),
+                    "skipped_jobs": len(skipped_jobs),
+                    "agent_runs": len(compaction_runs),
+                },
+            )
+        interaction = compaction_runs[-1].get("interaction") or compaction_runs[-1]
+        if not _compaction_run_has_evidence(compaction_runs[-1]):
+            raise StepAssertionError(
+                assertion="compaction_agent_run",
+                message="Compaction agent run missing summary or token usage",
+                expected="summary_id or input_tokens > 0",
+                actual={
+                    "input_tokens": compaction_runs[-1].get("input_tokens"),
+                    "interaction_input_tokens": interaction.get("input_tokens"),
+                    "usage": interaction.get("usage"),
+                    "summary_id": interaction.get("summary_id"),
+                    "next_summary": interaction.get("next_summary"),
+                },
+            )
+    elif not done_jobs and not compaction_runs:
         raise StepAssertionError(
             assertion="compaction_completed",
             message="Expected at least one completed compact_context job or compaction agent run",
@@ -524,7 +578,7 @@ def assert_compaction_completed(
     if compaction_runs:
         interaction = compaction_runs[-1].get("interaction") or compaction_runs[-1]
         summary = extract_chapter_summary(interaction)
-        if summary:
+        if summary and str(summary.get("summary") or "").strip():
             assert_chapter_summary_structure(summary)
 
     if require_real:

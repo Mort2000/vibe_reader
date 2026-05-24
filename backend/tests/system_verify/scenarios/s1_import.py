@@ -25,15 +25,18 @@ from ..run import RunManager
 from ..scenario import ScenarioBuilder, ScenarioRunner, StepAssertionError, assert_that
 
 
+CONTENT_CHAPTER_IDX = 1
+
+
 def _pick_progress_paragraph(
-    ctx: dict[str, Any], *, prefer: int = 12
+    ctx: dict[str, Any], *, prefer: int = 20
 ) -> tuple[int, int]:
-    """Return (chapter_idx, paragraph_idx) within the first chapter's bounds."""
-    paragraphs = ctx.get("first_chapter_paragraphs", [])
+    """Return (chapter_idx, paragraph_idx) within chapter 1 bounds."""
+    paragraphs = ctx.get("content_chapter_paragraphs", [])
     if not paragraphs:
-        raise RuntimeError("No paragraphs available for progress checks")
+        raise RuntimeError("No chapter 1 paragraphs available for progress checks")
     last_idx = paragraphs[-1].get("paragraph_idx", 0)
-    return 0, min(prefer, last_idx)
+    return CONTENT_CHAPTER_IDX, min(prefer, last_idx)
 
 
 async def run_s1(
@@ -309,9 +312,19 @@ async def _step_list_paragraphs(ctx: dict[str, Any]) -> None:
         ctx["first_chapter_paragraphs"] = body["items"]
         ctx["first_chapter_paragraph_count"] = body["total"]
 
+        content_body, content_rec = await client.list_paragraphs(
+            book_id, CONTENT_CHAPTER_IDX
+        )
+        validate_paragraphs_response(content_body, content_rec)
+        ctx["content_chapter_paragraphs"] = content_body["items"]
+        ctx["content_chapter_idx"] = CONTENT_CHAPTER_IDX
+
         metrics: MetricsAggregator = ctx["metrics"]
         metrics.record_from_api_record(
             rec, scenario_id="S1_book_import", step_id="list_paragraphs"
+        )
+        metrics.record_from_api_record(
+            content_rec, scenario_id="S1_book_import", step_id="list_paragraphs"
         )
 
 
@@ -410,21 +423,25 @@ async def _step_paragraph_stability(ctx: dict[str, Any]) -> None:
 
 
 async def _step_reading_progress(ctx: dict[str, Any]) -> None:
-    """PUT a reading position, then GET and assert fields match (A1 smoke)."""
+    """PUT a reading position, then GET and assert fields match (A1 smoke).
+
+    Probes are unified on chapter 1; the position-switch check jumps from the
+    early paragraph (20) back to paragraph 0 within the same chapter instead
+    of crossing into chapter 2.
+    """
     run_manager: RunManager = ctx["run_manager"]
     config: VerifyConfig = ctx["config"]
     imported_book = ctx.get("imported_book", {})
-    chapters = ctx.get("chapters", [])
-    paragraphs = ctx.get("first_chapter_paragraphs", [])
+    content_paragraphs = ctx.get("content_chapter_paragraphs", [])
 
     book_id = imported_book.get("id")
     assert_that.is_not_none(book_id, "book_id should be set")
 
-    if not paragraphs:
-        raise RuntimeError("No paragraphs available to set reading progress")
+    if not content_paragraphs:
+        raise RuntimeError("No chapter 1 paragraphs available to set reading progress")
 
-    target_chapter = 0
-    target_paragraph = min(20, paragraphs[-1].get("paragraph_idx", 0))
+    target_chapter = CONTENT_CHAPTER_IDX
+    target_paragraph = min(20, content_paragraphs[-1].get("paragraph_idx", 0))
     target_scroll = 0.42
 
     async with TargetClient(
@@ -472,19 +489,19 @@ async def _step_reading_progress(ctx: dict[str, Any]) -> None:
         assert_that.equal(restored["scroll_pct"], target_scroll, label="get_scroll_pct")
         assert_that.is_not_none(restored.get("updated_at"), label="restored_updated_at")
 
-        if len(chapters) >= 2:
-            next_chapter = chapters[1]["idx"]
-            await client.update_progress(book_id, next_chapter, 0, 0.0)
-            switched, rec = await client.get_progress(book_id)
-            validate_reading_progress(switched, rec)
-            assert_that.equal(
-                switched["chapter_idx"],
-                next_chapter,
-                label="chapter_switch_chapter_idx",
-            )
-            assert_that.equal(
-                switched["paragraph_idx"], 0, label="chapter_switch_paragraph_idx"
-            )
+        await client.update_progress(book_id, target_chapter, 0, 0.0)
+        switched, rec = await client.get_progress(book_id)
+        validate_reading_progress(switched, rec)
+        assert_that.equal(
+            switched["chapter_idx"],
+            target_chapter,
+            label="chapter_switch_chapter_idx",
+        )
+        assert_that.equal(
+            switched["paragraph_idx"],
+            0,
+            label="chapter_switch_paragraph_idx",
+        )
 
         metrics: MetricsAggregator = ctx["metrics"]
         metrics.record_from_api_record(

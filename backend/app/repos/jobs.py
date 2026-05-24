@@ -58,7 +58,7 @@ async def update_job_status(
 ) -> None:
     now = _now()
     started_at = now if status == "running" else None
-    completed_at = now if status in ("done", "failed") else None
+    completed_at = now if status in ("done", "failed", "skipped") else None
 
     sets = ["status = ?", "updated_at = ?"]
     params: list[Any] = [status, now]

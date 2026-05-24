@@ -65,7 +65,7 @@ async def run_s3(
     )
     builder.add_step(
         "jump_forward",
-        "Jump from chapter front to middle probe",
+        "Jump forward within chapter 1 to the middle probe paragraph",
         _step_jump_forward,
         timeout_s=30.0,
     )

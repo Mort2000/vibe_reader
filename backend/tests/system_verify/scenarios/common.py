@@ -88,7 +88,7 @@ def get_probe(corpus: CorpusManager, name: str = "early") -> ProbeConfig:
             return probe
     if book.probes:
         return book.probes[0]
-    return ProbeConfig(name="default", chapter_idx=0, paragraph_idx=20)
+    return ProbeConfig(name="default", chapter_idx=1, paragraph_idx=20)
 
 
 async def ensure_imported_book(ctx: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -1916,6 +1916,20 @@ async def fetch_verify_jobs(
     return items
 
 
+def filter_agent_runs_for_chapter(
+    agent_runs: list[dict[str, Any]], chapter_idx: int
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for run in agent_runs:
+        interaction = run.get("interaction") or run
+        run_chapter_idx = run.get("chapter_idx")
+        if run_chapter_idx is None:
+            run_chapter_idx = interaction.get("chapter_idx")
+        if int(run_chapter_idx if run_chapter_idx is not None else -1) == chapter_idx:
+            filtered.append(run)
+    return filtered
+
+
 def save_jump_failure_context(
     ctx: dict[str, Any],
     *,
@@ -1994,11 +2008,18 @@ async def _poll_compaction_verify_jobs(
     )
 
 
+def _job_id(job: dict[str, Any]) -> int:
+    return int(job.get("id") or job.get("job_id") or 0)
+
+
 async def _poll_real_compaction_agent_job(
     client: TargetClient,
     book_id: int,
     chapter_idx: int,
     run_id: str | None,
+    *,
+    scenario_id: str | None = None,
+    min_job_id: int = 0,
 ) -> dict[str, Any] | None:
     if not run_id:
         return None
@@ -2007,7 +2028,33 @@ async def _poll_real_compaction_agent_job(
     agent_runs = await fetch_verify_agent_runs(client, run_id)
     for run in reversed(find_compaction_agent_runs(agent_runs)):
         interaction = run.get("interaction") or run
-        if int(run.get("input_tokens") or interaction.get("input_tokens") or 0) > 0:
+        run_book_id = int(run.get("book_id") or interaction.get("book_id") or 0)
+        run_chapter_idx = int(
+            run.get("chapter_idx")
+            if run.get("chapter_idx") is not None
+            else interaction.get("chapter_idx")
+            if interaction.get("chapter_idx") is not None
+            else -1
+        )
+        if run_book_id != book_id or run_chapter_idx != chapter_idx:
+            continue
+        job_id = int(run.get("job_id") or interaction.get("job_id") or 0)
+        if job_id <= min_job_id:
+            continue
+        if scenario_id:
+            run_scenario = run.get("verify_scenario_id") or interaction.get(
+                "verify_scenario_id"
+            ) or interaction.get("scenario_id")
+            if run_scenario and run_scenario != scenario_id:
+                continue
+        usage = interaction.get("usage") or {}
+        input_tokens = int(
+            run.get("input_tokens")
+            or interaction.get("input_tokens")
+            or usage.get("input_tokens")
+            or 0
+        )
+        if input_tokens > 0:
             return {
                 "id": run.get("job_id") or interaction.get("job_id"),
                 "job_type": "compact_context",
@@ -2016,7 +2063,11 @@ async def _poll_real_compaction_agent_job(
                 "status": "done",
                 "trace_id": run.get("trace_id"),
             }
-        if interaction.get("summary_id") or extract_chapter_summary(interaction):
+        if (
+            interaction.get("summary_id")
+            or interaction.get("next_summary")
+            or extract_chapter_summary(interaction)
+        ):
             return {
                 "id": run.get("job_id") or interaction.get("job_id"),
                 "job_type": "compact_context",
@@ -2037,6 +2088,8 @@ async def wait_for_compaction(
     trace: ReadingTrace,
     *,
     run_id: str | None = None,
+    scenario_id: str | None = None,
+    min_job_id: int = 0,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
     """Wait for compaction completion.
 
@@ -2059,13 +2112,22 @@ async def wait_for_compaction(
             last_failed = failed_jobs[-1]
 
         real_run = await _poll_real_compaction_agent_job(
-            client, book_id, chapter_idx, run_id
+            client,
+            book_id,
+            chapter_idx,
+            run_id,
+            scenario_id=scenario_id,
+            min_job_id=min_job_id,
         )
         if real_run:
             session.ingest_events(trace)
             return real_run, jobs, last_failed
 
-        done_jobs = [job for job in jobs if job.get("status") == "done"]
+        done_jobs = [
+            job
+            for job in jobs
+            if job.get("status") == "done" and _job_id(job) > min_job_id
+        ]
         if done_jobs and not run_id:
             session.ingest_events(trace)
             return done_jobs[-1], jobs, last_failed
@@ -2083,10 +2145,22 @@ async def wait_for_compaction(
                     client, book_id, chapter_idx, run_id=run_id
                 )
                 real_run = await _poll_real_compaction_agent_job(
-                    client, book_id, chapter_idx, run_id
+                    client,
+                    book_id,
+                    chapter_idx,
+                    run_id,
+                    scenario_id=scenario_id,
+                    min_job_id=min_job_id,
                 )
                 if real_run:
                     return real_run, jobs, last_failed
+                done_jobs = [
+                    job
+                    for job in jobs
+                    if job.get("status") == "done" and _job_id(job) > min_job_id
+                ]
+                if done_jobs:
+                    return done_jobs[-1], jobs, last_failed
                 failed_jobs = [job for job in jobs if job.get("status") == "failed"]
                 if failed_jobs:
                     last_failed = failed_jobs[-1]
@@ -2117,9 +2191,17 @@ async def advance_until_compaction(
     config: VerifyConfig,
     batch_size: int | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
-    """Advance reading within the current chapter until compaction completes."""
+    """Advance reading until compaction completes on the start chapter.
+
+    Reads forward from *cursor*, crossing chapter boundaries when the current
+    chapter ends without compaction yet.
+    """
     if batch_size is None:
         batch_size = config.params.compaction_advance_batch_size
+
+    compaction_chapter_idx = cursor.chapter_idx
+    ctx["compaction_chapter_idx"] = compaction_chapter_idx
+    active_session = session
 
     chapter = chapter_by_idx(chapters, cursor.chapter_idx)
     if chapter is None:
@@ -2136,16 +2218,37 @@ async def advance_until_compaction(
     last_job: dict[str, Any] | None = None
     last_failed: dict[str, Any] | None = None
     all_jobs: list[dict[str, Any]] = []
+    baseline_jobs = await _poll_compaction_verify_jobs(
+        client,
+        book_id,
+        compaction_chapter_idx,
+        run_id=ctx["run_manager"].run_id,
+    )
+    min_job_id = max((_job_id(job) for job in baseline_jobs), default=0)
+
+    prior_run = await _poll_real_compaction_agent_job(
+        client,
+        book_id,
+        compaction_chapter_idx,
+        ctx["run_manager"].run_id,
+        scenario_id=None,
+        min_job_id=0,
+    )
+    if prior_run and _job_id(prior_run) <= min_job_id:
+        session.ingest_events(trace)
+        return prior_run, baseline_jobs, None
 
     while time.monotonic() < deadline:
         done_job, jobs, failed_job = await wait_for_compaction(
             client,
-            session,
+            active_session,
             book_id,
-            cursor.chapter_idx,
+            compaction_chapter_idx,
             timeout_s=min(2.0, deadline - time.monotonic()),
             trace=trace,
             run_id=ctx["run_manager"].run_id,
+            scenario_id=scenario_id,
+            min_job_id=min_job_id,
         )
         all_jobs = jobs or all_jobs
         if failed_job:
@@ -2153,12 +2256,30 @@ async def advance_until_compaction(
         if done_job:
             cursor.paragraph_idx = max(cursor.paragraph_idx, next_paragraph)
             ctx["final_paragraph_idx"] = cursor.paragraph_idx
+            ctx["reading_session"] = active_session
             return done_job, all_jobs, last_failed
         if jobs:
             last_job = jobs[-1]
 
         if next_paragraph > chapter_last:
-            break
+            active_session, moved = await _cross_reading_chapter(
+                ctx,
+                cursor,
+                chapters,
+                active_session,
+                scenario_id=scenario_id,
+                book_id=book_id,
+            )
+            if not moved:
+                break
+            ctx["chapter_idx"] = cursor.chapter_idx
+            ctx["reading_session"] = active_session
+            chapter = chapter_by_idx(chapters, cursor.chapter_idx)
+            if chapter is None:
+                break
+            chapter_last = last_paragraph_idx(chapter)
+            next_paragraph = cursor.paragraph_idx
+            continue
 
         end = min(next_paragraph + batch_size, chapter_last)
         last = await advance_reading(
@@ -2176,8 +2297,10 @@ async def advance_until_compaction(
         )
         cursor.paragraph_idx = last
         ctx["final_paragraph_idx"] = last
+        ctx["chapter_idx"] = cursor.chapter_idx
         next_paragraph = last + 1
 
+    ctx["reading_session"] = active_session
     return last_job, all_jobs, last_failed
 
 

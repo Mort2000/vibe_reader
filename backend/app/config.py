@@ -312,6 +312,8 @@ def _apply_context_l2_overlay(
         "max_chunk_paragraphs",
         "target_live_original_tokens",
         "max_live_original_tokens",
+        "min_live_chunks_after_compaction",
+        "preferred_live_chunks_after_compaction",
     ):
         if key in ctx_l2_raw:
             setattr(l2, key, int(ctx_l2_raw[key]))

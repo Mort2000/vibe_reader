@@ -156,9 +156,17 @@ async def _progress_response_fields(
         )
 
         if ctx_result.preflight_triggered:
-            # Submit compaction first so it runs before comment,
-            # ensuring comment uses post-compaction context
-            await job_runner.submit_job(db, "compact_context", book_id, chapter_idx)
+            from ..services.compaction_service import maybe_enqueue_compaction
+
+            # Enqueue compaction first so it runs before comment when eligible.
+            await maybe_enqueue_compaction(
+                db,
+                job_runner,
+                book_id,
+                chapter_idx,
+                settings,
+                preflight_triggered=True,
+            )
 
         await job_runner.submit_job(
             db, "comment_window", book_id, chapter_idx, window_id=window["id"]

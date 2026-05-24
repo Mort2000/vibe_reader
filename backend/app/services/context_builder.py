@@ -415,11 +415,13 @@ async def _check_trigger_conditions(
         max_live_original_tokens,
         max_completed_before_compaction,
     ) = _compaction_preflight_thresholds(settings)
-    preflight_triggered = (
+    min_completed = settings.context_l3.min_completed_l2_chunks_before_compaction
+    volume_pressure = (
         estimated_tokens > preflight_input_tokens
         or live_original_tokens > max_live_original_tokens
         or completed_chunks >= max_completed_before_compaction
     )
+    preflight_triggered = volume_pressure and completed_chunks >= min_completed
     hard_triggered = (
         estimated_tokens > settings.context_l3.compression_trigger_input_tokens
     )

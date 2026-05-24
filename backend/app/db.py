@@ -225,9 +225,6 @@ CREATE INDEX IF NOT EXISTS idx_ai_jobs_book_chapter
 CREATE INDEX IF NOT EXISTS idx_ai_jobs_trace_id
     ON ai_jobs(trace_id);
 
-CREATE INDEX IF NOT EXISTS idx_token_calibrations_lookup
-    ON token_estimation_calibrations(model, prompt_version, language_profile);
-
 CREATE TABLE IF NOT EXISTS verify_agent_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trace_id TEXT NOT NULL UNIQUE,
@@ -275,6 +272,9 @@ CREATE TABLE IF NOT EXISTS token_estimation_calibrations (
     updated_at TEXT NOT NULL,
     UNIQUE(model, prompt_version, language_profile)
 );
+
+CREATE INDEX IF NOT EXISTS idx_token_calibrations_lookup
+    ON token_estimation_calibrations(model, prompt_version, language_profile);
 
 CREATE INDEX IF NOT EXISTS idx_verify_agent_runs_run_id
     ON verify_agent_runs(verify_run_id);

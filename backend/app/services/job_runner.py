@@ -273,6 +273,60 @@ class JobRunner:
                 exc,
             )
 
+    async def _skip_compaction_job(
+        self,
+        db: aiosqlite.Connection,
+        job_id: int,
+        book_id: int,
+        chapter_idx: int,
+        settings: Any,
+    ) -> None:
+        await job_repo.update_job_status(db, job_id, "skipped")
+        logger.info(
+            "job_runner.compaction_skipped",
+            extra={
+                "event": "job_runner.compaction_skipped",
+                "fields": {
+                    "job_id": job_id,
+                    "book_id": book_id,
+                    "chapter_idx": chapter_idx,
+                },
+            },
+        )
+        await self._finalize_job(db, book_id, None, settings)
+
+    async def _record_comment_token_calibration(
+        self,
+        db: aiosqlite.Connection,
+        telemetry: dict[str, Any],
+        settings: Any,
+    ) -> None:
+        if telemetry.get("input_tokens") is None:
+            return
+        prompt_manifest = telemetry.get("prompt_manifest") or {}
+        has_live_chunks = any(
+            c.get("name") == "live_original_chunks"
+            for c in prompt_manifest.get("components", [])
+        )
+        if not has_live_chunks:
+            return
+        estimator = self._token_estimator
+        if estimator is None:
+            from .token_estimator import TokenEstimator
+
+            estimator = TokenEstimator(settings.token_estimation)
+        await estimator.record_observation(
+            db,
+            model=settings.llm.model,
+            prompt_version=telemetry.get("prompt_version", ""),
+            language_profile="cjk_mixed",
+            raw_estimate=telemetry.get(
+                "context_estimated_tokens",
+                prompt_manifest.get("total_estimate", 0),
+            ),
+            actual_tokens=telemetry["input_tokens"],
+        )
+
     async def _run_handler(
         self,
         db: aiosqlite.Connection,
@@ -294,29 +348,14 @@ class JobRunner:
 
         telemetry = await handler(db, job_id, window, settings, self._token_estimator)
 
-        if telemetry and telemetry.get("input_tokens") is not None:
-            prompt_manifest = telemetry.get("prompt_manifest") or {}
-            has_live_chunks = any(
-                c.get("name") == "live_original_chunks"
-                for c in prompt_manifest.get("components", [])
+        if job_type == "compact_context" and telemetry is None:
+            await self._skip_compaction_job(
+                db, job_id, book_id, chapter_idx, settings
             )
-            if has_live_chunks:
-                estimator = self._token_estimator
-                if estimator is None:
-                    from .token_estimator import TokenEstimator
+            return
 
-                    estimator = TokenEstimator(settings.token_estimation)
-                await estimator.record_observation(
-                    db,
-                    model=settings.llm.model,
-                    prompt_version=telemetry.get("prompt_version", ""),
-                    language_profile="cjk_mixed",
-                    raw_estimate=telemetry.get(
-                        "context_estimated_tokens",
-                        prompt_manifest.get("total_estimate", 0),
-                    ),
-                    actual_tokens=telemetry["input_tokens"],
-                )
+        if telemetry:
+            await self._record_comment_token_calibration(db, telemetry, settings)
 
         if telemetry and settings.verify_mode:
             from ..services.verify_telemetry import persist_agent_run
@@ -341,7 +380,16 @@ class JobRunner:
             and telemetry.get("preflight_triggered")
             and job_type == "comment_window"
         ):
-            await self.submit_job(db, "compact_context", book_id, chapter_idx)
+            from .compaction_service import maybe_enqueue_compaction
+
+            await maybe_enqueue_compaction(
+                db,
+                self,
+                book_id,
+                chapter_idx,
+                settings,
+                preflight_triggered=True,
+            )
 
         if telemetry or job_type == "comment_window":
             done_event = (
@@ -545,7 +593,16 @@ class JobRunner:
             )
 
             if ctx_result.preflight_triggered:
-                await self.submit_job(db, "compact_context", book_id, chapter_idx)
+                from ..services.compaction_service import maybe_enqueue_compaction
+
+                await maybe_enqueue_compaction(
+                    db,
+                    self,
+                    book_id,
+                    chapter_idx,
+                    settings,
+                    preflight_triggered=True,
+                )
 
             await self.submit_job(
                 db,

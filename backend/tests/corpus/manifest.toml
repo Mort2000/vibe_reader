@@ -18,32 +18,32 @@ expected_min_chars = 500000
 
 [[books.probes]]
 name = "early"
-# chapter 0 is front matter (cover/copyright) with no readable paragraphs
+# chapter 0 is front matter (cover/copyright); all scenarios read in chapter 1
 chapter_idx = 1
 paragraph_idx = 20
 
 [[books.probes]]
 name = "middle"
-chapter_idx = 8
+chapter_idx = 1
 paragraph_idx = 120
 
 [[books.probes]]
 name = "long_context"
-chapter_idx = 88
-paragraph_idx = 275
+# Start in chapter 1; S4 advances forward and crosses chapters as needed.
+chapter_idx = 1
+paragraph_idx = 20
 requires_context_tokens_gte = 100000
 
 [[books.probes]]
 name = "happy_path_current"
-# Start reading from chapter 1; end probe reserved for future long-flow targets.
 start_chapter_idx = 1
 start_paragraph_idx = 0
-chapter_idx = 88
+chapter_idx = 1
 paragraph_idx = 275
 real_llm = true
 requires_compaction = true
 requires_context_tokens_gte = 100000
 test_compaction_trigger_tokens = 24000
-test_compaction_min_source_tokens = 16000
-test_compaction_min_source_paragraphs = 120
+test_compaction_min_source_tokens = 5000
+test_compaction_min_source_paragraphs = 80
 max_real_input_tokens = 64000

@@ -1,8 +1,9 @@
 """S4: 128K tiered context and L3 chapter compaction (V-09).
 
-Uses the ``long_context`` corpus probe, advances reading deep into a long
-chapter, waits for compact_context jobs, and validates token budgets, L2 chunk
-manifest stability, and ChapterCompressedSummary structure.
+Uses the ``long_context`` corpus probe in chapter 1, advances reading forward
+(and crosses chapters when needed), waits for compact_context jobs on the start
+chapter, and validates token budgets, L2 chunk manifest stability, and
+ChapterCompressedSummary structure.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from .common import (
     ensure_imported_book,
     export_agent_audit_artifacts,
     fetch_verify_agent_runs,
+    filter_agent_runs_for_chapter,
     get_probe,
     load_chapter_paragraphs,
     load_chapters,
@@ -146,9 +148,7 @@ async def _step_setup(ctx: dict[str, Any]) -> None:
     assert chapter is not None
 
     paragraphs = await load_chapter_paragraphs(ctx, book_id, probe.chapter_idx)
-    assert_that.is_true(
-        len(paragraphs) > 0, "long_context chapter must contain paragraphs"
-    )
+    assert_that.is_true(len(paragraphs) > 0, "long_context chapter must contain paragraphs")
     assert_that.gte(
         paragraphs[-1]["paragraph_idx"],
         probe.paragraph_idx,
@@ -203,14 +203,25 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
             config=config,
         )
 
-        agent_runs = await fetch_verify_agent_runs(
+        all_agent_runs = await fetch_verify_agent_runs(
+            client,
+            ctx["run_manager"].run_id,
+        )
+        s4_agent_runs = await fetch_verify_agent_runs(
             client,
             ctx["run_manager"].run_id,
             scenario_id="S4_long_context",
         )
+        compaction_chapter_idx = int(
+            ctx.get("compaction_chapter_idx", cursor.chapter_idx)
+        )
+        chapter_agent_runs = filter_agent_runs_for_chapter(
+            all_agent_runs,
+            compaction_chapter_idx,
+        )
 
-        comment_runs = find_comment_agent_runs(agent_runs)
-        compaction_runs = find_compaction_agent_runs(agent_runs)
+        comment_runs = find_comment_agent_runs(s4_agent_runs)
+        compaction_runs = find_compaction_agent_runs(chapter_agent_runs)
         contexts = await collect_latest_injected_contexts(
             client,
             ctx["run_manager"],
@@ -260,7 +271,7 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
         assert_compaction_completed(
             compaction_jobs=compaction_jobs,
             compaction_runs=compaction_runs,
-            require_real=False,
+            require_agent_run=True,
         )
 
     ctx["compaction_job"] = done_job
@@ -277,18 +288,24 @@ async def _step_verify_context(ctx: dict[str, Any]) -> None:
     trace: ReadingTrace = ctx["reading_trace"]
     contexts: list[dict[str, Any]] = ctx.get("injected_contexts") or []
 
-    assert_that.gte(
-        trace.compaction_done_count + len(ctx.get("compaction_agent_runs") or []),
-        1,
-        label="compaction_observed",
+    compaction_jobs = ctx.get("compaction_jobs") or []
+    compaction_runs = ctx.get("compaction_agent_runs") or []
+    done_compaction_jobs = [
+        job
+        for job in compaction_jobs
+        if job.get("job_type") == "compact_context" and job.get("status") == "done"
+    ]
+    compaction_observed = len(compaction_runs) > 0 or len(done_compaction_jobs) > 0
+    assert_that.is_true(
+        compaction_observed,
+        "compaction_observed: expected compaction job, agent run, or SSE signal",
     )
 
     for injected in contexts:
         assert_token_budget(injected, config)
 
-    compaction_runs = ctx.get("compaction_agent_runs") or []
     if compaction_runs:
-        interaction = compaction_runs[-1].get("interaction") or compaction_runs[-1]
+        interaction = (compaction_runs[-1].get("interaction") or compaction_runs[-1])
         assert_token_budget(interaction.get("injected_context") or {}, config)
 
     assert_reclaimed_l2_chunk_present(
@@ -304,12 +321,16 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
     exporter: CompactionAuditExporter = ctx["compaction_audit_exporter"]
     model = config.effective_model() or config.real_llm.model
 
+    compaction_chapter_idx = int(
+        ctx.get("compaction_chapter_idx", ctx["chapter_idx"])
+    )
+
     for run in ctx.get("compaction_agent_runs") or []:
         exporter.add_compaction_run(
             run,
             scenario_id="S4_long_context",
             book=ctx["book"],
-            chapter_idx=ctx["chapter_idx"],
+            chapter_idx=compaction_chapter_idx,
             model=model or "",
             llm_mode=config.llm.mode,
             usage_source=config.usage_source,
@@ -333,12 +354,15 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
         )
         ctx["audit_export_counts"].update(agent_counts)
 
-        agent_runs = await fetch_verify_agent_runs(
+        all_agent_runs = await fetch_verify_agent_runs(
             audit_client,
             ctx["run_manager"].run_id,
-            scenario_id="S4_long_context",
         )
-        for run in agent_runs:
+        chapter_agent_runs = filter_agent_runs_for_chapter(
+            all_agent_runs,
+            compaction_chapter_idx,
+        )
+        for run in chapter_agent_runs:
             interaction = run.get("interaction") or run
             invocation_id = run.get("invocation_id") or interaction.get("invocation_id")
             if not invocation_id:

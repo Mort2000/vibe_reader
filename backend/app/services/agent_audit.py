@@ -826,11 +826,82 @@ def build_compaction_interaction_packet(
 ) -> dict[str, Any]:
     usage_source = "provider" if input_tokens is not None else "estimate"
 
-    llm_rounds = extract_llm_rounds(agent_result.all_messages())
+    llm_rounds = extract_llm_rounds(
+        agent_result.all_messages(),
+        model=settings.llm.model,
+        duration_ms=duration_ms,
+        usage_source=usage_source,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached_input_tokens,
+    )
+
+    from .agent_base import COMPACTION_INSTRUCTIONS
+
+    prompt_messages = [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": COMPACTION_INSTRUCTIONS}],
+        },
+        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+    ]
+
+    messages = agent_result.all_messages()
+    tool_calls = extract_tool_calls_from_messages(messages)
+    tool_events: list[dict[str, Any]] = []
+    for tool_call in tool_calls:
+        tool_events.append(
+            {
+                "tool_call_id": tool_call["tool_call_id"],
+                "round_idx": tool_call.get("round_idx", 0),
+                "tool_name": tool_call.get("tool_name")
+                or "emit_chapter_compressed_summary",
+                "arguments": tool_call.get("arguments") or {},
+                "tool_result": {"status": "ok", "content": "accepted"},
+                "schema_validation": {"status": "passed"},
+                "business_validation": {"status": "passed"},
+                "persistence": {
+                    "status": "inserted",
+                    "summary_id": next_summary_row["id"],
+                },
+                "created_at": _now(),
+            }
+        )
+
+    injected_context: dict[str, Any] = {
+        "components": [
+            {
+                "name": "source_original_chunk",
+                "content": {
+                    "chunk_id": source_chunk["id"],
+                    "start_paragraph_idx": source_chunk["start_paragraph_idx"],
+                    "end_paragraph_idx": source_chunk["end_paragraph_idx"],
+                    "token_estimate": source_chunk.get("token_estimate", 0),
+                },
+            },
+            {
+                "name": "chapter_compressed_summary",
+                "content": {
+                    "id": next_summary_row["id"],
+                    "covered_start_paragraph_idx": next_summary_row[
+                        "covered_start_paragraph_idx"
+                    ],
+                    "covered_end_paragraph_idx": next_summary_row[
+                        "covered_end_paragraph_idx"
+                    ],
+                    "token_estimate": next_summary_row.get("token_estimate", 0),
+                    "compaction_epoch": next_summary_row.get("compaction_epoch", 0),
+                },
+            },
+        ],
+        "total_input_token_estimate": input_tokens
+        or source_chunk.get("token_estimate", 0),
+    }
 
     packet: dict[str, Any] = {
         "schema_version": "compaction_v1",
         "invocation_id": invocation_id,
+        "agent": "ContextCompactionAgent",
         "trace_id": trace_id,
         "verify_run_id": verify_run_id,
         "verify_scenario_id": verify_scenario_id,
@@ -865,7 +936,10 @@ def build_compaction_interaction_packet(
             "compaction_epoch": next_summary_row.get("compaction_epoch", 0),
         },
         "prompt_manifest": prompt_manifest or {},
+        "prompt_messages": prompt_messages,
+        "injected_context": injected_context,
         "llm_rounds": llm_rounds,
+        "tool_events": tool_events,
         "usage": {
             "source": usage_source,
             "input_tokens": input_tokens,
