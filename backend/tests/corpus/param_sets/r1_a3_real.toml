@@ -1,3 +1,5 @@
+# A3 real compaction — aligned with manifest happy_path_current probe (5000/80)
+# and verify.toml deliberate 7K L2 chunk overlay (not design 24K defaults).
 name = "r1_a3_real"
 llm_mode = "real"
 
@@ -11,8 +13,8 @@ max_wait_chat_s = 120
 [long_flow]
 require_compaction = true
 test_compaction_trigger_tokens = 24000
-test_compaction_min_source_tokens = 16000
-test_compaction_min_source_paragraphs = 120
+test_compaction_min_source_tokens = 5000
+test_compaction_min_source_paragraphs = 80
 min_comment_windows = 2
 min_chat_turns = 1
 reading_stop_mode = "comment_windows"

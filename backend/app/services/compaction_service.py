@@ -15,6 +15,7 @@ from ..observability import (
     get_verify_scenario_id,
     get_verify_step_id,
 )
+from ..repos import books as book_repo
 from ..repos import chunks as chunk_repo
 from ..repos import context_state
 from ..repos import paragraphs as paragraph_repo
@@ -221,8 +222,6 @@ async def run_compaction_task(
         chapter_idx,
         frontier_pidx,
         min_live_chunks_after_compaction=settings.context_l2.min_live_chunks_after_compaction,
-        preferred_live_chunks_after_compaction=settings.context_l2.preferred_live_chunks_after_compaction,
-        context_pressure=True,
     )
     if source_chunk is None:
         logger.info(
@@ -359,6 +358,9 @@ async def run_compaction_task(
             if usage.response_tokens is not None
             else usage.output_tokens
         )
+        # Audit-only lookup (verify_mode): enrich markdown report with book title.
+        # Not on the production hot path; book_id alone is insufficient for human-readable exports.
+        book = await book_repo.get_book(db, book_id)
         interaction = build_compaction_interaction_packet(
             invocation_id=invocation_id,
             trace_id=trace_id,
@@ -367,6 +369,7 @@ async def run_compaction_task(
             verify_step_id=get_verify_step_id(),
             job_id=job_id,
             book_id=book_id,
+            book=book or {"id": book_id},
             chapter_idx=chapter_idx,
             source_chunk=source_chunk,
             previous_summary_row=previous_summary_row,
@@ -453,8 +456,6 @@ async def select_compaction_source_for_chapter(
     book_id: int,
     chapter_idx: int,
     settings: Settings,
-    *,
-    context_pressure: bool = True,
 ) -> dict[str, Any] | None:
     """Return the earliest eligible L2 chunk for compaction, if any."""
     frontier_pidx = await _compaction_frontier_paragraph_idx(db, book_id, chapter_idx)
@@ -464,8 +465,6 @@ async def select_compaction_source_for_chapter(
         chapter_idx,
         frontier_pidx,
         min_live_chunks_after_compaction=settings.context_l2.min_live_chunks_after_compaction,
-        preferred_live_chunks_after_compaction=settings.context_l2.preferred_live_chunks_after_compaction,
-        context_pressure=context_pressure,
     )
 
 
@@ -487,7 +486,6 @@ async def maybe_enqueue_compaction(
         book_id,
         chapter_idx,
         settings,
-        context_pressure=True,
     )
     if source_chunk is None:
         logger.info(

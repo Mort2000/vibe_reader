@@ -46,6 +46,14 @@ tests/corpus/param_sets/
 
 `real-happy-path` 套件在未显式指定参数集时，按 `--llm-mode`（或默认 stub）自动选择 `r1_{A2|A3}_{stub|real}`。
 
+### Verify 7K L2 配置平面（A3 deliberate）
+
+`verify.toml` 中 `[app.context_l2]` 使用 **7K 分块**（`target=7000 / min=5000 / max=9000`），刻意偏离 design 默认 24K，以便 ch1 语料切出 ≥3 个 L2 块并触发压缩。该平面仅用于 **机制验收**，不代表生产 24K 配置。
+
+源块断言门槛以 `manifest.toml` 的 `happy_path_current` probe 为准（5000 tokens / 80 paragraphs）。`r1_a3_{stub|real}.toml` 的 `[long_flow]` 应与 probe 对齐；若 param set 与 probe 不一致，运行时以 **probe 优先**（`probe || long_flow`）。
+
+修改 `[app.context_l2]` 后须完整重跑验证（框架 pre-run reset 会清 data_dir 并重 import），勿用 `--keep-data` 保留旧 chunk 布局。
+
 ## LLM 模式
 
 | 模式 | 默认 | 外部网络 | 用途 |
@@ -163,7 +171,11 @@ cd backend
 set -a && source ../.env && set +a
 
 # 默认 stub 回归（含 R1 stub）
+# 无 live backend 时 test_scenarios.py 会 SKIP；纯单元测试仍照常运行
 uv run pytest tests/system_verify/ -m "system_verify and system and not real_llm"
+
+# CI 期望联调必须跑通时使用（前置不满足则 FAIL 而非 SKIP）
+uv run pytest tests/system_verify/test_scenarios.py -m "system and not real_llm" --require-integration --spawn-backend
 
 # 完整 stub 套件
 uv run pytest tests/system_verify/test_scenarios.py::test_mvp_suite -m system

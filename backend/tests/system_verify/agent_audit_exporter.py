@@ -21,6 +21,37 @@ _SECRET_LITERAL_PATTERNS = (
 )
 
 
+def normalize_audit_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    """Align legacy compaction interaction JSON with comment audit field names.
+
+    Pre-P6 compaction packets persisted ``verify_run_id`` / ``verify_scenario_id``
+    / ``verify_step_id`` only. New packets write canonical ``run_id`` /
+    ``scenario_id`` / ``step_id`` (see build_compaction_interaction_packet).
+    """
+    normalized = dict(packet)
+    normalized.setdefault("run_id", normalized.get("verify_run_id"))
+    normalized.setdefault("scenario_id", normalized.get("verify_scenario_id"))
+    normalized.setdefault("step_id", normalized.get("verify_step_id"))
+
+    if not normalized.get("book") and normalized.get("book_id") is not None:
+        normalized["book"] = {"id": normalized["book_id"]}
+
+    if not normalized.get("model"):
+        for round_item in normalized.get("llm_rounds") or []:
+            request = round_item.get("request") or {}
+            model = request.get("model")
+            if model:
+                normalized["model"] = model
+                break
+
+    if not normalized.get("prompt_version"):
+        agent = str(normalized.get("agent") or "")
+        if "Compaction" in agent:
+            normalized["prompt_version"] = "chapter_compaction_v1"
+
+    return normalized
+
+
 def scan_for_secret_leaks(text: str) -> list[str]:
     findings: list[str] = []
     for pattern in _SECRET_LITERAL_PATTERNS:
@@ -53,7 +84,7 @@ class AgentAuditExporter:
             interaction = run.get("interaction")
             if not interaction:
                 continue
-            packet = dict(interaction)
+            packet = normalize_audit_packet(dict(interaction))
             packet.setdefault("invocation_id", run.get("invocation_id") or "")
             packet.setdefault("run_id", self.run_manager.run_id)
             packet["llm_mode"] = self.config.llm.mode

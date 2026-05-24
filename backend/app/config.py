@@ -55,7 +55,6 @@ class ContextL2Config:
     target_live_original_tokens: int = 96_000
     max_live_original_tokens: int = 112_000
     min_live_chunks_after_compaction: int = 2
-    preferred_live_chunks_after_compaction: int = 3
     compaction_reclaim_chunk_count: int = 1
 
 
@@ -313,7 +312,6 @@ def _apply_context_l2_overlay(
         "target_live_original_tokens",
         "max_live_original_tokens",
         "min_live_chunks_after_compaction",
-        "preferred_live_chunks_after_compaction",
     ):
         if key in ctx_l2_raw:
             setattr(l2, key, int(ctx_l2_raw[key]))
@@ -460,9 +458,6 @@ def load_settings() -> Settings:
         max_live_original_tokens=ctx_l2_raw.get("max_live_original_tokens", 112_000),
         min_live_chunks_after_compaction=ctx_l2_raw.get(
             "min_live_chunks_after_compaction", 2
-        ),
-        preferred_live_chunks_after_compaction=ctx_l2_raw.get(
-            "preferred_live_chunks_after_compaction", 3
         ),
         compaction_reclaim_chunk_count=ctx_l2_raw.get(
             "compaction_reclaim_chunk_count", 1

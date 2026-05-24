@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.services.agent_audit import (
     CURRENT_WINDOW_TAG,
     _round_usage,
     _split_user_prompt_segments,
+    build_compaction_interaction_packet,
     build_tool_events,
 )
 from app.services.agent_audit_store import (
@@ -93,3 +95,54 @@ def test_persist_and_load_interaction_packet(tmp_path: Path) -> None:
     loaded = load_interaction_packet(tmp_path, rel)
     assert loaded == packet
     assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == packet
+
+
+def test_build_compaction_interaction_packet_includes_report_metadata() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(model="deepseek-v4-flash"))
+
+    class _Result:
+        @staticmethod
+        def all_messages():
+            return []
+
+    packet = build_compaction_interaction_packet(
+        invocation_id="inv_compaction_R1_0001",
+        trace_id="trace_x",
+        verify_run_id="run_1",
+        verify_scenario_id="R1_real_happy_path",
+        verify_step_id="advance_for_compaction",
+        job_id=5,
+        book_id=1,
+        book={"id": 1, "title": "Test Book", "file_hash": "abc"},
+        chapter_idx=1,
+        source_chunk={
+            "id": 2,
+            "chunk_seq": 0,
+            "start_paragraph_idx": 0,
+            "end_paragraph_idx": 179,
+            "token_estimate": 7106,
+            "text_hash": "deadbeef",
+        },
+        previous_summary_row=None,
+        next_summary_row={
+            "id": 1,
+            "covered_start_paragraph_idx": 0,
+            "covered_end_paragraph_idx": 179,
+            "token_estimate": 331,
+            "compaction_epoch": 1,
+        },
+        prompt="compaction prompt",
+        agent_result=_Result(),
+        settings=settings,
+        duration_ms=100.0,
+        input_tokens=8235,
+        output_tokens=446,
+        cached_input_tokens=3840,
+        transaction_committed=True,
+    )
+    assert packet["scenario_id"] == "R1_real_happy_path"
+    assert packet["step_id"] == "advance_for_compaction"
+    assert packet["model"] == "deepseek-v4-flash"
+    assert packet["book"]["title"] == "Test Book"
+    assert packet["prompt_version"] == "chapter_compaction_v1"
+    assert "verify_scenario_id" not in packet

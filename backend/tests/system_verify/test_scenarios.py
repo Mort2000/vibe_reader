@@ -12,6 +12,9 @@ from .scenarios.s3_fast_scroll import run_s3
 from .scenarios.s4_long_context import run_s4
 from .suite import run_mvp_suite, run_real_happy_path_suite
 
+# All tests in this module require a live backend; skip when prerequisites fail.
+pytestmark = pytest.mark.usefixtures("require_integration_ready")
+
 
 def _with_param_set(verify_config, name: str):
     apply_param_set(verify_config, name)

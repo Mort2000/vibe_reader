@@ -19,7 +19,7 @@ from pydantic_ai.messages import (
 
 from ..config import Settings
 from .agent_base import COMMENT_INSTRUCTIONS, CommentDensityHint
-from .verify_telemetry import PROMPT_VERSION
+from .verify_telemetry import COMPACTION_PROMPT_VERSION, PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -810,6 +810,7 @@ def build_compaction_interaction_packet(
     verify_step_id: str,
     job_id: int,
     book_id: int,
+    book: dict[str, Any],
     chapter_idx: int,
     source_chunk: dict[str, Any],
     previous_summary_row: dict[str, Any] | None,
@@ -897,18 +898,33 @@ def build_compaction_interaction_packet(
         "total_input_token_estimate": input_tokens
         or source_chunk.get("token_estimate", 0),
     }
+    context_hash = sha256_text(prompt)
+    book_payload = {
+        "id": book.get("id", book_id),
+        "title": book.get("title"),
+        "corpus_sha256": book.get("corpus_sha256") or book.get("file_hash"),
+    }
 
     packet: dict[str, Any] = {
         "schema_version": "compaction_v1",
         "invocation_id": invocation_id,
+        # Canonical audit fields (aligned with build_comment_interaction_packet).
+        # Pre-P6 compaction packets used verify_* keys only; verify-side
+        # normalize_audit_packet() maps those when re-exporting legacy runs.
+        "run_id": verify_run_id,
+        "scenario_id": verify_scenario_id,
+        "step_id": verify_step_id,
         "agent": "ContextCompactionAgent",
+        "llm_mode": None,
+        "stub_profile": None,
+        "model": settings.llm.model,
+        "book": book_payload,
+        "chapter_idx": chapter_idx,
+        "prompt_version": COMPACTION_PROMPT_VERSION,
+        "context_hash": context_hash,
         "trace_id": trace_id,
-        "verify_run_id": verify_run_id,
-        "verify_scenario_id": verify_scenario_id,
-        "verify_step_id": verify_step_id,
         "job_id": job_id,
         "book_id": book_id,
-        "chapter_idx": chapter_idx,
         "source_chunk": {
             "id": source_chunk["id"],
             "chunk_seq": source_chunk.get("chunk_seq"),
@@ -946,8 +962,14 @@ def build_compaction_interaction_packet(
             "output_tokens": output_tokens,
             "cached_input_tokens": cached_input_tokens,
         },
+        "timing": {
+            "total_ms": duration_ms,
+            "ttft_ms": None,
+            "retry_count": 0,
+        },
         "duration_ms": duration_ms,
         "transaction_committed": transaction_committed,
+        "markdown_report_path": f"audit/agent_reports/{invocation_id}.md",
         "created_at": _now(),
     }
 

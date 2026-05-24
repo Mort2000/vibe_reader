@@ -24,6 +24,8 @@ from ..sse_collector import SSEEvent, SSEEventCollector
 
 logger = logging.getLogger(__name__)
 
+COMPACTION_NOOP_FAIL_FAST_S = 30.0
+
 
 @dataclass
 class ReadingTrace:
@@ -1990,6 +1992,7 @@ async def _poll_compaction_verify_jobs(
     chapter_idx: int,
     *,
     run_id: str | None,
+    min_job_id: int = 0,
 ) -> list[dict[str, Any]]:
     jobs = await fetch_verify_jobs(
         client,
@@ -1998,18 +2001,123 @@ async def _poll_compaction_verify_jobs(
         job_type="compact_context",
         run_id=run_id,
     )
-    if jobs:
-        return jobs
-    return await fetch_verify_jobs(
-        client,
-        book_id,
-        chapter_idx,
-        job_type="compact_context",
-    )
+    if not jobs:
+        jobs = await fetch_verify_jobs(
+            client,
+            book_id,
+            chapter_idx,
+            job_type="compact_context",
+        )
+    return _filter_compaction_jobs(jobs, min_job_id=min_job_id)
 
 
 def _job_id(job: dict[str, Any]) -> int:
     return int(job.get("id") or job.get("job_id") or 0)
+
+
+def _filter_compaction_jobs(
+    jobs: list[dict[str, Any]], *, min_job_id: int = 0
+) -> list[dict[str, Any]]:
+    if min_job_id <= 0:
+        return jobs
+    return [job for job in jobs if _job_id(job) > min_job_id]
+
+
+def append_compaction_jobs_audit(
+    run_manager: RunManager,
+    jobs: list[dict[str, Any]],
+    *,
+    scenario_id: str,
+    min_job_id: int = 0,
+) -> None:
+    """Append filtered compaction job records for summary reporting."""
+    filtered = _filter_compaction_jobs(jobs, min_job_id=min_job_id)
+    if not filtered:
+        return
+
+    audit_dir = run_manager.base_dir / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    path = audit_dir / "compaction_jobs.ndjson"
+    summary = {"done": 0, "skipped": 0, "failed": 0, "other": 0}
+    for job in filtered:
+        status = str(job.get("status") or "other")
+        if status in summary:
+            summary[status] += 1
+        else:
+            summary["other"] += 1
+
+    import json
+    from datetime import datetime, timezone
+
+    row = {
+        "scenario_id": scenario_id,
+        "min_job_id": min_job_id,
+        "job_count": len(filtered),
+        "summary": summary,
+        "jobs": filtered,
+        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+@dataclass
+class CompactionNoopTracker:
+    """Fail fast when done compaction jobs lack agent-run evidence."""
+
+    first_seen_at: float | None = None
+
+    def check(
+        self,
+        *,
+        done_job: dict[str, Any] | None,
+        has_agent_run: bool,
+        scenario_id: str,
+        jobs: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if done_job and not has_agent_run:
+            now = time.monotonic()
+            if self.first_seen_at is None:
+                self.first_seen_at = now
+                return
+            if now - self.first_seen_at >= COMPACTION_NOOP_FAIL_FAST_S:
+                raise StepAssertionError(
+                    assertion="compaction_noop_done",
+                    message=(
+                        "Compaction job marked done but ContextCompactionAgent run "
+                        f"missing evidence for {COMPACTION_NOOP_FAIL_FAST_S:.0f}s"
+                    ),
+                    expected="compaction agent run with summary or token usage",
+                    actual={
+                        "scenario_id": scenario_id,
+                        "done_job": done_job,
+                        "jobs_seen": len(jobs or []),
+                    },
+                )
+            return
+        self.first_seen_at = None
+
+
+async def _compaction_has_agent_run(
+    client: TargetClient,
+    book_id: int,
+    chapter_idx: int,
+    run_id: str | None,
+    *,
+    scenario_id: str | None,
+    min_job_id: int,
+) -> bool:
+    return (
+        await _poll_real_compaction_agent_job(
+            client,
+            book_id,
+            chapter_idx,
+            run_id,
+            scenario_id=scenario_id,
+            min_job_id=min_job_id,
+        )
+        is not None
+    )
 
 
 async def _poll_real_compaction_agent_job(
@@ -2105,7 +2213,7 @@ async def wait_for_compaction(
 
     while time.monotonic() < deadline:
         jobs = await _poll_compaction_verify_jobs(
-            client, book_id, chapter_idx, run_id=run_id
+            client, book_id, chapter_idx, run_id=run_id, min_job_id=min_job_id
         )
         failed_jobs = [job for job in jobs if job.get("status") == "failed"]
         if failed_jobs:
@@ -2142,7 +2250,11 @@ async def wait_for_compaction(
             if evt:
                 session.ingest_events(trace)
                 jobs = await _poll_compaction_verify_jobs(
-                    client, book_id, chapter_idx, run_id=run_id
+                    client,
+                    book_id,
+                    chapter_idx,
+                    run_id=run_id,
+                    min_job_id=min_job_id,
                 )
                 real_run = await _poll_real_compaction_agent_job(
                     client,
@@ -2171,7 +2283,13 @@ async def wait_for_compaction(
     session.ingest_events(trace)
     return (
         None,
-        await _poll_compaction_verify_jobs(client, book_id, chapter_idx, run_id=run_id),
+        await _poll_compaction_verify_jobs(
+            client,
+            book_id,
+            chapter_idx,
+            run_id=run_id,
+            min_job_id=min_job_id,
+        ),
         last_failed,
     )
 
@@ -2225,17 +2343,25 @@ async def advance_until_compaction(
         run_id=ctx["run_manager"].run_id,
     )
     min_job_id = max((_job_id(job) for job in baseline_jobs), default=0)
+    noop_tracker = CompactionNoopTracker()
+    run_id = ctx["run_manager"].run_id
 
     prior_run = await _poll_real_compaction_agent_job(
         client,
         book_id,
         compaction_chapter_idx,
-        ctx["run_manager"].run_id,
+        run_id,
         scenario_id=None,
         min_job_id=0,
     )
     if prior_run and _job_id(prior_run) <= min_job_id:
         session.ingest_events(trace)
+        append_compaction_jobs_audit(
+            ctx["run_manager"],
+            baseline_jobs,
+            scenario_id=scenario_id,
+            min_job_id=min_job_id,
+        )
         return prior_run, baseline_jobs, None
 
     while time.monotonic() < deadline:
@@ -2246,7 +2372,7 @@ async def advance_until_compaction(
             compaction_chapter_idx,
             timeout_s=min(2.0, deadline - time.monotonic()),
             trace=trace,
-            run_id=ctx["run_manager"].run_id,
+            run_id=run_id,
             scenario_id=scenario_id,
             min_job_id=min_job_id,
         )
@@ -2254,10 +2380,31 @@ async def advance_until_compaction(
         if failed_job:
             last_failed = failed_job
         if done_job:
-            cursor.paragraph_idx = max(cursor.paragraph_idx, next_paragraph)
-            ctx["final_paragraph_idx"] = cursor.paragraph_idx
-            ctx["reading_session"] = active_session
-            return done_job, all_jobs, last_failed
+            has_agent_run = await _compaction_has_agent_run(
+                client,
+                book_id,
+                compaction_chapter_idx,
+                run_id,
+                scenario_id=scenario_id,
+                min_job_id=min_job_id,
+            )
+            noop_tracker.check(
+                done_job=done_job,
+                has_agent_run=has_agent_run,
+                scenario_id=scenario_id,
+                jobs=jobs,
+            )
+            if has_agent_run or not run_id:
+                cursor.paragraph_idx = max(cursor.paragraph_idx, next_paragraph)
+                ctx["final_paragraph_idx"] = cursor.paragraph_idx
+                ctx["reading_session"] = active_session
+                append_compaction_jobs_audit(
+                    ctx["run_manager"],
+                    all_jobs,
+                    scenario_id=scenario_id,
+                    min_job_id=min_job_id,
+                )
+                return done_job, all_jobs, last_failed
         if jobs:
             last_job = jobs[-1]
 
@@ -2301,6 +2448,12 @@ async def advance_until_compaction(
         next_paragraph = last + 1
 
     ctx["reading_session"] = active_session
+    append_compaction_jobs_audit(
+        ctx["run_manager"],
+        all_jobs,
+        scenario_id=scenario_id,
+        min_job_id=min_job_id,
+    )
     return last_job, all_jobs, last_failed
 
 
@@ -2493,6 +2646,15 @@ async def advance_until_compaction_then_post_windows(
     all_jobs: list[dict[str, Any]] = []
     done_job: dict[str, Any] | None = None
     chapter_end_nudged = False
+    run_id = ctx["run_manager"].run_id
+    baseline_jobs = await _poll_compaction_verify_jobs(
+        client,
+        book_id,
+        cursor.chapter_idx,
+        run_id=run_id,
+    )
+    min_job_id = max((_job_id(job) for job in baseline_jobs), default=0)
+    noop_tracker = CompactionNoopTracker()
 
     while time.monotonic() < deadline:
         done_job, jobs, failed_job = await wait_for_compaction(
@@ -2502,13 +2664,39 @@ async def advance_until_compaction_then_post_windows(
             cursor.chapter_idx,
             timeout_s=min(2.0, deadline - time.monotonic()),
             trace=trace,
-            run_id=ctx["run_manager"].run_id,
+            run_id=run_id,
+            scenario_id=scenario_id,
+            min_job_id=min_job_id,
         )
         all_jobs = jobs or all_jobs
         if failed_job:
             last_failed = failed_job
+            # R1 A3 happy path: compaction must succeed before post-compaction windows.
+            # Contrast advance_until_compaction (S4), which records failure and lets the
+            # scenario assert comments remain observable despite compaction failure.
+            raise StepAssertionError(
+                assertion="compaction_job_failed",
+                message="Compaction job failed during advance_until_compaction_then_post_windows",
+                expected="done compaction job",
+                actual=failed_job,
+            )
         if done_job:
-            break
+            has_agent_run = await _compaction_has_agent_run(
+                client,
+                book_id,
+                cursor.chapter_idx,
+                run_id,
+                scenario_id=scenario_id,
+                min_job_id=min_job_id,
+            )
+            noop_tracker.check(
+                done_job=done_job,
+                has_agent_run=has_agent_run,
+                scenario_id=scenario_id,
+                jobs=jobs,
+            )
+            if has_agent_run or not run_id:
+                break
 
         if next_paragraph <= chapter_last:
             end = min(next_paragraph + batch_size - 1, chapter_last)
@@ -2594,6 +2782,12 @@ async def advance_until_compaction_then_post_windows(
     )
     ctx["post_compaction_comment_windows_completed"] = completed_post
     ctx["reading_session"] = session
+    append_compaction_jobs_audit(
+        ctx["run_manager"],
+        all_jobs,
+        scenario_id=scenario_id,
+        min_job_id=min_job_id,
+    )
     return done_job, all_jobs, last_failed
 
 

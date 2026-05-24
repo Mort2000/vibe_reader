@@ -27,6 +27,13 @@ def test_apply_r1_a2_real_param_set() -> None:
     assert config.metrics.collect_provider_usage is True
 
 
+def test_apply_r1_a3_real_param_set_matches_probe() -> None:
+    config = load_verify_config("tests/corpus/verify.toml", param_set="r1_a3_real")
+    assert config.params.name == "r1_a3_real"
+    assert config.params.long_flow.test_compaction_min_source_tokens == 5000
+    assert config.params.long_flow.test_compaction_min_source_paragraphs == 80
+
+
 def test_apply_param_set_llm_mode_conflict() -> None:
     config = load_verify_config("tests/corpus/verify.toml")
     with pytest.raises(ValueError, match="conflicts"):

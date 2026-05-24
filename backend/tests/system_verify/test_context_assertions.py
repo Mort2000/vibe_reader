@@ -107,6 +107,38 @@ def test_extract_chapter_summary_from_final_result() -> None:
     assert summary["summary"] == "compressed chapter"
 
 
+def test_extract_chapter_summary_from_tool_events_raw_payload() -> None:
+    payload = {
+        "next_summary": {
+            "id": 1,
+            "covered_start": 0,
+            "covered_end": 179,
+            "compaction_epoch": 1,
+        },
+        "tool_events": [
+            {
+                "tool_name": "emit_chapter_compressed_summary",
+                "arguments": {
+                    "payload": {
+                        "raw": (
+                            '{"payload": {"summary": "章节摘要", '
+                            '"anchor_excerpts": ["锚点"], '
+                            '"covered_start_paragraph_idx": 0, '
+                            '"covered_end_paragraph_idx": 179}}'
+                        )
+                    }
+                },
+            }
+        ],
+    }
+    summary = extract_chapter_summary(payload)
+    assert summary is not None
+    assert summary["summary"] == "章节摘要"
+    assert summary["anchor_excerpts"] == ["锚点"]
+    assert summary["id"] == 1
+    assert summary["covered_end_paragraph_idx"] == 179
+
+
 def test_assert_token_budget_uses_emergency_cap() -> None:
     config = VerifyConfig(context=ContextConfig(emergency_input_cap_tokens=160_000))
     assert_token_budget({"total_input_token_estimate": 120_000}, config)
