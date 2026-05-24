@@ -75,13 +75,13 @@ async def run_s2(
         "advance_reading",
         "Advance reading from early probe to trigger comment window",
         _step_advance,
-        timeout_s=float(config.run.max_wait_comment_window_s) + 30.0,
+        timeout_s=float(config.params.max_wait_comment_window_s) + 30.0,
     )
     builder.add_step(
         "wait_window_done",
         "Wait for comment window completion",
         _step_wait_window,
-        timeout_s=float(config.run.max_wait_comment_window_s),
+        timeout_s=float(config.params.max_wait_comment_window_s),
     )
     builder.add_step(
         "verify_comments",
@@ -199,7 +199,7 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
             scenario_id="S2_continuous_reading",
             step_id="advance_reading",
             metrics=metrics,
-            delay_ms=config.effective_progress_step_delay_ms,
+            delay_ms=config.params.progress_step_delay_ms,
         )
         ctx["final_paragraph_idx"] = final
 
@@ -222,7 +222,7 @@ async def _step_wait_window(ctx: dict[str, Any]) -> None:
             ctx["book_id"],
             ctx["chapter_idx"],
             ctx["final_paragraph_idx"],
-            float(config.run.max_wait_comment_window_s),
+            float(config.params.max_wait_comment_window_s),
             trace,
         )
         session.ingest_events(trace)
@@ -255,7 +255,7 @@ async def _step_verify_comments(ctx: dict[str, Any]) -> None:
             ctx["book_id"],
             ctx["chapter_idx"],
             min_count=0,
-            timeout_s=float(config.run.max_wait_comment_window_s),
+            timeout_s=float(config.params.max_wait_comment_window_s),
         )
 
         body, rec = await client.list_comments(ctx["book_id"], ctx["chapter_idx"])

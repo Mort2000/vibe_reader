@@ -72,7 +72,7 @@ async def run_s4(
         "advance_reading",
         "Advance from long_context probe until compaction completes",
         _step_advance,
-        timeout_s=float(config.run.max_wait_compaction_s) + 120.0,
+        timeout_s=float(config.params.max_wait_compaction_s) + 120.0,
     )
     builder.add_step(
         "verify_context",

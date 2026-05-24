@@ -620,7 +620,7 @@ async def drain_chapter_comment_jobs(
     timeout_s: float | None = None,
 ) -> None:
     """Wait until all comment_window jobs for *chapter_idx* finish."""
-    max_wait = float(config.run.max_wait_comment_window_s)
+    max_wait = float(config.params.max_wait_comment_window_s)
     if timeout_s is None:
         timeout_s = max_wait * 40
     deadline = time.monotonic() + timeout_s
@@ -702,9 +702,9 @@ async def advance_start_chapter_sync_then_cross(
 
     chapter_last = last_paragraph_idx(chapter)
     if read_batch_size is None:
-        read_batch_size = config.effective_read_batch_size
-    delay_ms = config.effective_progress_step_delay_ms
-    max_wait = float(config.run.max_wait_comment_window_s)
+        read_batch_size = config.params.read_batch_size
+    delay_ms = config.params.progress_step_delay_ms
+    max_wait = float(config.params.max_wait_comment_window_s)
 
     next_paragraph = cursor.paragraph_idx
     while cursor.chapter_idx == start_chapter_idx and next_paragraph <= chapter_last:
@@ -1485,11 +1485,15 @@ def assert_comments_valid(
         if allow_no_call and window_is_no_call(window, scoped_comments):
             return validation_failures
         if window and window.get("status") == "done":
-            if config is not None and not config.is_real_llm:
+            if (
+                config is not None
+                and config.params.assertions.strict_done_without_comments
+            ):
                 raise StepAssertionError(
                     assertion="done_with_zero_comments",
                     message=(
-                        "Stub mode: done window with zero comments and no no_call marker"
+                        "Param set requires comments or no_call for done windows "
+                        "but found zero comments and no no_call marker"
                     ),
                     expected="persisted comments or explicit no-call window",
                     actual={"window": window, "comments": scoped_comments},
@@ -1665,7 +1669,7 @@ async def sync_real_llm_tracker_from_verify_metrics(
         tracker.output_tokens = output_total
         tracker.max_input_tokens_single = max_input
         tracker.max_output_tokens_single = max_output
-        if config.is_real_llm:
+        if config.params.budget.enforce:
             tracker._check_per_call_limits(config, max_input, max_output)
 
     return body
@@ -2100,7 +2104,7 @@ async def advance_until_compaction(
 
     chapter_last = last_paragraph_idx(chapter)
     next_paragraph = cursor.paragraph_idx
-    timeout_s = float(config.run.max_wait_compaction_s)
+    timeout_s = float(config.params.max_wait_compaction_s)
     deadline = time.monotonic() + timeout_s
     last_job: dict[str, Any] | None = None
     last_failed: dict[str, Any] | None = None
@@ -2166,8 +2170,8 @@ async def _advance_post_compaction_comment_windows(
     post_comment_windows: int,
 ) -> tuple[int, ReadingSession]:
     """Re-read after compaction so new comment windows include chapter summary."""
-    post_batch = max(12, config.effective_read_batch_size // 4)
-    max_wait = float(config.run.max_wait_comment_window_s)
+    post_batch = max(12, config.params.read_batch_size // 4)
+    max_wait = float(config.params.max_wait_comment_window_s)
     completed_post = 0
     active_session = session
     chapter_rewind_done = False
@@ -2180,7 +2184,7 @@ async def _advance_post_compaction_comment_windows(
 
         if cursor.paragraph_idx >= chapter_last and not chapter_rewind_done:
             rewind = min(
-                max(post_batch, config.effective_read_batch_size),
+                max(post_batch, config.params.read_batch_size),
                 chapter_last,
             )
             back = max(0, chapter_last - rewind)
@@ -2306,9 +2310,9 @@ async def advance_until_compaction_then_post_windows(
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
     """Advance with large batches until compaction, then finish a few comment windows."""
     if batch_size is None:
-        batch_size = config.effective_compaction_advance_batch_size
+        batch_size = config.params.compaction_advance_batch_size
     if post_comment_windows is None:
-        post_comment_windows = config.real_llm.long_flow.post_compaction_comment_windows
+        post_comment_windows = config.params.long_flow.post_compaction_comment_windows
 
     chapter = chapter_by_idx(chapters, cursor.chapter_idx)
     if chapter is None:
@@ -2332,9 +2336,9 @@ async def advance_until_compaction_then_post_windows(
             step_id=step_id,
             metrics=metrics,
         )
-    timeout_s = float(config.run.max_wait_compaction_s)
+    timeout_s = float(config.params.max_wait_compaction_s)
     deadline = time.monotonic() + timeout_s
-    max_wait = float(config.run.max_wait_comment_window_s)
+    max_wait = float(config.params.max_wait_comment_window_s)
     last_failed: dict[str, Any] | None = None
     all_jobs: list[dict[str, Any]] = []
     done_job: dict[str, Any] | None = None

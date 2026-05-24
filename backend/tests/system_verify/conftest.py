@@ -45,7 +45,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         default=None,
         choices=["stub", "real"],
-        help="Override verification LLM mode (default: stub)",
+        help="Override verification LLM mode (must match param set)",
+    )
+    parser.addoption(
+        "--param-set",
+        action="store",
+        default=None,
+        help="Named verification param set",
     )
     parser.addoption(
         "--verify-run-id",
@@ -76,13 +82,12 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(scope="session")
 def verify_config(request: pytest.FixtureRequest) -> VerifyConfig:
-    cfg = load_verify_config()
+    param_set = request.config.getoption("--param-set")
     llm_mode = request.config.getoption("--llm-mode")
-    if llm_mode:
-        cfg.llm.mode = llm_mode
-        if llm_mode == "real":
-            cfg.metrics.collect_provider_usage = True
-    return cfg
+    return load_verify_config(
+        param_set=param_set,
+        llm_mode_override=llm_mode,
+    )
 
 
 @pytest.fixture(scope="session")

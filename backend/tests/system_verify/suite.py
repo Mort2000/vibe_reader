@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .config import VerifyConfig, validate_real_llm_config
@@ -9,6 +10,8 @@ from .corpus import CorpusManager
 from .metrics_collector import MetricsAggregator
 from .report_generator import generate_reports
 from .run import RunManager
+
+_R1_PARAM_SET = re.compile(r"^r1_a[234]_(stub|real)$")
 
 
 def prepare_corpus(mgr: RunManager, config: VerifyConfig, corpus_path: str) -> CorpusManager:
@@ -23,6 +26,13 @@ def prepare_corpus(mgr: RunManager, config: VerifyConfig, corpus_path: str) -> C
     return corpus
 
 
+def _require_param_set(config: VerifyConfig, pattern: re.Pattern[str], label: str) -> None:
+    if not pattern.match(config.params.name):
+        raise RuntimeError(
+            f"{label} requires a matching param set; got {config.params.name!r}"
+        )
+
+
 async def run_mvp_suite(
     mgr: RunManager,
     config: VerifyConfig,
@@ -31,15 +41,18 @@ async def run_mvp_suite(
     *,
     suite_ctx: dict[str, Any] | None = None,
 ) -> None:
-    """Run S0–S3 sequentially using default stub LLM mode."""
+    """Run S0–S4 sequentially using the active param set (typically ``mvp``)."""
     from .scenarios.s0_connectivity import run_s0
     from .scenarios.s1_import import run_s1
     from .scenarios.s2_continuous_reading import run_s2
     from .scenarios.s3_fast_scroll import run_s3
     from .scenarios.s4_long_context import run_s4
 
-    if config.is_real_llm:
-        raise RuntimeError("mvp/smoke suites must run with llm.mode=stub")
+    if config.params.llm_mode != "stub":
+        raise RuntimeError(
+            f"mvp/smoke suites require a stub param set; got {config.params.name!r} "
+            f"(llm_mode={config.params.llm_mode})"
+        )
 
     ctx = suite_ctx if suite_ctx is not None else {}
     corpus = prepare_corpus(mgr, config, corpus_path)
@@ -59,11 +72,20 @@ async def run_real_happy_path_suite(
     suite_ctx: dict[str, Any] | None = None,
     coverage: str = "A2",
 ) -> None:
-    """Run R1 happy path for the requested coverage phase (stub or real LLM)."""
+    """Run R1 happy path for the requested coverage phase."""
+    _require_param_set(config, _R1_PARAM_SET, "real-happy-path")
+
     if config.is_real_llm:
         errors = validate_real_llm_config(config)
         if errors:
             raise RuntimeError("Real LLM config invalid: " + "; ".join(errors))
+
+    expected_suffix = coverage.upper()
+    if not config.params.name.startswith(f"r1_{expected_suffix.lower()}_"):
+        raise RuntimeError(
+            f"real-happy-path coverage {coverage} requires param set "
+            f"r1_{expected_suffix.lower()}_{{stub|real}}; got {config.params.name!r}"
+        )
 
     ctx = suite_ctx if suite_ctx is not None else {}
     corpus = prepare_corpus(mgr, config, corpus_path)

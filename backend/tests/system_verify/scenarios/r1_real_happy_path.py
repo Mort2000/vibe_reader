@@ -1,7 +1,6 @@
 """R1: Real LLM happy path — A2 comments coverage (V-18).
 
-Runs only with explicit ``--suite real-happy-path --llm-mode real``.
-Reading stop behavior is controlled by ``real_llm.long_flow.reading_stop_mode``:
+Reading stop behavior is controlled by ``params.long_flow.reading_stop_mode``:
 
 - ``cross_chapter``: read through the entire start chapter from the probe while
   waiting for comment windows to keep pace, drain the chapter backlog, cross
@@ -86,9 +85,9 @@ def _advance_step_description(stop_mode: str, min_windows: int) -> str:
 
 
 def _advance_step_timeout_s(config: VerifyConfig, stop_mode: str, min_windows: int) -> float:
-    max_wait = float(config.run.max_wait_comment_window_s)
+    max_wait = float(config.params.max_wait_comment_window_s)
     if stop_mode == READING_STOP_CROSS_CHAPTER:
-        delay_s = config.effective_progress_step_delay_ms / 1000.0
+        delay_s = config.params.progress_step_delay_ms / 1000.0
         # Full-chapter read: ~1500 paragraphs at pacing delay + comment job buffer.
         return max(3600.0, 1500 * delay_s + max_wait * 6 + 300.0)
     return max_wait * min_windows + 240.0
@@ -113,7 +112,7 @@ async def run_r1_a2_comments(
             + "; ".join(corpus_errors)
         )
 
-    long_flow = config.real_llm.long_flow
+    long_flow = config.params.long_flow
     stop_mode = long_flow.reading_stop_mode
     min_windows = long_flow.min_comment_windows
     builder = ScenarioBuilder(
@@ -367,7 +366,7 @@ async def _advance_in_chapter_batch(
         scenario_id="R1_real_happy_path",
         step_id="advance_for_comments",
         metrics=metrics,
-        delay_ms=config.effective_progress_step_delay_ms,
+        delay_ms=config.params.progress_step_delay_ms,
     )
     cursor.paragraph_idx = last
     ctx["final_paragraph_idx"] = last
@@ -411,7 +410,7 @@ async def _advance_until_comment_windows(
             ctx["book_id"],
             cursor.chapter_idx,
             cursor.paragraph_idx,
-            float(config.run.max_wait_comment_window_s),
+            float(config.params.max_wait_comment_window_s),
             trace,
         )
         if window and window.get("status") == "done":
@@ -476,7 +475,7 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
     session: ReadingSession = ctx["reading_session"]
     cursor: ReadingCursor = ctx["reading_cursor"]
     chapters: list[dict[str, Any]] = ctx["chapters"]
-    long_flow = config.real_llm.long_flow
+    long_flow = config.params.long_flow
     stop_mode = long_flow.reading_stop_mode
     min_windows = long_flow.min_comment_windows
 
@@ -517,7 +516,7 @@ async def _step_advance(ctx: dict[str, Any]) -> None:
         else:
             raise StepAssertionError(
                 assertion="reading_stop_mode",
-                message="Unsupported real_llm.long_flow.reading_stop_mode",
+                message="Unsupported params.long_flow.reading_stop_mode",
                 actual={"reading_stop_mode": stop_mode},
             )
 
@@ -580,7 +579,7 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
     windows = ctx.get("completed_windows") or []
     jobs = ctx.get("verify_jobs") or []
     audit_window_limit = (
-        config.real_llm.long_flow.min_comment_windows
+        config.params.long_flow.min_comment_windows
         if ctx.get("reading_stop_mode") == READING_STOP_COMMENT_WINDOWS
         else len(windows)
     )
@@ -682,7 +681,7 @@ async def _step_budget_check(ctx: dict[str, Any]) -> None:
             )
 
     tracker = ctx["run_manager"].real_llm_tracker
-    if config.is_real_llm:
+    if config.params.budget.enforce:
         tracker.check_budget(config)
         if tracker.budget_exceeded:
             raise StepAssertionError(
@@ -742,7 +741,7 @@ async def run_r1_a3_compaction(
             + "; ".join(corpus_errors)
         )
 
-    post_windows = config.real_llm.long_flow.post_compaction_comment_windows
+    post_windows = config.params.long_flow.post_compaction_comment_windows
     builder = ScenarioBuilder(
         "R1_real_happy_path",
         "Real LLM happy path — A3 compaction (large batches, 5% density)",
@@ -768,11 +767,11 @@ async def run_r1_a3_compaction(
     builder.add_step(
         "advance_for_compaction",
         (
-            f"Advance with batch {config.effective_compaction_advance_batch_size} until "
+            f"Advance with batch {config.params.compaction_advance_batch_size} until "
             f"compaction completes, then {post_windows} post-compaction comment windows"
         ),
         _step_advance_for_compaction,
-        timeout_s=float(config.run.max_wait_compaction_s) + 600.0,
+        timeout_s=float(config.params.max_wait_compaction_s) + 600.0,
     )
     builder.add_step(
         "export_compaction_audit",
@@ -852,7 +851,7 @@ async def _step_advance_for_compaction(ctx: dict[str, Any]) -> None:
     session: ReadingSession = ctx["reading_session"]
     cursor: ReadingCursor = ctx["reading_cursor"]
     chapters: list[dict[str, Any]] = ctx["chapters"]
-    long_flow = config.real_llm.long_flow
+    long_flow = config.params.long_flow
     probe: Any = ctx["probe"]
 
     async with TargetClient(
@@ -893,7 +892,7 @@ async def _step_advance_for_compaction(ctx: dict[str, Any]) -> None:
         assert_compaction_completed(
             compaction_jobs=compaction_jobs,
             compaction_runs=compaction_runs,
-            require_real=config.is_real_llm,
+            require_real=config.params.assertions.require_compaction_audit_real,
         )
 
         min_tokens = (
@@ -924,7 +923,7 @@ async def _step_advance_for_compaction(ctx: dict[str, Any]) -> None:
 
         assert_that.gte(
             ctx.get("post_compaction_comment_windows_completed", 0),
-            config.real_llm.long_flow.post_compaction_comment_windows,
+            config.params.long_flow.post_compaction_comment_windows,
             label="post_compaction_comment_windows_completed",
         )
 

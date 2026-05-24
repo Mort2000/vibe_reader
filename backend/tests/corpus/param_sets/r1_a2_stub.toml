@@ -1,0 +1,30 @@
+name = "r1_a2_stub"
+llm_mode = "stub"
+aimock_profile = "mvp_default"
+
+progress_step_delay_ms = 0
+read_batch_size = 64
+compaction_advance_batch_size = 64
+max_wait_comment_window_s = 300
+max_wait_compaction_s = 600
+max_wait_chat_s = 120
+
+[long_flow]
+require_compaction = true
+test_compaction_trigger_tokens = 24000
+test_compaction_min_source_tokens = 16000
+test_compaction_min_source_paragraphs = 120
+min_comment_windows = 2
+min_chat_turns = 1
+reading_stop_mode = "comment_windows"
+post_compaction_comment_windows = 3
+
+[budget]
+enforce = false
+track_usage = false
+max_calls = 15
+
+[assertions]
+strict_done_without_comments = true
+require_compaction_audit_real = false
+allow_probe_without_real_llm_flag = true

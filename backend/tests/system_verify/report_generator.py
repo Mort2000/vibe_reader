@@ -161,6 +161,7 @@ def _build_summary_md(
         f"git_commit: {manifest.get('git_commit')}",
         f"suite: {manifest.get('suite')}",
         f"llm_mode: {manifest.get('llm_mode')}",
+        f"param_set: {manifest.get('param_set')}",
         f"stub_profile: {manifest.get('stub_profile')}",
         f"real_llm_calls: {manifest.get('real_llm_call_count', 0)}",
         f"model: {manifest.get('model')}",

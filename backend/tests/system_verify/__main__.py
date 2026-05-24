@@ -53,6 +53,11 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="LLM mode for this run",
     )
+    p_init.add_argument(
+        "--param-set",
+        default=None,
+        help="Named verification param set (overrides suite default)",
+    )
 
     p_run = sub.add_parser("run", help="Run verification scenarios")
     p_run.add_argument(
@@ -64,7 +69,12 @@ def main(argv: list[str] | None = None) -> None:
         "--llm-mode",
         choices=["stub", "real"],
         default=None,
-        help="LLM mode (default: stub)",
+        help="LLM mode (must match param set when both are set)",
+    )
+    p_run.add_argument(
+        "--param-set",
+        default=None,
+        help="Named verification param set (overrides suite default)",
     )
     p_run.add_argument(
         "--real-coverage",
@@ -111,18 +121,26 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _apply_llm_mode(config, llm_mode: str | None) -> None:
-    if not llm_mode:
-        return
-    config.llm.mode = llm_mode
-    if llm_mode == "real":
-        config.metrics.collect_provider_usage = True
+    """Deprecated: llm mode is driven by the active param set."""
+    _ = (config, llm_mode)
+
+
+def _load_run_config(args: argparse.Namespace):
+    from .config import load_verify_config, validate_real_llm_config
+
+    return load_verify_config(
+        args.config,
+        param_set=getattr(args, "param_set", None),
+        suite=getattr(args, "suite", None),
+        coverage=getattr(args, "real_coverage", "A2"),
+        llm_mode_override=getattr(args, "llm_mode", None),
+    ), validate_real_llm_config
 
 
 def _cmd_prepare(args: argparse.Namespace) -> None:
-    from .config import load_verify_config
     from .corpus import CorpusManager
 
-    config = load_verify_config(args.config)
+    config, _ = _load_run_config(args)
     cm = CorpusManager(config, args.corpus)
     ok = cm.validate()
     happy_errors = cm.validate_happy_path_probe()
@@ -142,12 +160,10 @@ def _cmd_prepare(args: argparse.Namespace) -> None:
 
 
 def _cmd_init_run(args: argparse.Namespace) -> None:
-    from .config import load_verify_config
     from .metrics_collector import MetricsAggregator
     from .run import RunManager
 
-    config = load_verify_config(args.config)
-    _apply_llm_mode(config, args.llm_mode)
+    config, _ = _load_run_config(args)
     if args.target_url:
         config.target.base_url = args.target_url
 
@@ -223,18 +239,14 @@ def _start_stub_sidecar(
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
-    from .config import load_verify_config, validate_real_llm_config
     from .metrics_collector import MetricsAggregator
     from .run import RunManager
 
-    config = load_verify_config(args.config)
-    _apply_llm_mode(config, args.llm_mode)
+    config, validate_real_llm_config = _load_run_config(args)
     if args.target_url:
         config.target.base_url = args.target_url
-    if args.suite:
-        config.run.suite = args.suite
 
-    if config.run.suite == "real-happy-path" and config.is_real_llm:
+    if config.is_real_llm:
         errors = validate_real_llm_config(config)
         if errors:
             print("Real LLM config invalid: " + "; ".join(errors), file=sys.stderr)
@@ -245,6 +257,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
     print(f"Run ID: {mgr.run_id}")
     print(f"Output: {out_dir}")
     print(f"LLM mode: {config.llm.mode}")
+    print(f"Param set: {config.params.name}")
 
     metrics = MetricsAggregator(mgr, config)
     sidecar, backend_proc = _start_stub_sidecar(

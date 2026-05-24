@@ -95,7 +95,7 @@ class RealLLMCallTracker:
     ) -> None:
         if self.budget_exceeded:
             return
-        limits = config.real_llm
+        limits = config.params.budget
         if input_tokens > limits.max_input_tokens_per_call:
             self.budget_exceeded = True
             self.budget_reason = "real_llm_budget_exceeded:input_tokens_per_call"
@@ -108,7 +108,7 @@ class RealLLMCallTracker:
         if self.budget_exceeded:
             return
 
-        limits = config.real_llm
+        limits = config.params.budget
         if self.call_count > limits.max_calls:
             self.budget_exceeded = True
             self.budget_reason = "real_llm_budget_exceeded:max_calls"
@@ -205,6 +205,8 @@ class RunManager:
             "target_url": cfg.target.base_url,
             "backend_version": resolved_backend_version,
             "llm_mode": cfg.llm.mode,
+            "param_set": cfg.params.name,
+            "param_set_llm_mode": cfg.params.llm_mode,
             "stub_profile": cfg.llm.stub_profile if not cfg.is_real_llm else None,
             "llm_stub_provider": aimock.get("provider") if not cfg.is_real_llm else None,
             "aimock_version": aimock.get("version") if not cfg.is_real_llm else None,

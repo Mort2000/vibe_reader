@@ -167,12 +167,13 @@ class CorpusManager:
             )
             return errors
 
-        if not probe.real_llm:
+        if not probe.real_llm and not self.config.params.assertions.allow_probe_without_real_llm_flag:
             errors.append(
-                f"[{book.alias}] happy_path_current must set real_llm = true"
+                f"[{book.alias}] happy_path_current must set real_llm = true "
+                f"for param set {self.config.params.name!r}"
             )
 
-        long_flow = self.config.real_llm.long_flow
+        long_flow = self.config.params.long_flow
         min_tokens = (
             probe.test_compaction_min_source_tokens
             or long_flow.test_compaction_min_source_tokens

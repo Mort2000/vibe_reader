@@ -26,34 +26,18 @@ model = "deepseek-v4-flash"
 base_url = ""
 api_key_env = "VIBE_READER_LLM_API_KEY"
 model = "deepseek-v4-flash"
-max_calls = 15
-max_input_tokens_per_call = 128000
-max_output_tokens_per_call = 4096
-max_total_cost_usd = 3.00
 
-[real_llm.long_flow]
-require_compaction = true
-test_compaction_trigger_tokens = 24000
-test_compaction_min_source_tokens = 16000
-test_compaction_min_source_paragraphs = 120
-min_comment_windows = 2
-min_chat_turns = 1
-post_compaction_comment_windows = 3
-# cross_chapter: stop after crossing a chapter boundary
-# comment_windows: advance within the start chapter until min_comment_windows complete
-reading_stop_mode = "cross_chapter"
+[param_set]
+default = "mvp"
+dir = "param_sets"
+
+[suite_defaults]
+smoke = "mvp"
+mvp = "mvp"
+real-happy-path = "r1_a2_real"
 
 [run]
 suite = "mvp"
-max_wait_comment_window_s = 300
-max_wait_compaction_s = 600
-max_wait_chat_s = 120
-# real-happy-path pacing (stub uses stub_* keys below)
-progress_step_delay_ms = 100
-read_batch_size = 120
-compaction_advance_batch_size = 120
-stub_progress_step_delay_ms = 0
-stub_compaction_advance_batch_size = 64
 seed = 20260522
 
 [metrics]
