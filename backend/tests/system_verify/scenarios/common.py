@@ -2092,7 +2092,7 @@ async def advance_until_compaction(
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
     """Advance reading within the current chapter until compaction completes."""
     if batch_size is None:
-        batch_size = config.run.compaction_advance_batch_size
+        batch_size = config.params.compaction_advance_batch_size
 
     chapter = chapter_by_idx(chapters, cursor.chapter_idx)
     if chapter is None:
@@ -2145,7 +2145,7 @@ async def advance_until_compaction(
             scenario_id=scenario_id,
             step_id=step_id,
             metrics=metrics,
-            delay_ms=config.run.progress_step_delay_ms,
+            delay_ms=config.params.progress_step_delay_ms,
         )
         cursor.paragraph_idx = last
         ctx["final_paragraph_idx"] = last
