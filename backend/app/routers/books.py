@@ -51,8 +51,17 @@ async def import_book(request: Request, file: UploadFile = File(...)) -> dict[st
     try:
         from ..services.import_service import import_epub
 
+        estimator = getattr(request.app.state, "token_estimator", None)
+        estimator_info = None
+        if estimator is not None:
+            estimator_info = estimator.get_calibration_info(settings.llm.model)
+
         result = await import_epub(
-            db, tmp_path, settings.books_dir, l2_config=settings.context_l2
+            db,
+            tmp_path,
+            settings.books_dir,
+            l2_config=settings.context_l2,
+            estimator_info=estimator_info,
         )
     finally:
         os.unlink(tmp_path)

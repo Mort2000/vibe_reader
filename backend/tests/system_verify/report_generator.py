@@ -66,7 +66,9 @@ def _build_metrics_json(
 
     latency_rows = []
     for name, values in sorted(grouped.items()):
-        if not any(token in name for token in ("latency", "duration", "ttft", "wait", "run_ms")):
+        if not any(
+            token in name for token in ("latency", "duration", "ttft", "wait", "run_ms")
+        ):
             continue
         values_sorted = sorted(values)
         latency_rows.append(
@@ -83,7 +85,9 @@ def _build_metrics_json(
     token_metrics = {
         row.get("metric"): row.get("value")
         for row in metrics
-        if str(row.get("metric", "")).startswith(("tokens", "llm.ping.tokens", "comment."))
+        if str(row.get("metric", "")).startswith(
+            ("tokens", "llm.ping.tokens", "comment.")
+        )
     }
 
     return {
@@ -214,7 +218,7 @@ def _build_summary_md(
     else:
         lines.append("| _no token metrics recorded_ | 0 | 0 | 0 | 0 | 0 |")
 
-    phase = (manifest.get("real_llm_phase_coverage") or {})
+    phase = manifest.get("real_llm_phase_coverage") or {}
     if phase:
         lines.extend(
             [
@@ -298,7 +302,9 @@ def _build_tokens_table(
             bucket["input"] += int_value
             bucket["requests"] += 1
             bucket["max_input"] = max(bucket["max_input"], int_value)
-        elif metric.endswith(".tokens.output") or metric.endswith(".tokens.output_tokens"):
+        elif metric.endswith(".tokens.output") or metric.endswith(
+            ".tokens.output_tokens"
+        ):
             bucket["output"] += int_value
         elif metric == "tokens_per_comment_window":
             bucket["input"] += int_value
@@ -342,7 +348,9 @@ def _scenario_status(scenarios: list[dict[str, Any]], prefix: str) -> str:
 def _count_ndjson_lines(path: Path) -> int:
     if not path.exists():
         return 0
-    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    return sum(
+        1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    )
 
 
 def _count_markdown_files(path: Path) -> int:

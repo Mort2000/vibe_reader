@@ -53,12 +53,32 @@ def test_extract_l2_chunks_from_component_content() -> None:
 
 def test_l2_chunk_boundaries_stable_ignores_reclaimed() -> None:
     before = [
-        {"chunk_id": 1, "start_paragraph_idx": 0, "end_paragraph_idx": 120, "status": "active"},
-        {"chunk_id": 2, "start_paragraph_idx": 121, "end_paragraph_idx": 240, "status": "reclaimed"},
+        {
+            "chunk_id": 1,
+            "start_paragraph_idx": 0,
+            "end_paragraph_idx": 120,
+            "status": "active",
+        },
+        {
+            "chunk_id": 2,
+            "start_paragraph_idx": 121,
+            "end_paragraph_idx": 240,
+            "status": "reclaimed",
+        },
     ]
     after = [
-        {"chunk_id": 1, "start_paragraph_idx": 0, "end_paragraph_idx": 120, "status": "active"},
-        {"chunk_id": 3, "start_paragraph_idx": 241, "end_paragraph_idx": 360, "status": "active"},
+        {
+            "chunk_id": 1,
+            "start_paragraph_idx": 0,
+            "end_paragraph_idx": 120,
+            "status": "active",
+        },
+        {
+            "chunk_id": 3,
+            "start_paragraph_idx": 241,
+            "end_paragraph_idx": 360,
+            "status": "active",
+        },
     ]
     assert_l2_chunk_boundaries_stable(before, after)
 

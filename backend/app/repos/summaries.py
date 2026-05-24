@@ -61,9 +61,7 @@ async def create_summary(
         "source_chunk_ids_json": json.dumps(source_chunk_ids),
         "source_text_hash": source_text_hash,
         "summary": summary,
-        "anchor_excerpts_json": json.dumps(
-            anchor_excerpts, ensure_ascii=False
-        ),
+        "anchor_excerpts_json": json.dumps(anchor_excerpts, ensure_ascii=False),
         "token_estimate": token_estimate,
         "context_version": context_version,
         "compaction_epoch": compaction_epoch,

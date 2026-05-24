@@ -12,6 +12,7 @@ from ..repos import chunks as chunk_repo
 from ..repos import comments as comment_repo
 from ..repos import paragraphs as paragraph_repo
 from ..repos import summaries as summary_repo
+from .token_estimator import TokenEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class ContextBuildResult:
     hard_triggered: bool = False
     context_degraded: bool = False
     emergency_overflow_used: bool = False
+    token_estimator_info: dict[str, Any] = field(default_factory=dict)
 
 
 def _render_chunk_block(
@@ -122,17 +124,35 @@ async def _build_original_block(
             partial_frontier_pidx = frontier
 
         if is_partial:
-            original_tokens += _estimate_text_tokens("\n".join(p["text"] for p in paragraphs))
+            original_tokens += _estimate_text_tokens(
+                "\n".join(p["text"] for p in paragraphs)
+            )
         else:
             original_tokens += chunk.get("token_estimate", 0)
 
     lines.append("</LIVE_ORIGINAL_CHUNKS>")
-    return "\n".join(lines), live_chunk_ids, partial_chunk_id, partial_frontier_pidx, original_tokens
+    return (
+        "\n".join(lines),
+        live_chunk_ids,
+        partial_chunk_id,
+        partial_frontier_pidx,
+        original_tokens,
+    )
 
 
 def _estimate_text_tokens(text: str) -> int:
     cjk = sum(1 for c in text if "一" <= c <= "鿿")
     return int(cjk * 1.5 + (len(text) - cjk) * 0.25)
+
+
+def _make_estimator(settings: Settings) -> TokenEstimator:
+    return TokenEstimator(settings.token_estimation)
+
+
+def _get_estimator(
+    settings: Settings, shared: TokenEstimator | None = None
+) -> TokenEstimator:
+    return shared if shared is not None else _make_estimator(settings)
 
 
 def _build_comments_block(
@@ -177,8 +197,7 @@ def _build_task_block(
     t_lines.append("- Only emit comments for comment_target_paragraphs.")
     t_lines.append("- Paragraph text is available in LIVE_ORIGINAL_CHUNKS.")
     t_lines.append(
-        "- If paragraph text is missing due context degradation, "
-        "skip that paragraph."
+        "- If paragraph text is missing due context degradation, skip that paragraph."
     )
     t_lines.append("</CURRENT_TASK>")
 
@@ -186,26 +205,20 @@ def _build_task_block(
         t_lines.append("")
         t_lines.append("comment_density_hint:")
         t_lines.append(
-            f"  stat_start_paragraph_idx = "
-            f"{density_hint.stat_start_paragraph_idx}"
+            f"  stat_start_paragraph_idx = {density_hint.stat_start_paragraph_idx}"
         )
         t_lines.append(
-            f"  stat_end_paragraph_idx = "
-            f"{density_hint.stat_end_paragraph_idx}"
+            f"  stat_end_paragraph_idx = {density_hint.stat_end_paragraph_idx}"
         )
         t_lines.append(
             f"  stat_target_paragraph_count = "
             f"{density_hint.stat_target_paragraph_count}"
         )
-        t_lines.append(
-            f"  active_comment_count = "
-            f"{density_hint.active_comment_count}"
-        )
+        t_lines.append(f"  active_comment_count = {density_hint.active_comment_count}")
         t_lines.append(f"  soft_min_density = {density_hint.soft_min_density}")
         t_lines.append(f"  current_density = {density_hint.current_density}")
         t_lines.append(
-            f"  estimated_missing_comments = "
-            f"{density_hint.estimated_missing_comments}"
+            f"  estimated_missing_comments = {density_hint.estimated_missing_comments}"
         )
 
     text = "\n".join(t_lines)
@@ -233,6 +246,7 @@ async def _apply_overflow_strategy(
     settings: Settings,
     context_degraded: bool,
     overflow_already_used: bool,
+    target_paragraphs: list[int] | None = None,
 ) -> tuple[str, list[int], int | None, int | None, int, int, bool, bool]:
     ctx_cfg = settings.context
     l3_cfg = settings.context_l3
@@ -240,9 +254,14 @@ async def _apply_overflow_strategy(
 
     if estimated_tokens <= l3_cfg.compression_trigger_input_tokens:
         return (
-            original_block, live_chunk_ids, partial_chunk_id,
-            partial_frontier_pidx, original_tokens, estimated_tokens,
-            context_degraded, overflow_already_used,
+            original_block,
+            live_chunk_ids,
+            partial_chunk_id,
+            partial_frontier_pidx,
+            original_tokens,
+            estimated_tokens,
+            context_degraded,
+            overflow_already_used,
         )
 
     newer_summary = await summary_repo.get_latest_summary(
@@ -256,23 +275,36 @@ async def _apply_overflow_strategy(
     ):
         new_live_start = newer_summary["covered_end_paragraph_idx"] + 1
         if new_live_start > live_start:
-            original_block, live_chunk_ids, partial_chunk_id, partial_frontier_pidx, original_tokens = (
-                await _build_original_block(
-                    db, book_id, chapter_idx, new_live_start, frontier
-                )
+            (
+                original_block,
+                live_chunk_ids,
+                partial_chunk_id,
+                partial_frontier_pidx,
+                original_tokens,
+            ) = await _build_original_block(
+                db, book_id, chapter_idx, new_live_start, frontier
             )
             summary_tokens_new = newer_summary.get("token_estimate", 0)
             estimated_tokens = (
-                system_tokens + metadata_tokens + reserved_tokens
+                system_tokens
+                + metadata_tokens
+                + reserved_tokens
                 + summary_tokens_new
-                + original_tokens + ephemeral_comment_tokens + task_tokens
+                + original_tokens
+                + ephemeral_comment_tokens
+                + task_tokens
             )
 
     if estimated_tokens <= l3_cfg.compression_trigger_input_tokens:
         return (
-            original_block, live_chunk_ids, partial_chunk_id,
-            partial_frontier_pidx, original_tokens, estimated_tokens,
-            context_degraded, overflow_already_used,
+            original_block,
+            live_chunk_ids,
+            partial_chunk_id,
+            partial_frontier_pidx,
+            original_tokens,
+            estimated_tokens,
+            context_degraded,
+            overflow_already_used,
         )
 
     can_emergency = (
@@ -283,31 +315,71 @@ async def _apply_overflow_strategy(
     if can_emergency:
         emergency_used_now = True
         return (
-            original_block, live_chunk_ids, partial_chunk_id,
-            partial_frontier_pidx, original_tokens, estimated_tokens,
-            context_degraded, True,
+            original_block,
+            live_chunk_ids,
+            partial_chunk_id,
+            partial_frontier_pidx,
+            original_tokens,
+            estimated_tokens,
+            context_degraded,
+            True,
         )
 
     if live_chunk_ids:
-        skip_ids = {live_chunk_ids[0]}
-        live_chunk_ids = live_chunk_ids[1:]
-        context_degraded = True
-        original_block, live_chunk_ids, partial_chunk_id, partial_frontier_pidx, original_tokens = (
-            await _build_original_block(
-                db, book_id, chapter_idx, live_start, frontier,
+        target_set = set(target_paragraphs) if target_paragraphs else set()
+        skip_id: int | None = None
+        for cid in live_chunk_ids:
+            if cid == partial_chunk_id:
+                continue
+            chunk = await chunk_repo.get_chunk(db, cid)
+            if chunk is None:
+                continue
+            c_start = chunk["start_paragraph_idx"]
+            c_end = chunk["end_paragraph_idx"]
+            if target_set and target_set & set(range(c_start, c_end + 1)):
+                continue
+            skip_id = cid
+            break
+
+        if skip_id is not None:
+            skip_ids = {skip_id}
+            live_chunk_ids = [cid for cid in live_chunk_ids if cid != skip_id]
+            context_degraded = True
+            (
+                original_block,
+                live_chunk_ids,
+                partial_chunk_id,
+                partial_frontier_pidx,
+                original_tokens,
+            ) = await _build_original_block(
+                db,
+                book_id,
+                chapter_idx,
+                live_start,
+                frontier,
                 skip_chunk_ids=skip_ids,
             )
-        )
-        estimated_tokens = (
-            system_tokens + metadata_tokens + reserved_tokens
-            + summary_tokens
-            + original_tokens + ephemeral_comment_tokens + task_tokens
-        )
+            estimated_tokens = (
+                system_tokens
+                + metadata_tokens
+                + reserved_tokens
+                + summary_tokens
+                + original_tokens
+                + ephemeral_comment_tokens
+                + task_tokens
+            )
+        else:
+            context_degraded = True
 
     return (
-        original_block, live_chunk_ids, partial_chunk_id,
-        partial_frontier_pidx, original_tokens, estimated_tokens,
-        context_degraded, overflow_already_used or emergency_used_now,
+        original_block,
+        live_chunk_ids,
+        partial_chunk_id,
+        partial_frontier_pidx,
+        original_tokens,
+        estimated_tokens,
+        context_degraded,
+        overflow_already_used or emergency_used_now,
     )
 
 
@@ -323,79 +395,14 @@ def _compaction_preflight_thresholds(
     )
 
 
-async def build_context(
+async def _check_trigger_conditions(
     db: aiosqlite.Connection,
-    *,
     book_id: int,
     chapter_idx: int,
-    reading_pidx: int,
+    frontier: int,
+    estimated_tokens: int,
     settings: Settings,
-    task_type: str = "comment",
-    focus_start: int | None = None,
-    focus_end: int | None = None,
-    target_paragraphs: list[int] | None = None,
-    density_hint: Any = None,
-    book_title: str | None = None,
-    chapter_title: str | None = None,
-    overflow_already_used: bool = False,
-) -> ContextBuildResult:
-    ctx_cfg = settings.context
-    l3_cfg = settings.context_l3
-    reader_cfg = settings.reader
-    eph_comments_cfg = settings.ephemeral_comments
-
-    last_pidx = await paragraph_repo.get_last_paragraph_idx(
-        db, book_id, chapter_idx
-    )
-    if last_pidx is None:
-        raise ValueError(f"No paragraphs for book={book_id} chapter={chapter_idx}")
-
-    frontier = min(reading_pidx + reader_cfg.lookahead_paragraphs, last_pidx)
-
-    summary_row, summary_id, summary_text, summary_tokens, compaction_epoch = (
-        await _build_summary_section(db, book_id, chapter_idx, frontier)
-    )
-
-    live_start = 0
-    if summary_row is not None:
-        live_start = summary_row["covered_end_paragraph_idx"] + 1
-
-    original_block, live_chunk_ids, partial_chunk_id, partial_frontier_pidx, original_tokens = (
-        await _build_original_block(
-            db, book_id, chapter_idx, live_start, frontier
-        )
-    )
-
-    comment_block = ""
-    ephemeral_comment_tokens = 0
-    if focus_start is not None and focus_end is not None:
-        margin = eph_comments_cfg.nearby_paragraph_margin
-        c_start = max(0, focus_start - margin)
-        c_end = focus_end + margin
-        comments, _ = await comment_repo.list_comments(
-            db, book_id, chapter_idx, start=c_start, end=c_end, limit=50
-        )
-        comment_block, ephemeral_comment_tokens = _build_comments_block(
-            comments, eph_comments_cfg.max_tokens
-        )
-
-    task_block, task_tokens = _build_task_block(
-        frontier, focus_start, focus_end, target_paragraphs, density_hint
-    )
-
-    system_tokens = 3_000
-    metadata_tokens = 800
-    reserved_tokens = ctx_cfg.reserved_tokens
-    estimated_tokens = (
-        system_tokens
-        + metadata_tokens
-        + reserved_tokens
-        + summary_tokens
-        + original_tokens
-        + ephemeral_comment_tokens
-        + task_tokens
-    )
-
+) -> tuple[bool, bool]:
     live_original_tokens = await chunk_repo.get_live_original_tokens(
         db, book_id, chapter_idx, frontier
     )
@@ -403,28 +410,52 @@ async def build_context(
         db, book_id, chapter_idx, frontier
     )
 
-    preflight_input_tokens, max_live_original_tokens, max_completed_before_compaction = (
-        _compaction_preflight_thresholds(settings)
-    )
+    (
+        preflight_input_tokens,
+        max_live_original_tokens,
+        max_completed_before_compaction,
+    ) = _compaction_preflight_thresholds(settings)
     preflight_triggered = (
         estimated_tokens > preflight_input_tokens
         or live_original_tokens > max_live_original_tokens
         or completed_chunks >= max_completed_before_compaction
     )
-    hard_triggered = estimated_tokens > l3_cfg.compression_trigger_input_tokens
-    context_degraded = False
-
-    original_block, live_chunk_ids, partial_chunk_id, partial_frontier_pidx, original_tokens, estimated_tokens, context_degraded, overflow_used = (
-        await _apply_overflow_strategy(
-            db, book_id, chapter_idx, live_start, frontier,
-            live_chunk_ids, partial_chunk_id, partial_frontier_pidx,
-            original_block, original_tokens, estimated_tokens,
-            system_tokens, metadata_tokens, reserved_tokens, summary_tokens,
-            ephemeral_comment_tokens, task_tokens,
-            settings, context_degraded, overflow_already_used,
-        )
+    hard_triggered = (
+        estimated_tokens > settings.context_l3.compression_trigger_input_tokens
     )
+    return preflight_triggered, hard_triggered
 
+
+def _assemble_result(
+    *,
+    chapter_idx: int,
+    book_title: str | None,
+    chapter_title: str | None,
+    summary_text: str,
+    original_block: str,
+    comment_block: str,
+    task_block: str,
+    system_tokens: int,
+    metadata_tokens: int,
+    reserved_tokens: int,
+    summary_tokens: int,
+    original_tokens: int,
+    ephemeral_comment_tokens: int,
+    task_tokens: int,
+    estimated_tokens: int,
+    live_chunk_ids: list[int],
+    partial_chunk_id: int | None,
+    partial_frontier_pidx: int | None,
+    summary_id: int | None,
+    compaction_epoch: int,
+    preflight_triggered: bool,
+    hard_triggered: bool,
+    context_degraded: bool,
+    overflow_used: bool,
+    settings: Settings,
+    ctx_cfg: Any,
+    estimator: TokenEstimator | None = None,
+) -> ContextBuildResult:
     prompt_parts: list[str] = []
 
     if book_title or chapter_title:
@@ -457,6 +488,13 @@ async def build_context(
     full_prompt = "\n".join(prompt_parts)
     ctx_hash = hashlib.sha256(full_prompt.encode("utf-8")).hexdigest()[:16]
 
+    est = _get_estimator(settings, estimator)
+    model = settings.llm.model
+    raw_total = _estimate_text_tokens(full_prompt)
+    safe_total = est.get_safe_estimate(full_prompt, model)
+
+    estimator_info = est.get_calibration_info(model)
+
     manifest = {
         "components": [
             {"name": "system_policy", "tokens": system_tokens},
@@ -464,11 +502,13 @@ async def build_context(
             {"name": "reserved", "tokens": reserved_tokens},
             {"name": "chapter_compressed_summary", "tokens": summary_tokens},
             {"name": "live_original_chunks", "tokens": original_tokens},
-            {"name": "ephemeral_comments", "tokens": ephemeral_comment_tokens},
-            {"name": "ephemeral_chat", "tokens": 0},
+            {"name": "ephemeral_recent_comments", "tokens": ephemeral_comment_tokens},
+            {"name": "ephemeral_recent_chat", "tokens": 0},
             {"name": "current_task", "tokens": task_tokens},
         ],
         "total_estimate": estimated_tokens,
+        "safe_total_estimate": safe_total,
+        "raw_total_estimate": raw_total,
         "hard_cap": ctx_cfg.emergency_input_cap_tokens,
         "attention_target": ctx_cfg.attention_target_input_tokens,
         "live_chunk_ids": live_chunk_ids,
@@ -478,6 +518,7 @@ async def build_context(
         "preflight_triggered": preflight_triggered,
         "hard_triggered": hard_triggered,
         "context_degraded": context_degraded,
+        "token_estimator": estimator_info,
     }
 
     return ContextBuildResult(
@@ -494,4 +535,167 @@ async def build_context(
         hard_triggered=hard_triggered,
         context_degraded=context_degraded,
         emergency_overflow_used=overflow_used,
+        token_estimator_info=estimator_info,
+    )
+
+
+async def build_context(
+    db: aiosqlite.Connection,
+    *,
+    book_id: int,
+    chapter_idx: int,
+    reading_pidx: int,
+    settings: Settings,
+    task_type: str = "comment",
+    focus_start: int | None = None,
+    focus_end: int | None = None,
+    target_paragraphs: list[int] | None = None,
+    density_hint: Any = None,
+    book_title: str | None = None,
+    chapter_title: str | None = None,
+    overflow_already_used: bool = False,
+    token_estimator: TokenEstimator | None = None,
+) -> ContextBuildResult:
+    ctx_cfg = settings.context
+    reader_cfg = settings.reader
+    eph_comments_cfg = settings.ephemeral_comments
+    est = _get_estimator(settings, token_estimator)
+
+    last_pidx = await paragraph_repo.get_last_paragraph_idx(db, book_id, chapter_idx)
+    if last_pidx is None:
+        raise ValueError(f"No paragraphs for book={book_id} chapter={chapter_idx}")
+
+    frontier = min(reading_pidx + reader_cfg.lookahead_paragraphs, last_pidx)
+
+    (
+        summary_row,
+        summary_id,
+        summary_text,
+        summary_tokens,
+        compaction_epoch,
+    ) = await _build_summary_section(db, book_id, chapter_idx, frontier)
+
+    live_start = 0
+    if summary_row is not None:
+        live_start = summary_row["covered_end_paragraph_idx"] + 1
+
+    (
+        original_block,
+        live_chunk_ids,
+        partial_chunk_id,
+        partial_frontier_pidx,
+        original_tokens,
+    ) = await _build_original_block(db, book_id, chapter_idx, live_start, frontier)
+
+    comment_block = ""
+    ephemeral_comment_tokens = 0
+    if focus_start is not None and focus_end is not None:
+        margin = eph_comments_cfg.nearby_paragraph_margin
+        c_start = max(0, focus_start - margin)
+        c_end = focus_end + margin
+        comments, _ = await comment_repo.list_comments(
+            db, book_id, chapter_idx, start=c_start, end=c_end, limit=50
+        )
+        comment_block, ephemeral_comment_tokens = _build_comments_block(
+            comments, eph_comments_cfg.max_tokens
+        )
+
+    task_block, task_tokens = _build_task_block(
+        frontier, focus_start, focus_end, target_paragraphs, density_hint
+    )
+
+    system_tokens = 3_000
+    metadata_tokens = 800
+    reserved_tokens = ctx_cfg.reserved_tokens
+    estimated_tokens = (
+        system_tokens
+        + metadata_tokens
+        + reserved_tokens
+        + summary_tokens
+        + original_tokens
+        + ephemeral_comment_tokens
+        + task_tokens
+    )
+
+    # Apply calibration for budget/trigger decisions
+    safe_estimated_tokens = (
+        est.get_safe_estimate(original_block, settings.llm.model)
+        + system_tokens
+        + metadata_tokens
+        + reserved_tokens
+        + summary_tokens
+        + ephemeral_comment_tokens
+        + task_tokens
+    )
+
+    preflight_triggered, hard_triggered = await _check_trigger_conditions(
+        db,
+        book_id,
+        chapter_idx,
+        frontier,
+        safe_estimated_tokens,
+        settings,
+    )
+
+    (
+        original_block,
+        live_chunk_ids,
+        partial_chunk_id,
+        partial_frontier_pidx,
+        original_tokens,
+        estimated_tokens,
+        context_degraded,
+        overflow_used,
+    ) = await _apply_overflow_strategy(
+        db,
+        book_id,
+        chapter_idx,
+        live_start,
+        frontier,
+        live_chunk_ids,
+        partial_chunk_id,
+        partial_frontier_pidx,
+        original_block,
+        original_tokens,
+        safe_estimated_tokens,
+        system_tokens,
+        metadata_tokens,
+        reserved_tokens,
+        summary_tokens,
+        ephemeral_comment_tokens,
+        task_tokens,
+        settings,
+        False,
+        overflow_already_used,
+        target_paragraphs=target_paragraphs,
+    )
+
+    return _assemble_result(
+        chapter_idx=chapter_idx,
+        book_title=book_title,
+        chapter_title=chapter_title,
+        summary_text=summary_text,
+        original_block=original_block,
+        comment_block=comment_block,
+        task_block=task_block,
+        system_tokens=system_tokens,
+        metadata_tokens=metadata_tokens,
+        reserved_tokens=reserved_tokens,
+        summary_tokens=summary_tokens,
+        original_tokens=original_tokens,
+        ephemeral_comment_tokens=ephemeral_comment_tokens,
+        task_tokens=task_tokens,
+        estimated_tokens=estimated_tokens,
+        live_chunk_ids=live_chunk_ids,
+        partial_chunk_id=partial_chunk_id,
+        partial_frontier_pidx=partial_frontier_pidx,
+        summary_id=summary_id,
+        compaction_epoch=compaction_epoch,
+        preflight_triggered=preflight_triggered,
+        hard_triggered=hard_triggered,
+        context_degraded=context_degraded,
+        overflow_used=overflow_used,
+        settings=settings,
+        ctx_cfg=ctx_cfg,
+        estimator=est,
     )

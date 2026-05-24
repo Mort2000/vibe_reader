@@ -14,7 +14,9 @@ from .run import RunManager
 _R1_PARAM_SET = re.compile(r"^r1_a[234]_(stub|real)$")
 
 
-def prepare_corpus(mgr: RunManager, config: VerifyConfig, corpus_path: str) -> CorpusManager:
+def prepare_corpus(
+    mgr: RunManager, config: VerifyConfig, corpus_path: str
+) -> CorpusManager:
     corpus = CorpusManager(config, corpus_path)
     corpus.load()
     if not corpus.validate():

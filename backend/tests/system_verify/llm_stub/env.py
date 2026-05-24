@@ -52,7 +52,9 @@ def stub_backend_env(session: AIMockSession, config: VerifyConfig) -> dict[str, 
     return env
 
 
-def inject_stub_backend_env(session: AIMockSession, config: VerifyConfig) -> dict[str, str]:
+def inject_stub_backend_env(
+    session: AIMockSession, config: VerifyConfig
+) -> dict[str, str]:
     """Publish stub backend env into the current process (verify runner / pytest)."""
     env = stub_backend_env(session, config)
     os.environ.update(env)
@@ -71,7 +73,9 @@ def print_stub_backend_env_notice(session: AIMockSession, config: VerifyConfig) 
     print("Stub backend env applied to verify runner; backend process must use:")
     for line in format_backend_env_lines(env):
         print(f"  {line}")
-    print("Restart the backend with the above vars, or pass --spawn-backend to vibe-verify run.")
+    print(
+        "Restart the backend with the above vars, or pass --spawn-backend to vibe-verify run."
+    )
 
 
 def fetch_verify_runtime_llm(target_url: str, timeout_s: float = 5.0) -> dict:
@@ -84,7 +88,9 @@ def fetch_verify_runtime_llm(target_url: str, timeout_s: float = 5.0) -> dict:
             return {}
         raise
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Cannot reach backend verify runtime at {url}: {exc}") from exc
+        raise RuntimeError(
+            f"Cannot reach backend verify runtime at {url}: {exc}"
+        ) from exc
 
 
 def validate_backend_stub_llm(

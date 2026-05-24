@@ -146,7 +146,9 @@ async def _step_setup(ctx: dict[str, Any]) -> None:
     assert chapter is not None
 
     paragraphs = await load_chapter_paragraphs(ctx, book_id, probe.chapter_idx)
-    assert_that.is_true(len(paragraphs) > 0, "long_context chapter must contain paragraphs")
+    assert_that.is_true(
+        len(paragraphs) > 0, "long_context chapter must contain paragraphs"
+    )
     assert_that.gte(
         paragraphs[-1]["paragraph_idx"],
         probe.paragraph_idx,
@@ -286,7 +288,7 @@ async def _step_verify_context(ctx: dict[str, Any]) -> None:
 
     compaction_runs = ctx.get("compaction_agent_runs") or []
     if compaction_runs:
-        interaction = (compaction_runs[-1].get("interaction") or compaction_runs[-1])
+        interaction = compaction_runs[-1].get("interaction") or compaction_runs[-1]
         assert_token_budget(interaction.get("injected_context") or {}, config)
 
     assert_reclaimed_l2_chunk_present(

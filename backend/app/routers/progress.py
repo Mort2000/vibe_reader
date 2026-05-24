@@ -20,12 +20,41 @@ from ..services.progress_helpers import (
     detect_jump_type,
     is_reading_at_least,
 )
+from ..services.token_estimator import TokenEstimator
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["progress"])
 
 _SCROLL_DEDUP_THRESHOLD = 0.01
+
+
+async def _check_forward_jump_tokens(
+    db: Any,
+    book_id: int,
+    chapter_idx: int,
+    state: dict[str, Any],
+    new_frontier: int,
+    settings: Any,
+    estimator: Any = None,
+) -> bool:
+    """Return True if forward jump exceeds max_context_jump_tokens_estimate."""
+    ctx_frontier_p = state.get("context_frontier_paragraph_idx", 0)
+    jump_start_p = ctx_frontier_p + 1
+    if new_frontier < jump_start_p:
+        return False
+    paragraphs, _ = await paragraph_repo.list_paragraphs(
+        db, book_id, state.get("active_chapter_idx", chapter_idx)
+    )
+    jump_text = "\n".join(
+        p["text"]
+        for p in paragraphs
+        if jump_start_p <= p["paragraph_idx"] <= new_frontier
+    )
+    if estimator is None:
+        estimator = TokenEstimator(settings.token_estimation)
+    jump_token_est = estimator.get_safe_estimate(jump_text, settings.llm.model)
+    return jump_token_est > settings.context.max_context_jump_tokens_estimate
 
 
 class ProgressRequest(BaseModel):
@@ -91,7 +120,11 @@ async def _check_forward_jump_chars(
     max_chars: int,
 ) -> int:
     return await check_forward_jump_chars(
-        db, book_id, chapter_idx, state, new_frontier,
+        db,
+        book_id,
+        chapter_idx,
+        state,
+        new_frontier,
     )
 
 
@@ -112,20 +145,20 @@ async def _progress_response_fields(
     if is_new:
         job_runner = request.app.state.job_runner
 
+        estimator = getattr(request.app.state, "token_estimator", None)
         ctx_result = await build_context(
             db,
             book_id=book_id,
             chapter_idx=chapter_idx,
             reading_pidx=paragraph_idx,
             settings=settings,
+            token_estimator=estimator,
         )
 
         if ctx_result.preflight_triggered:
             # Submit compaction first so it runs before comment,
             # ensuring comment uses post-compaction context
-            await job_runner.submit_job(
-                db, "compact_context", book_id, chapter_idx
-            )
+            await job_runner.submit_job(db, "compact_context", book_id, chapter_idx)
 
         await job_runner.submit_job(
             db, "comment_window", book_id, chapter_idx, window_id=window["id"]
@@ -156,6 +189,7 @@ async def update_progress(
 ) -> dict[str, Any]:
     db = request.app.state.db
     settings = request.app.state.settings
+    shared_estimator = getattr(request.app.state, "token_estimator", None)
 
     from ..repos import books as book_repo
 
@@ -171,9 +205,7 @@ async def update_progress(
             details={"book_id": book_id, "chapter_idx": body.chapter_idx},
         )
 
-    await _validate_progress_position(
-        db, book_id, body.chapter_idx, body.paragraph_idx
-    )
+    await _validate_progress_position(db, book_id, body.chapter_idx, body.paragraph_idx)
 
     current = await progress_repo.get_progress(db, book_id)
     if (
@@ -183,26 +215,29 @@ async def update_progress(
         and abs((current.get("scroll_pct") or 0) - body.scroll_pct)
         < _SCROLL_DEDUP_THRESHOLD
     ):
-        return await _handle_deduped(
-            db, request, book_id, body, settings, current
-        )
+        return await _handle_deduped(db, request, book_id, body, settings, current)
 
     state = await context_state.get_or_create(db, book_id)
     jump_type = _detect_jump_type(state, body.chapter_idx, body.paragraph_idx)
 
     if jump_type == "backward":
-        return await _handle_backward_jump(
-            db, book_id, body, settings, state
-        )
+        return await _handle_backward_jump(db, book_id, body, settings, state)
 
     if jump_type == "forward":
         new_frontier = await compute_assistant_frontier(
-            db, book_id, body.chapter_idx, body.paragraph_idx,
+            db,
+            book_id,
+            body.chapter_idx,
+            body.paragraph_idx,
             settings.reader.lookahead_paragraphs,
         )
         jump_chars = await _check_forward_jump_chars(
-            db, book_id, body.chapter_idx, state,
-            new_frontier, settings.context.max_context_jump_chars,
+            db,
+            book_id,
+            body.chapter_idx,
+            state,
+            new_frontier,
+            settings.context.max_context_jump_chars,
         )
         if jump_chars > settings.context.max_context_jump_chars:
             raise AppError(
@@ -215,10 +250,30 @@ async def update_progress(
                     "max_context_jump_chars": settings.context.max_context_jump_chars,
                 },
             )
+        if await _check_forward_jump_tokens(
+            db,
+            book_id,
+            body.chapter_idx,
+            state,
+            new_frontier,
+            settings,
+            estimator=shared_estimator,
+        ):
+            raise AppError(
+                "context_jump_too_large",
+                "Forward jump exceeds max_context_jump_tokens_estimate",
+                details={
+                    "book_id": book_id,
+                    "chapter_idx": body.chapter_idx,
+                    "max_context_jump_tokens_estimate": (
+                        settings.context.max_context_jump_tokens_estimate
+                    ),
+                },
+            )
 
     if state.get("status") == "running":
         return await _handle_agent_busy(
-            db, book_id, body, settings, state
+            db, book_id, body, settings, state, shared_estimator
         )
 
     progress = await progress_repo.upsert_progress(
@@ -230,7 +285,8 @@ async def update_progress(
     )
 
     await context_state.update_state(
-        db, book_id,
+        db,
+        book_id,
         active_chapter_idx=body.chapter_idx,
         reading_paragraph_idx=body.paragraph_idx,
     )
@@ -312,14 +368,16 @@ async def _handle_backward_jump(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     progress = await progress_repo.upsert_progress(
-        db, book_id,
+        db,
+        book_id,
         chapter_idx=body.chapter_idx,
         paragraph_idx=body.paragraph_idx,
         scroll_pct=body.scroll_pct,
     )
 
     await context_state.update_state(
-        db, book_id,
+        db,
+        book_id,
         active_chapter_idx=body.chapter_idx,
         reading_paragraph_idx=body.paragraph_idx,
     )
@@ -354,6 +412,7 @@ async def _handle_agent_busy(
     body: ProgressRequest,
     settings: Any,
     state: dict[str, Any],
+    shared_estimator: Any = None,
 ) -> dict[str, Any]:
     jump_type = _detect_jump_type(state, body.chapter_idx, body.paragraph_idx)
 
@@ -416,14 +475,40 @@ async def _handle_agent_busy(
     # Validate forward jump doesn't exceed max_context_jump_chars
     if jump_type == "forward":
         new_frontier = await compute_assistant_frontier(
-            db, book_id, body.chapter_idx, body.paragraph_idx,
+            db,
+            book_id,
+            body.chapter_idx,
+            body.paragraph_idx,
             settings.reader.lookahead_paragraphs,
         )
         jump_chars = await _check_forward_jump_chars(
-            db, book_id, body.chapter_idx, state,
-            new_frontier, settings.context.max_context_jump_chars,
+            db,
+            book_id,
+            body.chapter_idx,
+            state,
+            new_frontier,
+            settings.context.max_context_jump_chars,
         )
         if jump_chars > settings.context.max_context_jump_chars:
+            jobs, _ = await job_repo.list_jobs(
+                db, book_id=book_id, chapter_idx=body.chapter_idx, limit=5
+            )
+            frontier = state.get("assistant_frontier_paragraph_idx", 0)
+            return {
+                "progress": await progress_repo.get_progress(db, book_id),
+                "assistant_frontier_paragraph_idx": frontier,
+                "current_window": None,
+                "jobs": jobs,
+            }
+        if await _check_forward_jump_tokens(
+            db,
+            book_id,
+            body.chapter_idx,
+            state,
+            new_frontier,
+            settings,
+            estimator=shared_estimator,
+        ):
             jobs, _ = await job_repo.list_jobs(
                 db, book_id=book_id, chapter_idx=body.chapter_idx, limit=5
             )
@@ -437,7 +522,10 @@ async def _handle_agent_busy(
 
     # Compute new assistant frontier for the pending position
     new_assistant_frontier = await compute_assistant_frontier(
-        db, book_id, body.chapter_idx, body.paragraph_idx,
+        db,
+        book_id,
+        body.chapter_idx,
+        body.paragraph_idx,
         settings.reader.lookahead_paragraphs,
     )
 
@@ -445,8 +533,12 @@ async def _handle_agent_busy(
     pending_jump_chars = 0
     if jump_type == "forward":
         pending_jump_chars = await _check_forward_jump_chars(
-            db, book_id, body.chapter_idx, state,
-            new_assistant_frontier, settings.context.max_context_jump_chars,
+            db,
+            book_id,
+            body.chapter_idx,
+            state,
+            new_assistant_frontier,
+            settings.context.max_context_jump_chars,
         )
 
     from datetime import datetime, timezone
@@ -460,7 +552,8 @@ async def _handle_agent_busy(
     )
 
     await context_state.update_state(
-        db, book_id,
+        db,
+        book_id,
         pending_chapter_idx=body.chapter_idx,
         pending_paragraph_idx=body.paragraph_idx,
         pending_scroll_pct=body.scroll_pct,
@@ -502,7 +595,8 @@ async def _update_context_frontier(
     frontier: int,
 ) -> None:
     await context_state.update_state(
-        db, book_id,
+        db,
+        book_id,
         assistant_frontier_chapter_idx=body.chapter_idx,
         assistant_frontier_paragraph_idx=frontier,
         context_frontier_chapter_idx=body.chapter_idx,

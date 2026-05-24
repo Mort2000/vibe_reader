@@ -25,7 +25,9 @@ async def run_s0(
     run_manager: RunManager, config: VerifyConfig, metrics: MetricsAggregator
 ) -> None:
     """Execute S0 scenario."""
-    builder = ScenarioBuilder("S0_connectivity", "Environment and LLM mode connectivity")
+    builder = ScenarioBuilder(
+        "S0_connectivity", "Environment and LLM mode connectivity"
+    )
 
     builder.add_step(
         "health_check", "Call backend health endpoint", _step_health, timeout_s=10.0

@@ -55,7 +55,9 @@ class LLMStubConfig:
 
 READING_STOP_CROSS_CHAPTER = "cross_chapter"
 READING_STOP_COMMENT_WINDOWS = "comment_windows"
-READING_STOP_MODES = frozenset({READING_STOP_CROSS_CHAPTER, READING_STOP_COMMENT_WINDOWS})
+READING_STOP_MODES = frozenset(
+    {READING_STOP_CROSS_CHAPTER, READING_STOP_COMMENT_WINDOWS}
+)
 
 
 @dataclass
@@ -589,7 +591,9 @@ def load_verify_config(
         include_sse_summary=audit_raw.get("include_sse_summary", True),
         write_markdown_report=audit_raw.get("write_markdown_report", True),
         markdown_report_dir=audit_raw.get("markdown_report_dir", "audit/agent_reports"),
-        include_usage_timing_summary=audit_raw.get("include_usage_timing_summary", True),
+        include_usage_timing_summary=audit_raw.get(
+            "include_usage_timing_summary", True
+        ),
         markdown_original_text_mode=audit_raw.get(
             "markdown_original_text_mode", "range_edge_excerpt"
         ),
@@ -619,11 +623,15 @@ def load_verify_config(
         attention_target_input_tokens=context_raw.get(
             "attention_target_input_tokens", 128_000
         ),
-        normal_target_input_tokens=context_raw.get("normal_target_input_tokens", 112_000),
+        normal_target_input_tokens=context_raw.get(
+            "normal_target_input_tokens", 112_000
+        ),
         compression_target_input_tokens=context_raw.get(
             "compression_target_input_tokens", 128_000
         ),
-        emergency_input_cap_tokens=context_raw.get("emergency_input_cap_tokens", 160_000),
+        emergency_input_cap_tokens=context_raw.get(
+            "emergency_input_cap_tokens", 160_000
+        ),
         target_l2_chunk_tokens=context_raw.get("target_l2_chunk_tokens", 24_000),
         max_context_jump_chars=context_raw.get("max_context_jump_chars", 24_000),
     )

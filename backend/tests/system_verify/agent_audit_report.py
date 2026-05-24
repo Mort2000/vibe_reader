@@ -93,7 +93,11 @@ def render_usage_timing_table(packet: dict[str, Any]) -> list[str]:
     rounds = packet.get("llm_rounds") or []
     retry_count = timing.get("retry_count")
     if retry_count is None:
-        retry_count = max((r.get("timing") or {}).get("retry_index", 0) for r in rounds) if rounds else 0
+        retry_count = (
+            max((r.get("timing") or {}).get("retry_index", 0) for r in rounds)
+            if rounds
+            else 0
+        )
 
     lines = [
         "## Usage / Timing",
@@ -145,11 +149,19 @@ def render_tool_calls(packet: dict[str, Any]) -> list[str]:
     for event in events:
         lines.append(f"### `{event.get('tool_name')}` · {event.get('tool_call_id')}")
         lines.append("")
-        args = (event.get("arguments") or {}).get("payload") or event.get("arguments") or {}
+        args = (
+            (event.get("arguments") or {}).get("payload")
+            or event.get("arguments")
+            or {}
+        )
         lines.append(f"- arguments: `{args}`")
-        lines.append(f"- schema: {(event.get('schema_validation') or {}).get('status')}")
+        lines.append(
+            f"- schema: {(event.get('schema_validation') or {}).get('status')}"
+        )
         business = event.get("business_validation") or {}
-        lines.append(f"- business: {business.get('status')} {business.get('reason') or ''}".rstrip())
+        lines.append(
+            f"- business: {business.get('status')} {business.get('reason') or ''}".rstrip()
+        )
         lines.append(f"- persistence: {(event.get('persistence') or {}).get('status')}")
         lines.append("")
     return lines

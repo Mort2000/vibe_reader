@@ -42,6 +42,7 @@ class ContextConfig:
     max_anchor_excerpts: int = 12
     max_anchor_excerpt_tokens: int = 120
     max_context_jump_chars: int = 24_000
+    max_context_jump_tokens_estimate: int = 24_000
 
 
 @dataclass
@@ -49,6 +50,8 @@ class ContextL2Config:
     target_chunk_tokens: int = 24_000
     min_chunk_tokens: int = 18_000
     max_chunk_tokens: int = 32_000
+    max_chunk_chars: int = 8_000
+    max_chunk_paragraphs: int = 180
     target_live_original_tokens: int = 96_000
     max_live_original_tokens: int = 112_000
     min_live_chunks_after_compaction: int = 2
@@ -108,6 +111,15 @@ class ObservabilityConfig:
 
 
 @dataclass
+class TokenEstimationConfig:
+    token_safety_margin: float = 1.10
+    calibration_percentile: float = 0.95
+    calibration_window_size: int = 50
+    min_calibration_samples: int = 5
+    default_bootstrap_calibration_ratio: float = 1.0
+
+
+@dataclass
 class Settings:
     data_dir: pathlib.Path = field(default_factory=_default_data_dir)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -120,10 +132,15 @@ class Settings:
         default_factory=EphemeralCommentsConfig
     )
     ephemeral_chat: EphemeralChatConfig = field(default_factory=EphemeralChatConfig)
+    token_estimation: TokenEstimationConfig = field(
+        default_factory=TokenEstimationConfig
+    )
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     verify_mode: bool = False
     _config_overlay_snapshot: dict[str, Any] | None = field(
-        default=None, repr=False, compare=False,
+        default=None,
+        repr=False,
+        compare=False,
     )
 
     @property
@@ -162,12 +179,17 @@ def _snapshot_overlay_fields(settings: Settings) -> dict[str, Any]:
                 "comment_density_soft_min",
             )
         },
+        "context": {
+            "max_context_jump_tokens_estimate": settings.context.max_context_jump_tokens_estimate,
+        },
         "context_l2": {
             key: getattr(settings.context_l2, key)
             for key in (
                 "target_chunk_tokens",
                 "min_chunk_tokens",
                 "max_chunk_tokens",
+                "max_chunk_chars",
+                "max_chunk_paragraphs",
                 "target_live_original_tokens",
                 "max_live_original_tokens",
             )
@@ -179,6 +201,16 @@ def _snapshot_overlay_fields(settings: Settings) -> dict[str, Any]:
                 "compression_trigger_input_tokens",
                 "max_completed_l2_chunks_before_compaction",
                 "min_completed_l2_chunks_before_compaction",
+            )
+        },
+        "token_estimation": {
+            key: getattr(settings.token_estimation, key)
+            for key in (
+                "token_safety_margin",
+                "calibration_percentile",
+                "calibration_window_size",
+                "min_calibration_samples",
+                "default_bootstrap_calibration_ratio",
             )
         },
     }
@@ -217,6 +249,10 @@ def restore_app_config_overlays(settings: Settings) -> dict[str, Any]:
     for key, value in win_snap.items():
         setattr(settings.window_l1, key, value)
 
+    ctx_snap = snapshot.get("context") or {}
+    for key, value in ctx_snap.items():
+        setattr(settings.context, key, value)
+
     l2_snap = snapshot.get("context_l2") or {}
     for key, value in l2_snap.items():
         setattr(settings.context_l2, key, value)
@@ -225,18 +261,26 @@ def restore_app_config_overlays(settings: Settings) -> dict[str, Any]:
     for key, value in l3_snap.items():
         setattr(settings.context_l3, key, value)
 
+    te_snap = snapshot.get("token_estimation") or {}
+    for key, value in te_snap.items():
+        setattr(settings.token_estimation, key, value)
+
     settings._config_overlay_snapshot = None
     return {"restored": True, "snapshot": snapshot}
 
 
-def _apply_reader_overlay(settings: Settings, reader_raw: dict[str, Any]) -> dict[str, Any]:
+def _apply_reader_overlay(
+    settings: Settings, reader_raw: dict[str, Any]
+) -> dict[str, Any]:
     for key in ("lookahead_paragraphs", "progress_debounce_ms"):
         if key in reader_raw:
             setattr(settings.reader, key, int(reader_raw[key]))
     return dict(reader_raw)
 
 
-def _apply_window_l1_overlay(settings: Settings, win_raw: dict[str, Any]) -> dict[str, Any]:
+def _apply_window_l1_overlay(
+    settings: Settings, win_raw: dict[str, Any]
+) -> dict[str, Any]:
     wc = settings.window_l1
     int_keys = (
         "focus_target_tokens",
@@ -256,12 +300,16 @@ def _apply_window_l1_overlay(settings: Settings, win_raw: dict[str, Any]) -> dic
     return dict(win_raw)
 
 
-def _apply_context_l2_overlay(settings: Settings, ctx_l2_raw: dict[str, Any]) -> dict[str, Any]:
+def _apply_context_l2_overlay(
+    settings: Settings, ctx_l2_raw: dict[str, Any]
+) -> dict[str, Any]:
     l2 = settings.context_l2
     for key in (
         "target_chunk_tokens",
         "min_chunk_tokens",
         "max_chunk_tokens",
+        "max_chunk_chars",
+        "max_chunk_paragraphs",
         "target_live_original_tokens",
         "max_live_original_tokens",
     ):
@@ -270,7 +318,9 @@ def _apply_context_l2_overlay(settings: Settings, ctx_l2_raw: dict[str, Any]) ->
     return dict(ctx_l2_raw)
 
 
-def _apply_context_l3_overlay(settings: Settings, ctx_l3_raw: dict[str, Any]) -> dict[str, Any]:
+def _apply_context_l3_overlay(
+    settings: Settings, ctx_l3_raw: dict[str, Any]
+) -> dict[str, Any]:
     l3 = settings.context_l3
     for key in (
         "preflight_trigger_input_tokens",
@@ -283,8 +333,37 @@ def _apply_context_l3_overlay(settings: Settings, ctx_l3_raw: dict[str, Any]) ->
     return dict(ctx_l3_raw)
 
 
+def _apply_context_overlay(
+    settings: Settings, ctx_raw: dict[str, Any]
+) -> dict[str, Any]:
+    int_keys = ("max_context_jump_tokens_estimate",)
+    for key in int_keys:
+        if key in ctx_raw:
+            setattr(settings.context, key, int(ctx_raw[key]))
+    return dict(ctx_raw)
+
+
+def _apply_token_estimation_overlay(
+    settings: Settings, te_raw: dict[str, Any]
+) -> dict[str, Any]:
+    te = settings.token_estimation
+    float_keys = (
+        "token_safety_margin",
+        "calibration_percentile",
+        "default_bootstrap_calibration_ratio",
+    )
+    int_keys = ("calibration_window_size", "min_calibration_samples")
+    for key in float_keys:
+        if key in te_raw:
+            setattr(te, key, float(te_raw[key]))
+    for key in int_keys:
+        if key in te_raw:
+            setattr(te, key, int(te_raw[key]))
+    return dict(te_raw)
+
+
 def apply_app_config_overlays(settings: Settings, raw: dict) -> dict[str, Any]:
-    """Apply ``reader`` / ``window_l1`` / ``context_l2`` / ``context_l3`` overlays."""
+    """Apply ``reader`` / ``window_l1`` / ``context`` / ``context_l2`` / ``context_l3`` / ``token_estimation`` overlays."""
     _validate_overlay_values(raw)
     if settings._config_overlay_snapshot is None:
         settings._config_overlay_snapshot = _snapshot_overlay_fields(settings)
@@ -299,6 +378,10 @@ def apply_app_config_overlays(settings: Settings, raw: dict) -> dict[str, Any]:
     if win_raw:
         applied["window_l1"] = _apply_window_l1_overlay(settings, win_raw)
 
+    ctx_raw = raw.get("context") or {}
+    if ctx_raw:
+        applied["context"] = _apply_context_overlay(settings, ctx_raw)
+
     ctx_l2_raw = raw.get("context_l2") or {}
     if ctx_l2_raw:
         applied["context_l2"] = _apply_context_l2_overlay(settings, ctx_l2_raw)
@@ -306,6 +389,10 @@ def apply_app_config_overlays(settings: Settings, raw: dict) -> dict[str, Any]:
     ctx_l3_raw = raw.get("context_l3") or {}
     if ctx_l3_raw:
         applied["context_l3"] = _apply_context_l3_overlay(settings, ctx_l3_raw)
+
+    te_raw = raw.get("token_estimation") or {}
+    if te_raw:
+        applied["token_estimation"] = _apply_token_estimation_overlay(settings, te_raw)
 
     return applied
 
@@ -353,6 +440,9 @@ def load_settings() -> Settings:
         max_anchor_excerpts=ctx_raw.get("max_anchor_excerpts", 12),
         max_anchor_excerpt_tokens=ctx_raw.get("max_anchor_excerpt_tokens", 120),
         max_context_jump_chars=ctx_raw.get("max_context_jump_chars", 24_000),
+        max_context_jump_tokens_estimate=ctx_raw.get(
+            "max_context_jump_tokens_estimate", 24_000
+        ),
     )
 
     ctx_l2_raw = raw.get("context_l2", {})
@@ -360,6 +450,8 @@ def load_settings() -> Settings:
         target_chunk_tokens=ctx_l2_raw.get("target_chunk_tokens", 24_000),
         min_chunk_tokens=ctx_l2_raw.get("min_chunk_tokens", 18_000),
         max_chunk_tokens=ctx_l2_raw.get("max_chunk_tokens", 32_000),
+        max_chunk_chars=ctx_l2_raw.get("max_chunk_chars", 8_000),
+        max_chunk_paragraphs=ctx_l2_raw.get("max_chunk_paragraphs", 180),
         target_live_original_tokens=ctx_l2_raw.get(
             "target_live_original_tokens", 96_000
         ),
@@ -428,6 +520,17 @@ def load_settings() -> Settings:
         scope=eph_chat_raw.get("scope", "current_session"),
     )
 
+    te_raw = raw.get("token_estimation", {})
+    token_estimation = TokenEstimationConfig(
+        token_safety_margin=te_raw.get("token_safety_margin", 1.10),
+        calibration_percentile=te_raw.get("calibration_percentile", 0.95),
+        calibration_window_size=te_raw.get("calibration_window_size", 50),
+        min_calibration_samples=te_raw.get("min_calibration_samples", 5),
+        default_bootstrap_calibration_ratio=te_raw.get(
+            "default_bootstrap_calibration_ratio", 1.0
+        ),
+    )
+
     obs_raw = raw.get("observability", {})
     observability = ObservabilityConfig(
         enabled=_env("VIBE_READER_OBSERVABILITY_ENABLED") not in ("0", "false", "")
@@ -456,6 +559,7 @@ def load_settings() -> Settings:
         context_l3=context_l3,
         ephemeral_comments=ephemeral_comments,
         ephemeral_chat=ephemeral_chat,
+        token_estimation=token_estimation,
         observability=observability,
         verify_mode=verify_mode,
     )

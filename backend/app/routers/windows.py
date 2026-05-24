@@ -71,7 +71,12 @@ async def list_chapter_comments(
         status=status,
         limit=limit,
     )
-    return {"book_id": book_id, "chapter_idx": chapter_idx, "items": comments, "total": total}
+    return {
+        "book_id": book_id,
+        "chapter_idx": chapter_idx,
+        "items": comments,
+        "total": total,
+    }
 
 
 @router.post("/windows/{window_id}/retry")

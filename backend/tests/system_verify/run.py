@@ -82,7 +82,9 @@ class RealLLMCallTracker:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         self.max_input_tokens_single = max(self.max_input_tokens_single, input_tokens)
-        self.max_output_tokens_single = max(self.max_output_tokens_single, output_tokens)
+        self.max_output_tokens_single = max(
+            self.max_output_tokens_single, output_tokens
+        )
         if cost_usd is not None:
             self.total_cost_usd += cost_usd
             self.cost_reported = True
@@ -208,7 +210,9 @@ class RunManager:
             "param_set": cfg.params.name,
             "param_set_llm_mode": cfg.params.llm_mode,
             "stub_profile": cfg.llm.stub_profile if not cfg.is_real_llm else None,
-            "llm_stub_provider": aimock.get("provider") if not cfg.is_real_llm else None,
+            "llm_stub_provider": aimock.get("provider")
+            if not cfg.is_real_llm
+            else None,
             "aimock_version": aimock.get("version") if not cfg.is_real_llm else None,
             "aimock_base_url": aimock.get("base_url") if not cfg.is_real_llm else None,
             "aimock_fixture_hash": aimock.get("fixture_hash")
@@ -229,7 +233,9 @@ class RunManager:
             "real_llm_max_output_tokens_single": (
                 tracker.max_output_tokens_single if cfg.is_real_llm else 0
             ),
-            "real_llm_total_cost_usd": tracker.total_cost_usd if cfg.is_real_llm else 0.0,
+            "real_llm_total_cost_usd": tracker.total_cost_usd
+            if cfg.is_real_llm
+            else 0.0,
             "real_llm_cost_guardrail_status": (
                 tracker.cost_guardrail_status if cfg.is_real_llm else None
             ),

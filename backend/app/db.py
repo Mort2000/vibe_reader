@@ -225,6 +225,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_jobs_book_chapter
 CREATE INDEX IF NOT EXISTS idx_ai_jobs_trace_id
     ON ai_jobs(trace_id);
 
+CREATE INDEX IF NOT EXISTS idx_token_calibrations_lookup
+    ON token_estimation_calibrations(model, prompt_version, language_profile);
+
 CREATE TABLE IF NOT EXISTS verify_agent_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trace_id TEXT NOT NULL UNIQUE,
@@ -259,6 +262,20 @@ CREATE TABLE IF NOT EXISTS verify_agent_runs (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS token_estimation_calibrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    language_profile TEXT NOT NULL,
+    bootstrap_calibration_ratio REAL NOT NULL DEFAULT 1.0,
+    rolling_p50_ratio REAL NOT NULL DEFAULT 1.0,
+    rolling_p95_ratio REAL NOT NULL DEFAULT 1.0,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    window_size INTEGER NOT NULL DEFAULT 50,
+    updated_at TEXT NOT NULL,
+    UNIQUE(model, prompt_version, language_profile)
+);
+
 CREATE INDEX IF NOT EXISTS idx_verify_agent_runs_run_id
     ON verify_agent_runs(verify_run_id);
 
@@ -274,6 +291,15 @@ _MIGRATIONS = [
     ("verify_agent_runs", "interaction_json", "TEXT NOT NULL DEFAULT ''"),
     ("verify_agent_runs", "interaction_path", "TEXT NOT NULL DEFAULT ''"),
     ("book_context_states", "emergency_overflow_used", "INTEGER NOT NULL DEFAULT 0"),
+    ("original_text_chunks", "raw_token_estimate", "INTEGER NOT NULL DEFAULT 0"),
+    ("original_text_chunks", "estimator_model", "TEXT NOT NULL DEFAULT ''"),
+    ("original_text_chunks", "estimator_version", "TEXT NOT NULL DEFAULT ''"),
+    (
+        "original_text_chunks",
+        "estimator_calibration_ratio",
+        "REAL NOT NULL DEFAULT 1.0",
+    ),
+    ("original_text_chunks", "chunking_version", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

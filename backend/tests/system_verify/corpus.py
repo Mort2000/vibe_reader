@@ -156,7 +156,11 @@ class CorpusManager:
             self.load()
 
         errors: list[str] = []
-        book = self.get_book(book_alias) if book_alias else (self.books[0] if self.books else None)
+        book = (
+            self.get_book(book_alias)
+            if book_alias
+            else (self.books[0] if self.books else None)
+        )
         if book is None:
             return ["No books in corpus manifest"]
 

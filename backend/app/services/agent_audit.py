@@ -105,10 +105,12 @@ def build_original_text_block(
     start_idx = ordered[0]["paragraph_idx"]
     end_idx = ordered[-1]["paragraph_idx"]
     full_text = "\n".join(p.get("text", "") for p in ordered)
-    char_count = sum(int(p.get("char_count") or len(p.get("text", ""))) for p in ordered)
-    token_estimate = sum(int(p.get("token_estimate") or 0) for p in ordered) or estimate_tokens(
-        full_text
+    char_count = sum(
+        int(p.get("char_count") or len(p.get("text", ""))) for p in ordered
     )
+    token_estimate = sum(
+        int(p.get("token_estimate") or 0) for p in ordered
+    ) or estimate_tokens(full_text)
 
     block: dict[str, Any] = {
         "type": "original_text_block",
@@ -337,7 +339,9 @@ def enrich_injected_context_from_build_manifest(
     if not summary_id and not summary_tokens:
         return injected_context
 
-    summary_text = _extract_tagged_prompt_block(prompt or "", "CHAPTER_COMPRESSED_SUMMARY")
+    summary_text = _extract_tagged_prompt_block(
+        prompt or "", "CHAPTER_COMPRESSED_SUMMARY"
+    )
     content: dict[str, Any] = {}
     if summary_id is not None:
         content["summary_id"] = summary_id
@@ -419,7 +423,9 @@ def extract_tool_calls_from_messages(messages: list[Any]) -> list[dict[str, Any]
             if not isinstance(part, ToolCallPart):
                 continue
             args = part.args if isinstance(part.args, dict) else {"raw": part.args}
-            payload = args.get("payload") if isinstance(args.get("payload"), dict) else args
+            payload = (
+                args.get("payload") if isinstance(args.get("payload"), dict) else args
+            )
             calls.append(
                 {
                     "tool_call_id": part.tool_call_id,
@@ -462,7 +468,9 @@ def extract_llm_rounds(
                     {
                         "id": part.tool_call_id,
                         "name": part.tool_name,
-                        "arguments": part.args if isinstance(part.args, dict) else {"raw": part.args},
+                        "arguments": part.args
+                        if isinstance(part.args, dict)
+                        else {"raw": part.args},
                     }
                 )
             elif isinstance(part, TextPart):
@@ -514,7 +522,11 @@ def extract_llm_rounds(
         rounds.append(
             {
                 "round_idx": 0,
-                "request": {"provider": "openai_compatible", "model": model, "stream": False},
+                "request": {
+                    "provider": "openai_compatible",
+                    "model": model,
+                    "stream": False,
+                },
                 "response": {
                     "status": "ok",
                     "content": "",
@@ -558,12 +570,20 @@ def build_tool_events(
             reason = discarded_match.get("reason", "discarded")
             business_status = "discarded"
             persistence = {"status": "not_inserted"}
-            business = {"status": business_status, "reason": reason, "target_paragraph": False}
+            business = {
+                "status": business_status,
+                "reason": reason,
+                "target_paragraph": False,
+            }
             schema_status = "passed" if reason != "validation_failed" else "failed"
         else:
             business_status = "passed"
             persistence = {"status": "inserted", "comment_id": None}
-            business = {"status": business_status, "target_paragraph": True, "duplicate": False}
+            business = {
+                "status": business_status,
+                "target_paragraph": True,
+                "duplicate": False,
+            }
             schema_status = "passed"
             if para_idx in valid_by_para:
                 persistence["comment_id"] = valid_by_para[para_idx].get("comment_id")
@@ -590,7 +610,10 @@ def build_tool_events(
                 "tool_name": "emit_comment",
                 "arguments": {},
                 "schema_validation": {"status": "failed"},
-                "business_validation": {"status": "discarded", "reason": "validation_failed"},
+                "business_validation": {
+                    "status": "discarded",
+                    "reason": "validation_failed",
+                },
                 "persistence": {"status": "not_inserted"},
                 "created_at": _now(),
             }
@@ -776,3 +799,83 @@ def make_invocation_id(agent: str, scenario_id: str, job_id: int) -> str:
         "ContextCompactionAgent": "compaction",
     }.get(agent, agent.lower())
     return f"inv_{agent_slug}_{short}_{job_id:04d}"
+
+
+def build_compaction_interaction_packet(
+    *,
+    invocation_id: str,
+    trace_id: str,
+    verify_run_id: str,
+    verify_scenario_id: str,
+    verify_step_id: str,
+    job_id: int,
+    book_id: int,
+    chapter_idx: int,
+    source_chunk: dict[str, Any],
+    previous_summary_row: dict[str, Any] | None,
+    next_summary_row: dict[str, Any],
+    prompt: str,
+    agent_result: Any,
+    settings: Any,
+    duration_ms: float,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cached_input_tokens: int | None,
+    transaction_committed: bool,
+    prompt_manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    usage_source = "provider" if input_tokens is not None else "estimate"
+
+    llm_rounds = extract_llm_rounds(agent_result.all_messages())
+
+    packet: dict[str, Any] = {
+        "schema_version": "compaction_v1",
+        "invocation_id": invocation_id,
+        "trace_id": trace_id,
+        "verify_run_id": verify_run_id,
+        "verify_scenario_id": verify_scenario_id,
+        "verify_step_id": verify_step_id,
+        "job_id": job_id,
+        "book_id": book_id,
+        "chapter_idx": chapter_idx,
+        "source_chunk": {
+            "id": source_chunk["id"],
+            "chunk_seq": source_chunk.get("chunk_seq"),
+            "start_paragraph_idx": source_chunk["start_paragraph_idx"],
+            "end_paragraph_idx": source_chunk["end_paragraph_idx"],
+            "text_hash": source_chunk.get("text_hash", ""),
+            "token_estimate": source_chunk.get("token_estimate", 0),
+        },
+        "previous_summary": (
+            {
+                "id": previous_summary_row["id"],
+                "covered_start": previous_summary_row["covered_start_paragraph_idx"],
+                "covered_end": previous_summary_row["covered_end_paragraph_idx"],
+                "token_estimate": previous_summary_row.get("token_estimate", 0),
+                "compaction_epoch": previous_summary_row.get("compaction_epoch", 0),
+            }
+            if previous_summary_row
+            else None
+        ),
+        "next_summary": {
+            "id": next_summary_row["id"],
+            "covered_start": next_summary_row["covered_start_paragraph_idx"],
+            "covered_end": next_summary_row["covered_end_paragraph_idx"],
+            "token_estimate": next_summary_row.get("token_estimate", 0),
+            "compaction_epoch": next_summary_row.get("compaction_epoch", 0),
+        },
+        "prompt_manifest": prompt_manifest or {},
+        "llm_rounds": llm_rounds,
+        "usage": {
+            "source": usage_source,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_input_tokens": cached_input_tokens,
+        },
+        "duration_ms": duration_ms,
+        "transaction_committed": transaction_committed,
+        "created_at": _now(),
+    }
+
+    cleaned, redactions = redact_secrets(packet)
+    return cleaned

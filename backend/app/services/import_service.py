@@ -125,6 +125,7 @@ async def import_epub(
     epub_path: str,
     books_dir: Path,
     l2_config: Any | None = None,
+    estimator_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     start_ms = time.time() * 1000
 
@@ -222,18 +223,25 @@ async def import_epub(
         total_chars += sum(p["char_count"] for p in ch["paragraphs"])
         total_tokens += ch["token_estimate"]
 
+    einfo = estimator_info or {}
     for ch in parsed_chapters:
         if l2_config:
             await chunk_repo.create_chunks_for_chapter(
-                db, book_id, ch["idx"],
+                db,
+                book_id,
+                ch["idx"],
                 target_tokens=l2_config.target_chunk_tokens,
                 min_tokens=l2_config.min_chunk_tokens,
                 max_tokens=l2_config.max_chunk_tokens,
+                max_chunk_chars=l2_config.max_chunk_chars,
+                max_chunk_paragraphs=l2_config.max_chunk_paragraphs,
+                estimator_model=einfo.get("model", "local_v1"),
+                estimator_version=einfo.get("version", "local_v1"),
+                estimator_calibration_ratio=einfo.get("calibration_ratio", 1.0),
+                chunking_version="v1",
             )
         else:
-            await chunk_repo.create_chunks_for_chapter(
-                db, book_id, ch["idx"]
-            )
+            await chunk_repo.create_chunks_for_chapter(db, book_id, ch["idx"])
 
     duration_ms = time.time() * 1000 - start_ms
 

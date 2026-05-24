@@ -353,9 +353,7 @@ class TargetClient:
         return resp.json(), rec
 
     async def verify_trace_summary(self, trace_id: str) -> tuple[dict, APIRecord]:
-        resp, rec = await self._request(
-            "GET", f"/api/verify/traces/{trace_id}/summary"
-        )
+        resp, rec = await self._request("GET", f"/api/verify/traces/{trace_id}/summary")
         return resp.json(), rec
 
     async def verify_llm_ping(self) -> tuple[dict, APIRecord]:

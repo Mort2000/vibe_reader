@@ -324,7 +324,9 @@ def _execute_run(args, config, mgr, metrics) -> tuple[bool, dict]:
     return run_failed, data_lifecycle
 
 
-def _finish_run(args, config, mgr, metrics, data_lifecycle, run_failed, out_dir) -> None:
+def _finish_run(
+    args, config, mgr, metrics, data_lifecycle, run_failed, out_dir
+) -> None:
     import asyncio
 
     from .data_lifecycle import DataDirError, prepare_run_data_dir
@@ -360,7 +362,9 @@ async def _run_suite(mgr, config, metrics, corpus_path: str) -> None:
     await run_mvp_suite(mgr, config, metrics, corpus_path)
 
 
-async def _run_real_suite(mgr, config, metrics, corpus_path: str, *, coverage: str) -> None:
+async def _run_real_suite(
+    mgr, config, metrics, corpus_path: str, *, coverage: str
+) -> None:
     from .suite import run_real_happy_path_suite
 
     await run_real_happy_path_suite(

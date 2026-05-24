@@ -217,7 +217,9 @@ async def _step_setup_long_chapter(ctx: dict[str, Any]) -> None:
     ) as client:
         chapters = await load_chapters(ctx, book_id, client=client)
 
-    chapter_meta = next((ch for ch in chapters if ch.get("idx") == target_chapter), None)
+    chapter_meta = next(
+        (ch for ch in chapters if ch.get("idx") == target_chapter), None
+    )
     assert_that.is_not_none(chapter_meta, "Long chapter must exist in book metadata")
     assert chapter_meta is not None
 
@@ -232,7 +234,9 @@ async def _step_setup_long_chapter(ctx: dict[str, Any]) -> None:
     ctx["chapters"] = chapters
     ctx["chapter_paragraphs"] = paragraphs
     ctx["reading_cursor"] = ReadingCursor(target_chapter, target_paragraph)
-    ctx["compaction_audit_exporter"] = CompactionAuditExporter(ctx["run_manager"], ctx["config"])
+    ctx["compaction_audit_exporter"] = CompactionAuditExporter(
+        ctx["run_manager"], ctx["config"]
+    )
 
 
 async def _step_setup(ctx: dict[str, Any]) -> None:
@@ -260,8 +264,12 @@ async def _step_setup(ctx: dict[str, Any]) -> None:
 
     assert_that.is_true(len(chapters) >= 2, "Book must have at least two chapters")
 
-    start_chapter_meta = next((ch for ch in chapters if ch.get("idx") == start_chapter), None)
-    assert_that.is_not_none(start_chapter_meta, "Start chapter must exist in book metadata")
+    start_chapter_meta = next(
+        (ch for ch in chapters if ch.get("idx") == start_chapter), None
+    )
+    assert_that.is_not_none(
+        start_chapter_meta, "Start chapter must exist in book metadata"
+    )
     assert start_chapter_meta is not None
 
     paragraphs = await load_chapter_paragraphs(ctx, book_id, start_chapter)
@@ -275,7 +283,9 @@ async def _step_setup(ctx: dict[str, Any]) -> None:
     ctx["chapters"] = chapters
     ctx["chapter_paragraphs"] = paragraphs
     ctx["reading_cursor"] = ReadingCursor(start_chapter, start_paragraph)
-    ctx["comment_audit_exporter"] = CommentAuditExporter(ctx["run_manager"], ctx["config"])
+    ctx["comment_audit_exporter"] = CommentAuditExporter(
+        ctx["run_manager"], ctx["config"]
+    )
 
 
 async def _step_start_sse(ctx: dict[str, Any]) -> None:
@@ -619,7 +629,9 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
             model=config.effective_model() or config.real_llm.model,
             llm_mode=config.llm.mode,
             stub_profile=config.llm.stub_profile if not config.is_real_llm else None,
-            usage_source="provider" if config.metrics.collect_provider_usage else "estimate",
+            usage_source="provider"
+            if config.metrics.collect_provider_usage
+            else "estimate",
             latency_by_trace=latency_by_trace,
             tokens_by_trace=tokens_by_trace,
             trace_meta_by_trace_id=trace_meta_by_trace_id,
@@ -631,7 +643,9 @@ async def _step_export_audit(ctx: dict[str, Any]) -> None:
                 chapter_idx=chapter_idx,
                 window=window,
                 no_call=window_is_no_call(window, window_comments),
-                validation_failures=collect_validation_failures(window_comments, window),
+                validation_failures=collect_validation_failures(
+                    window_comments, window
+                ),
             )
 
     ndjson_count, md_count = exporter.export()
@@ -861,7 +875,11 @@ async def _step_advance_for_compaction(ctx: dict[str, Any]) -> None:
         "advance_for_compaction",
         context=ctx,
     ) as client:
-        done_job, compaction_jobs, failed_job = await advance_until_compaction_then_post_windows(
+        (
+            done_job,
+            compaction_jobs,
+            failed_job,
+        ) = await advance_until_compaction_then_post_windows(
             client,
             ctx,
             ctx["book_id"],
@@ -909,9 +927,7 @@ async def _step_advance_for_compaction(ctx: dict[str, Any]) -> None:
                 min_source_tokens=min_tokens,
                 min_source_paragraphs=min_paragraphs,
             )
-            interaction = (
-                compaction_runs[-1].get("interaction") or compaction_runs[-1]
-            )
+            interaction = compaction_runs[-1].get("interaction") or compaction_runs[-1]
             assert_token_budget(interaction.get("injected_context") or {}, config)
 
         compaction_job_id = int((done_job or {}).get("id") or 0)
@@ -1021,7 +1037,9 @@ async def _step_export_compaction_audit(ctx: dict[str, Any]) -> None:
             chapter_idx=ctx.get("long_chapter_idx") or ctx["chapter_idx"],
             model=config.effective_model() or config.real_llm.model,
             llm_mode=config.llm.mode,
-            usage_source="provider" if config.metrics.collect_provider_usage else "estimate",
+            usage_source="provider"
+            if config.metrics.collect_provider_usage
+            else "estimate",
             tokens=tokens_by_trace.get(trace_id, {}),
             latency_ms=latency_by_trace.get(trace_id),
         )
