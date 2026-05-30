@@ -22,6 +22,9 @@ uv run vibe-reader
 curl -s http://127.0.0.1:8000/api/runtime | jq '.data_dir, .verify_mode'
 
 # 5. 运行默认 stub 验证套件（不要求真实 LLM API key）
+# 方式 A：一键（自动起 AIMock + backend）
+uv run vibe-verify run --suite smoke --spawn-backend
+# 方式 B：手动起 backend 后运行（见上文步骤 3）
 uv run vibe-verify run --suite smoke --target-url http://127.0.0.1:8000
 ```
 
@@ -88,7 +91,7 @@ tests/corpus/param_sets/
 uv run vibe-verify run --suite smoke --spawn-backend
 ```
 
-pytest 同样支持 `--spawn-backend`。未使用该选项时，runner 会在 S0 之前检查 `/api/verify/runtime` 的 LLM 配置，未就绪则 fail-fast。
+pytest 同样支持 `--spawn-backend`（**仅 stub 模式**）。未使用该选项时，集成场景会检查 backend / verify mode / LLM 配置；前置不满足则 **SKIP**（加 `--require-integration` 改为 **FAIL**）。
 
 运行 **real 参数集** 时额外需要：
 
@@ -109,26 +112,27 @@ manifest 现包含 `happy_path_current` probe，供 R1 长流程定位。
 
 ```bash
 cd backend
-set -a && source ../.env && set +a
+set -a && source .env && set +a
 
 # 校验语料（含 happy_path_current）
 uv run vibe-verify prepare --corpus tests/corpus/manifest.toml
 
 # stub smoke / mvp：S0–S4（参数集 mvp）
-uv run vibe-verify run --suite smoke --target-url http://127.0.0.1:8000
-uv run vibe-verify run --suite mvp --target-url http://127.0.0.1:8000
+uv run vibe-verify run --suite smoke --spawn-backend
+uv run vibe-verify run --suite mvp --spawn-backend
 
-# R1 A2 stub 回归（同一 R1 场景，AIMock 参数集）
-uv run vibe-verify run --suite real-happy-path --param-set r1_a2_stub
+# R1 A2 stub 回归
+uv run vibe-verify run --suite real-happy-path --param-set r1_a2_stub --spawn-backend
 
-# 真实 LLM A2（参数集 r1_a2_real）
+# 真实 LLM（须手动起 backend；--spawn-backend 仅 stub）
 uv run vibe-verify run --suite real-happy-path --param-set r1_a2_real --llm-mode real --real-coverage A2
+uv run vibe-verify run --suite real-happy-path --param-set r1_a3_real --llm-mode real --real-coverage A3
 
 # 从已有 run 生成报告
 uv run vibe-verify report --run-id <run_id>
 
 # 失败时保留数据目录
-uv run vibe-verify run --suite smoke --keep-data
+uv run vibe-verify run --suite smoke --spawn-backend --keep-data
 ```
 
 ## 输出目录
@@ -154,7 +158,7 @@ uv run vibe-verify run --suite smoke --keep-data
 | 套件 | 包含场景 | 默认参数集 |
 |---|---|---|
 | `smoke` / `mvp` | S0、S1、S2、S3、S4 | `mvp` |
-| `real-happy-path` | R1（A2/A3） | 按 `--llm-mode` 选 `r1_a2_{stub\|real}` 等 |
+| `real-happy-path` | R1_A2_comments、R1_A3_compaction | 按 `--llm-mode` 选 `r1_a2_{stub\|real}` 等 |
 
 | 场景 | 内容 | 验收阶段 |
 |---|---|---|
@@ -162,50 +166,104 @@ uv run vibe-verify run --suite smoke --keep-data
 | **S1_book_import** | epub 导入、进度、happy_path_current probe | A1 |
 | **S2_continuous_reading** | 连续阅读、评论/no-call 窗口、密度与校验指标、审计样本 | A2 |
 | **S3_fast_scroll** | 快速滚动与跳读、窗口对齐、评论复用 | A2 |
-| **R1_real_happy_path** | 长流程阅读、评论窗口、可选 compaction、预算护栏 | A2/A3 |
+| **S4_long_context** | 长上下文窗口、L2 分块与 compaction 前置 | A3 |
+| **R1_A2_comments** | 长流程阅读、评论窗口、预算护栏 | A2 |
+| **R1_A3_compaction** | compaction 触发、审计与 post-compaction 评论 | A3 |
 
 ## pytest
 
+测试分三层，按依赖递增：
+
+| 层级 | marker / 条件 | 需要 live backend |
+|---|---|---|
+| 单元测试 | `-m "not system and not real_llm"` | 否 |
+| stub 集成 | `-m "system and not real_llm"` | 是（可用 `--spawn-backend` 自动起） |
+| real LLM 集成 | `-m real_llm` + `--llm-mode real` + 匹配 `--param-set` | 是（须手动起 backend） |
+
 ```bash
 cd backend
-set -a && source ../.env && set +a
+set -a && source .env && set +a
 
-# 默认 stub 回归（含 R1 stub）
-# 无 live backend 时 test_scenarios.py 会 SKIP；纯单元测试仍照常运行
-uv run pytest tests/system_verify/ -m "system_verify and system and not real_llm"
+# 1. 单元测试（无需 backend，合并前首选回归）
+uv run pytest -m "not system and not real_llm"
 
-# CI 期望联调必须跑通时使用（前置不满足则 FAIL 而非 SKIP）
-uv run pytest tests/system_verify/test_scenarios.py -m "system and not real_llm" --require-integration --spawn-backend
+# 2. stub 集成（自动起 AIMock + backend；前置不满足则 FAIL）
+uv run pytest tests/system_verify/test_scenarios.py \
+  -m "system and not real_llm" --spawn-backend --require-integration
 
-# 完整 stub 套件
-uv run pytest tests/system_verify/test_scenarios.py::test_mvp_suite -m system
+# 单场景示例
+uv run pytest tests/system_verify/test_scenarios.py::test_mvp_suite -m system --spawn-backend
+uv run pytest tests/system_verify/test_scenarios.py::test_r1_happy_path_a2_stub -m system --spawn-backend
 
-# R1 A2 stub（默认 CI 可纳入）
-uv run pytest tests/system_verify/test_scenarios.py::test_r1_happy_path_a2_stub -m system
+# 3. real LLM（另开终端手动起 backend，加载 .env 中的真实 LLM 配置）
+uv run python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
 
-# 真实 LLM Happy Path（需 API key）
-uv run pytest tests/system_verify/test_scenarios.py::test_r1_happy_path_a2_real -m real_llm --llm-mode real --param-set r1_a2_real
+# A2 → reset → A3（同一 data_dir 时 A3 前须 reset）
+uv run pytest tests/system_verify/test_scenarios.py::test_r1_happy_path_a2_real \
+  -m real_llm --llm-mode real --param-set r1_a2_real --require-integration
+
+uv run python -c "
+import asyncio
+from tests.system_verify.env_file import load_project_dotenv
+load_project_dotenv()
+from tests.system_verify.core.config_loader import load_verify_config
+from tests.system_verify.core.run_manager import RunManager
+from tests.system_verify.data_lifecycle import prepare_run_data_dir
+async def main():
+    c = load_verify_config('tests/corpus/verify.toml', param_set='r1_a3_real', llm_mode_override='real')
+    mgr = RunManager(c); mgr.start()
+    await prepare_run_data_dir(c, mgr, phase='pre'); mgr.finish()
+asyncio.run(main())
+"
+
+uv run pytest tests/system_verify/test_scenarios.py::test_r1_happy_path_a3_real \
+  -m real_llm --llm-mode real --param-set r1_a3_real --require-integration
 ```
 
-`.env` 由 `tests/system_verify/conftest.py` 自动加载。pytest **不**负责启动或停止后端进程。
+`.env` 由 `tests/system_verify/conftest.py` 自动加载（shell 环境变量优先）。
+
+- **stub 模式**：`--spawn-backend` 会自动启动 AIMock sidecar 与 backend 子进程；未使用时需手动起 backend 且 LLM env 须与 AIMock 一致。
+- **real 模式**：pytest 不启动 backend；`--param-set` 必须与场景匹配（A2 用 `r1_a2_real`，A3 用 `r1_a3_real`）。
+- 无 live backend 时 `test_scenarios.py` 会 **SKIP**；加 `--require-integration` 改为 **FAIL**（CI 联调推荐）。
+- `test_scenario_compat.py` 保留旧 pytest 函数名别名，与 `test_r1_happy_path_*_real` 重复，日常不必单独跑。
 
 ## 目录结构
 
 ```text
 tests/
   README.md
+  test_*.py                 应用层单元测试（agent audit、config overlays 等）
   corpus/
     manifest.toml           验证语料声明（含 happy_path_current）
     verify.toml             基础配置（target、LLM 基础设施、套件默认）
     param_sets/             命名参数集（行为参数）
     books/                  epub 文件（gitignore）
   system_verify/
+    __main__.py             vibe-verify CLI 入口
+    conftest.py             pytest fixtures 与 marker 注册
+    core/                   RunSpec、Orchestrator、ScenarioContext、config、run_manager
+    flows/                  场景步骤实现（reading、comments、compaction、import…）
+    assertions/             断言逻辑（与 flow 分离）
+    modes/                  stub_aimock / real_llm 环境生命周期
+    profiles/               VerificationProfile 与策略
+    scenarios/              薄层场景入口 + registry.py
+    fixtures/baseline/      Phase 0 冻结产物（test_characterization.py 回归护栏）
     llm_stub/
-      aimock/                 AIMock sidecar（server.mjs、profiles、fixtures）
-      aimock_launcher.py      Python 启停与健康检查
-    scenarios/              S0–S4、R1
+      aimock/               AIMock sidecar（server.mjs、profiles、fixtures）
+      aimock_launcher.py    Python 启停与健康检查
+      env.py                stub backend env 注入与 spawn
     report_generator.py     V-16 报告生成
-    suite.py                套件编排
-    test_scenarios.py       pytest 入口
+    test_scenarios.py       pytest 集成场景入口
+    test_characterization.py
+    test_orchestrator.py
     …
+```
+
+## 合并前检查（workspace 联调）
+
+```bash
+cd backend
+uv run ruff check .
+uv run pytest -m "not system and not real_llm"
+uv run pytest tests/system_verify/test_scenarios.py -m "system and not real_llm" --spawn-backend --require-integration
 ```

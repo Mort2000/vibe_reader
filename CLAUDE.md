@@ -17,15 +17,25 @@ uv sync --extra dev                    # install deps (editable, registers CLI e
 uv run vibe-reader                     # start dev server (reload, 127.0.0.1:8000)
 uv run ruff check .                    # lint
 uv run ruff format .                   # format
-uv run pytest tests/ -m system_verify  # run system verification tests
+uv run pytest -m "not system and not real_llm"   # unit tests (no live backend)
 ```
 
 Single test: `uv run pytest tests/path/to/test.py::test_name`
 
-System verification CLI:
+System verification (see `tests/README.md` for full guide):
+
 ```bash
+# CLI
 uv run vibe-verify prepare --corpus tests/corpus/manifest.toml
-uv run vibe-verify run --suite smoke --target-url http://127.0.0.1:8000
+uv run vibe-verify run --suite mvp --spawn-backend              # stub S0–S4
+uv run vibe-verify run --suite real-happy-path --param-set r1_a2_real --llm-mode real --real-coverage A2
+
+# pytest — stub integration (auto-starts AIMock + backend)
+uv run pytest tests/system_verify/test_scenarios.py -m "system and not real_llm" --spawn-backend --require-integration
+
+# pytest — real LLM (start backend manually with .env first)
+uv run pytest tests/system_verify/test_scenarios.py::test_r1_happy_path_a2_real \
+  -m real_llm --llm-mode real --param-set r1_a2_real --require-integration
 ```
 
 ### Frontend (from `frontend/`)
@@ -78,12 +88,15 @@ Vite dev server proxies `/api` to `http://127.0.0.1:8000`.
 
 ### System Verification (`backend/tests/system_verify/`)
 
-Black-box HTTP/SSE testing against a live backend. No internal imports from product code.
+Black-box HTTP/SSE testing against a live backend. Does not import product `app/` code.
 
-- CLI: `vibe-verify` (registered in pyproject.toml scripts)
-- Scenarios: S0 (connectivity + LLM ping), S1 (book import + reading + idempotency + progress dedup)
-- Output: `backend/verify_runs/<run_id>/` with JSON/NDJSON manifests
+- CLI: `vibe-verify` (registered in `pyproject.toml` scripts)
+- Layered layout: `core/` (RunSpec, Orchestrator, ScenarioContext), `flows/` (step logic), `assertions/`, `modes/` (stub AIMock / real LLM), `profiles/`, `scenarios/` (thin entries + `registry.py`)
+- Scenarios: S0–S4 (MVP stub suite), R1_A2_comments, R1_A3_compaction (real-happy-path)
+- Param sets: `tests/corpus/param_sets/` (`mvp`, `r1_a2_{stub|real}`, `r1_a3_{stub|real}`)
+- Output: `backend/verify_runs/<run_id>/` with JSON/NDJSON manifests and V-16 reports
 - Corpus: epub files in `tests/corpus/books/` (gitignored), declared in `tests/corpus/manifest.toml`
+- Baseline: `fixtures/baseline/` + `test_characterization.py` guard refactor regressions
 - Security: API key leak scanning in output files
 
 ### Design docs
@@ -94,6 +107,6 @@ Specifications in sibling repo `vibe_reader_doc/`: `spec_mini.md`, `task_mini.md
 
 - Commit messages: conventional commits (`feat(slice1):`, `chore(backend):`, etc.)
 - Python linting: ruff (line-length 88, target py311, max complexity 12, max statements 60)
-- pytest: `asyncio_mode = "auto"`, markers `system_verify` / `system_llm`
+- pytest: `asyncio_mode = "auto"`, markers `system_verify` / `system` (stub integration) / `real_llm`
 - `.env` is auto-loaded by `conftest.py`; shell env vars override `.env` values
 - Backend uses `set -a && source ../.env && set +a` pattern for env loading in manual runs
