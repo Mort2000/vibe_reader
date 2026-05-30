@@ -180,6 +180,21 @@ def _build_comments_block(
     return "\n".join(c_lines), total_tokens
 
 
+def _paragraphs_to_ranges(paragraphs: list[int]) -> str:
+    if not paragraphs:
+        return ""
+    parts: list[str] = []
+    start = prev = paragraphs[0]
+    for p in paragraphs[1:]:
+        if p == prev + 1:
+            prev = p
+            continue
+        parts.append(f"{start}..={prev}" if start != prev else str(start))
+        start = prev = p
+    parts.append(f"{start}..={prev}" if start != prev else str(start))
+    return ", ".join(parts)
+
+
 def _build_task_block(
     frontier: int,
     focus_start: int | None,
@@ -196,7 +211,7 @@ def _build_task_block(
         t_lines.append(f"focus_start_paragraph_idx = {focus_start}")
     if focus_end is not None:
         t_lines.append(f"focus_end_paragraph_idx = {focus_end}")
-    target_str = ", ".join(str(i) for i in sorted(target_paragraphs))
+    target_str = _paragraphs_to_ranges(sorted(target_paragraphs))
     t_lines.append(f"comment_target_paragraphs = [{target_str}]")
     t_lines.append("")
     t_lines.append("Rules:")
