@@ -112,6 +112,13 @@ async def get_or_create_window(
         reading_pidx, settings.reader.lookahead_paragraphs, last_pidx
     )
 
+    if (
+        latest_window is not None
+        and latest_window.status in ("pending", "running", "done")
+        and latest_window.focus_end_paragraph_idx >= frontier
+    ):
+        return latest_window, False
+
     focus_end = frontier
     prev_done = latest_window is not None and latest_window.status in (
         "pending",

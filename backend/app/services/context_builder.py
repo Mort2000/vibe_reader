@@ -201,6 +201,10 @@ def _build_task_block(
     t_lines.append("")
     t_lines.append("Rules:")
     t_lines.append("- Only emit comments for comment_target_paragraphs.")
+    t_lines.append(
+        "- When more than one useful comment is needed, call emit_comment multiple "
+        "times in the same response."
+    )
     t_lines.append("- Paragraph text is available in LIVE_ORIGINAL_CHUNKS.")
     t_lines.append(
         "- If paragraph text is missing due context degradation, skip that paragraph."

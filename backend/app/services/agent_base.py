@@ -19,11 +19,12 @@ COMMENT_INSTRUCTIONS = """\
 你是一位中文小说阅读伴侣。为指定段落生成简短评论。
 你可以调用 emit_comment 提交评论，也可以不调用。
 每次 emit_comment 只提交一条评论。
+如果需要提交多条评论，优先在同一轮响应中并行调用多次 emit_comment，而不是一轮只调用一次。
 只评论 comment_target_paragraphs 中的段落。
 不要为了满足密度提示生成空泛、重复、跨段或剧透评论。
 规则：每条评论只针对一个段落；建议 20-80 中文字；不编造文中没有的内容；
 comment_type 必须是 observation/question/humor/craft/warning 之一。
-最终自然语言文本会被忽略。"""
+完成所需 tool call 后不要再输出自然语言；最终自然语言文本会被忽略。"""
 
 
 class EmitCommentDraft(BaseModel):
