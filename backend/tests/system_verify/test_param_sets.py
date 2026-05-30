@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.system_verify.config import (
+from tests.system_verify.core.config_loader import (
     apply_param_set,
     load_verify_config,
     resolve_param_set_name,

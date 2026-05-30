@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .client import APIRecord
+from ..core.client_factory import APIRecord
 
 
 class ContractError(Exception):

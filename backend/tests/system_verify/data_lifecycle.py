@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any
 import toml
 
 if TYPE_CHECKING:
-    from .client import TargetClient
-    from .config import VerifyConfig
-    from .run import RunManager
+    from .core.config import VerifyConfig
+    from .core.client_factory import TargetClient
+    from .core.run_manager import RunManager
 
 DEFAULT_USER_DATA_DIR = pathlib.Path.home() / ".vibe_reader"
 
@@ -76,7 +76,7 @@ async def prepare_run_data_dir(
 
     phase: 'pre' before scenarios, 'post' after successful run.
     """
-    from .client import TargetClient
+    from .core.client_factory import TargetClient
 
     scenario_id = "data_lifecycle"
     step_id = f"{phase}_reset"

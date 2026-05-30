@@ -6,8 +6,8 @@ import time
 import pytest
 
 from tests.system_verify.report_generator import _compaction_jobs_summary_lines
-from tests.system_verify.scenario import StepAssertionError
-from tests.system_verify.scenarios.common import CompactionNoopTracker
+from tests.system_verify.core.scenario import StepAssertionError
+from tests.system_verify.flows.compaction import CompactionNoopTracker
 
 
 def test_compaction_noop_tracker_raises_after_grace_period() -> None:

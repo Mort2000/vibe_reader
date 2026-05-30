@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, get_type_hints
 
-from .run import RunManager
-from .config import VerifyConfig
+from tests.system_verify.core.config import VerifyConfig
+from tests.system_verify.core.context import (
+    ScenarioContext,
+    as_legacy_dict,
+    coerce_scenario_context,
+    sync_from_legacy_dict,
+)
+from .run_manager import RunManager
 
 
 class StepStatus(str, Enum):
@@ -18,7 +25,6 @@ class StepStatus(str, Enum):
     RUNNING = "running"
     PASSED = "passed"
     FAILED = "failed"
-    SKIPPED = "skipped"
     ERROR = "error"
 
 
@@ -97,6 +103,30 @@ class ScenarioResult:
 
 
 StepFunc = Callable[..., Awaitable[None]]
+
+
+def _step_accepts_scenario_context(step_func: StepFunc) -> bool:
+    """Return True when the step's first parameter is annotated as ScenarioContext."""
+    params = list(inspect.signature(step_func).parameters.values())
+    if not params:
+        return False
+    first = params[0]
+    if first.name in ("self", "cls"):
+        if len(params) < 2:
+            return False
+        first = params[1]
+    hints = get_type_hints(step_func)
+    annotation = hints.get(first.name, first.annotation)
+    return annotation is ScenarioContext
+
+
+async def _invoke_step(step_func: StepFunc, ctx: ScenarioContext) -> None:
+    if _step_accepts_scenario_context(step_func):
+        await step_func(ctx)
+        return
+    legacy = as_legacy_dict(ctx)
+    await step_func(legacy)
+    sync_from_legacy_dict(ctx, legacy)
 
 
 def _step_failure_detail(step_result: StepResult) -> str:
@@ -183,10 +213,19 @@ class ScenarioRunner:
         self._results: list[ScenarioResult] = []
 
     async def run(
-        self, builder: ScenarioBuilder, context: dict[str, Any] | None = None
+        self,
+        builder: ScenarioBuilder,
+        context: ScenarioContext | dict[str, Any] | None = None,
     ) -> ScenarioResult:
         """Execute all steps in a scenario."""
-        ctx = context or {}
+        if context is None:
+            raise TypeError("ScenarioRunner.run requires a scenario context")
+        original_legacy = context if isinstance(context, dict) else None
+        ctx = coerce_scenario_context(
+            context,
+            run_manager=self.run_manager,
+            config=self.config,
+        )
         result = ScenarioResult(
             scenario_id=builder.scenario_id,
             description=builder.description,
@@ -227,9 +266,13 @@ class ScenarioRunner:
 
         self._results.append(result)
         self.run_manager.write_ndjson("scenario_results.ndjson", [result.to_dict()])
+        if original_legacy is not None:
+            updated = as_legacy_dict(ctx)
+            original_legacy.clear()
+            original_legacy.update(updated)
         return result
 
-    async def _run_step(self, step_def: Step, context: dict[str, Any]) -> StepResult:
+    async def _run_step(self, step_def: Step, context: ScenarioContext) -> StepResult:
         step_result = StepResult(
             step_id=step_def.step_id,
             description=step_def.description,
@@ -244,7 +287,7 @@ class ScenarioRunner:
         for attempt in range(attempts):
             try:
                 await asyncio.wait_for(
-                    step_def.func(context),
+                    _invoke_step(step_def.func, context),
                     timeout=step_def.timeout_s,
                 )
                 step_result.status = StepStatus.PASSED
@@ -286,7 +329,7 @@ class ScenarioRunner:
             1 if step_result.status == StepStatus.PASSED else 0
         )
 
-        last_rec = context.get("last_api_record")
+        last_rec = context.last_api_record
         if last_rec is not None:
             step_result.trace_id = getattr(last_rec, "trace_id", "") or ""
             step_result.request_id = getattr(last_rec, "request_id", "") or ""

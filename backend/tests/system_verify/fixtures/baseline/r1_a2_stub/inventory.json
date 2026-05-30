@@ -1,0 +1,27 @@
+{
+  "source_run_id": "20260524T044338Z_d002f50e",
+  "total_files": 24,
+  "audit_file_count": 14,
+  "audit_files": [
+    "agent_interactions/inv_comment_R1_0001.json",
+    "agent_invocations.ndjson",
+    "agent_reports/index.md",
+    "agent_reports/inv_comment_R1_0001.md",
+    "audit_safety_report.ndjson",
+    "comments.ndjson",
+    "contexts/context_8b988112e390.json",
+    "prompts/inv_comment_R1_0001.prompt.md",
+    "samples/comment_R1_real_happy_path_0001.md",
+    "samples/comment_R1_real_happy_path_0002.md",
+    "samples/comment_R1_real_happy_path_0003.md",
+    "samples/comment_R1_real_happy_path_0004.md",
+    "samples/comment_R1_real_happy_path_0005.md",
+    "samples/comment_R1_real_happy_path_0006.md"
+  ],
+  "report_files": [
+    "failures.md",
+    "metrics.json",
+    "summary.md"
+  ],
+  "scenario_count": 1
+}

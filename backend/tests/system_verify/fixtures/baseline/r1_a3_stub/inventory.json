@@ -1,0 +1,41 @@
+{
+  "source_run_id": "20260524T044442Z_f184b883",
+  "total_files": 38,
+  "audit_file_count": 28,
+  "audit_files": [
+    "agent_interactions/inv_comment_R1_0001.json",
+    "agent_interactions/inv_comment_R1_0002.json",
+    "agent_interactions/inv_comment_R1_0003.json",
+    "agent_interactions/inv_comment_R1_0004.json",
+    "agent_interactions/inv_comment_R1_0006.json",
+    "agent_interactions/inv_compaction_R1_0005.json",
+    "agent_invocations.ndjson",
+    "agent_reports/index.md",
+    "agent_reports/inv_comment_R1_0001.md",
+    "agent_reports/inv_comment_R1_0002.md",
+    "agent_reports/inv_comment_R1_0003.md",
+    "agent_reports/inv_comment_R1_0004.md",
+    "agent_reports/inv_comment_R1_0006.md",
+    "agent_reports/inv_compaction_R1_0005.md",
+    "audit_safety_report.ndjson",
+    "compaction_summaries.ndjson",
+    "contexts/context_391a7d1be8a4.json",
+    "contexts/context_805c30b999f8.json",
+    "contexts/context_8b988112e390.json",
+    "contexts/context_df595367fbe6.json",
+    "contexts/context_f7f12bac0912.json",
+    "prompts/inv_comment_R1_0001.prompt.md",
+    "prompts/inv_comment_R1_0002.prompt.md",
+    "prompts/inv_comment_R1_0003.prompt.md",
+    "prompts/inv_comment_R1_0004.prompt.md",
+    "prompts/inv_comment_R1_0006.prompt.md",
+    "prompts/inv_compaction_R1_0005.prompt.md",
+    "samples/compaction_R1_real_happy_path_0001.md"
+  ],
+  "report_files": [
+    "failures.md",
+    "metrics.json",
+    "summary.md"
+  ],
+  "scenario_count": 1
+}

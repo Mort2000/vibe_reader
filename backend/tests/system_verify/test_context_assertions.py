@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.system_verify.config import ContextConfig, VerifyConfig
-from tests.system_verify.context_assertions import (
+from tests.system_verify.core.config import ContextConfig, VerifyConfig
+from tests.system_verify.assertions.context import (
     assert_chapter_summary_in_subsequent_context,
     assert_chapter_summary_structure,
     assert_comment_activity_observable,
@@ -24,8 +24,8 @@ from tests.system_verify.context_assertions import (
     record_context_metrics_from_verify,
     select_post_compaction_comment_runs,
 )
-from tests.system_verify.scenarios.common import ReadingTrace
-from tests.system_verify.scenario import StepAssertionError
+from tests.system_verify.flows.reading import ReadingTrace
+from tests.system_verify.core.scenario import StepAssertionError
 
 
 def test_extract_l2_chunks_from_component_content() -> None:

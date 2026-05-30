@@ -1,0 +1,55 @@
+{
+  "run_id": "20260524T044442Z_f184b883",
+  "started_at": "2026-05-24T04:44:42Z",
+  "ended_at": "2026-05-24T04:45:13Z",
+  "git_commit": "036f1d64163544a9c4cb5f6d57fe75f69f08b3be",
+  "git_dirty": true,
+  "suite": "real-happy-path",
+  "target_url": "http://127.0.0.1:8000",
+  "backend_version": "0.1.0",
+  "llm_mode": "stub",
+  "param_set": "r1_a3_stub",
+  "param_set_llm_mode": "stub",
+  "stub_profile": "mvp_default",
+  "llm_stub_provider": "aimock",
+  "aimock_version": "1.27.1",
+  "aimock_base_url": "http://127.0.0.1:4010/v1",
+  "aimock_fixture_hash": "sha256:1e3154f4ec0bf4f3cc7225ab465e4804b4e2d164abf58188a621cb6c265cfa98",
+  "aimock_profile_hash": "sha256:5a6cef833f2a2b6f79e1d0ddd817f452bcb33244c8c6fe05071d8d1fddf22aa2",
+  "real_llm": false,
+  "model": "deepseek-v4-flash",
+  "llm_base_url_hash": null,
+  "real_llm_call_count": 0,
+  "real_llm_input_tokens": 0,
+  "real_llm_output_tokens": 0,
+  "real_llm_max_input_tokens_single": 0,
+  "real_llm_max_output_tokens_single": 0,
+  "real_llm_total_cost_usd": 0.0,
+  "real_llm_cost_guardrail_status": null,
+  "real_llm_budget_exceeded": false,
+  "real_llm_budget_reason": null,
+  "real_llm_phase_coverage": {
+    "A2_comments": false,
+    "A3_compaction": true,
+    "A4_full_flow": false
+  },
+  "usage_source": "estimate",
+  "corpus_sha256": [
+    "5b8a4e552e42c7769da068ec8eec87e760a022a11bcfa34c155b55d81e0b11a4"
+  ],
+  "config_hash": "8f93b73984ecc079",
+  "security_checks": {
+    "api_key_leak_scan": {
+      "passed": true,
+      "findings_count": 0,
+      "findings": []
+    }
+  },
+  "target_data_dir": "/tmp/vibe_reader_verify",
+  "data_lifecycle": {
+    "pre_reset": true,
+    "post_reset": false,
+    "preserved_on_failure": false,
+    "keep_data": true
+  }
+}

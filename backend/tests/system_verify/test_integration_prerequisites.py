@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from tests.system_verify.config import VerifyConfig
+from tests.system_verify.core.config import VerifyConfig
 from tests.system_verify.corpus import CorpusManager
 from tests.system_verify.integration_prerequisites import check_integration_prerequisites
 

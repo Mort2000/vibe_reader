@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import VerifyConfig
-from .run import RunManager
+from .core.config import VerifyConfig
+from .core.run_manager import RunManager
 
 MAX_EXCERPT_CHARS = 400
 

@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from .run import RunManager
+from .core.run_manager import RunManager
 
 
 class SSEEvent:

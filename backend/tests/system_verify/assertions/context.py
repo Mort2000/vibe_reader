@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .config import ContextConfig, VerifyConfig
-from .scenario import StepAssertionError, assert_that
+from ..core.config import ContextConfig, VerifyConfig
+from ..core.scenario import StepAssertionError, assert_that
 
 
 def _component_by_name(
@@ -228,6 +228,41 @@ def assert_token_budget(
         int(estimate),
         cap,
         label="context.input_token_estimate_within_emergency_cap",
+    )
+
+
+def assert_s4_context_evidence(
+    *,
+    config: VerifyConfig,
+    injected_contexts: list[dict[str, Any]],
+    compaction_jobs: list[dict[str, Any]],
+    compaction_runs: list[dict[str, Any]],
+    completed_compactions: list[dict[str, Any]] | None = None,
+) -> None:
+    """Validate S4 token budgets, compaction observation, and reclaimed L2 chunks."""
+    done_compaction_jobs = [
+        job
+        for job in compaction_jobs
+        if job.get("job_type") == "compact_context" and job.get("status") == "done"
+    ]
+    compaction_observed = len(compaction_runs) > 0 or len(done_compaction_jobs) > 0
+    assert_that.is_true(
+        compaction_observed,
+        "compaction_observed: expected compaction job, agent run, or SSE signal",
+    )
+
+    for injected in injected_contexts:
+        assert_token_budget(injected, config)
+
+    if compaction_runs:
+        interaction = compaction_runs[-1].get("interaction") or compaction_runs[-1]
+        assert_token_budget(interaction.get("injected_context") or {}, config)
+
+    assert_reclaimed_l2_chunk_present(
+        injected_contexts=injected_contexts,
+        compaction_jobs=compaction_jobs,
+        compaction_runs=compaction_runs,
+        completed_compactions=completed_compactions,
     )
 
 

@@ -13,7 +13,8 @@ from typing import Any
 
 import httpx
 
-from .run import RunManager
+from .context import ScenarioContext
+from .run_manager import RunManager
 
 
 class APIRecord:
@@ -94,13 +95,13 @@ class TargetClient:
         verify_scenario_id: str = "",
         verify_step_id: str = "",
         timeout: float = 30.0,
-        context: dict[str, Any] | None = None,
+        context: ScenarioContext | dict[str, Any] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.run_manager = run_manager
         self.verify_scenario_id = verify_scenario_id
         self.verify_step_id = verify_step_id
-        self._context = context
+        self._context: ScenarioContext | dict[str, Any] | None = context
         self._records: list[APIRecord] = []
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -195,7 +196,10 @@ class TargetClient:
         finally:
             self._records.append(rec)
             if self._context is not None:
-                self._context["last_api_record"] = rec
+                if isinstance(self._context, ScenarioContext):
+                    self._context.last_api_record = rec
+                else:
+                    self._context["last_api_record"] = rec
             self.run_manager.write_ndjson("api_requests.ndjson", [rec.to_dict()])
 
         return resp, rec

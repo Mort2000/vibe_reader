@@ -11,8 +11,8 @@ from .agent_audit_exporter import (
     normalize_audit_packet,
 )
 from .agent_audit_report import render_agent_audit_markdown, render_reading_position
-from .config import VerifyConfig
-from .run import RunManager
+from .core.config import VerifyConfig
+from .core.run_manager import RunManager
 
 
 def _sample_packet() -> dict:

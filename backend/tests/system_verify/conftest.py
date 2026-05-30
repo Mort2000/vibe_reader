@@ -18,8 +18,8 @@ data directory and verify mode, for example:
     VIBE_READER_LLM_API_KEY=aimock-test-key \\
     python3 -m app.main
 
-Pre/post data directory reset is handled by the vibe-verify CLI run command;
-pytest fixtures do not manage backend process lifecycle unless ``--spawn-backend``.
+With ``--spawn-backend``, the ``run_manager`` fixture resets backend data and
+syncs verify.toml app config before scenarios (same as CLI pre-run lifecycle).
 
 When backend / verify mode / stub LLM / corpus prerequisites are missing,
 ``test_scenarios.py`` skips via the ``require_integration_ready`` fixture
@@ -36,12 +36,20 @@ from typing import Any
 
 import pytest
 
-from .config import VerifyConfig, load_verify_config
+from .core.config import VerifyConfig
+from .core.config_loader import apply_param_set
+from .core.run_spec import (
+    RunSpec,
+    build_verify_config_from_run_spec,
+    resolve_run_spec_from_pytest,
+    run_spec_for_param_set,
+)
 from .corpus import CorpusManager
 from .env_file import load_project_dotenv
+from .core.orchestrator import VerifySessionHandle, build_session_handle
 from .metrics_collector import MetricsAggregator
-from .run import RunManager
-from .suite import finalize_reports
+from .core.run_manager import RunManager
+from .core.orchestrator import finalize_reports
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -92,41 +100,103 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(scope="session")
-def verify_config(request: pytest.FixtureRequest) -> VerifyConfig:
-    param_set = request.config.getoption("--param-set")
-    llm_mode = request.config.getoption("--llm-mode")
-    return load_verify_config(
-        param_set=param_set,
-        llm_mode_override=llm_mode,
+def verify_run_spec(request: pytest.FixtureRequest) -> RunSpec:
+    """Immutable run specification for the pytest session."""
+    return resolve_run_spec_from_pytest(request)
+
+
+@pytest.fixture(scope="session")
+def verify_config(verify_run_spec: RunSpec) -> VerifyConfig:
+    return build_verify_config_from_run_spec(verify_run_spec)
+
+
+@pytest.fixture(scope="session")
+def verify_run_spec_r1_a2_stub(request: pytest.FixtureRequest) -> RunSpec:
+    return run_spec_for_param_set(
+        "r1_a2_stub",
+        suite="real-happy-path",
+        coverage="A2",
+        llm_mode_override=request.config.getoption("--llm-mode"),
     )
 
 
 @pytest.fixture(scope="session")
-def aimock_sidecar(verify_config: VerifyConfig, request: pytest.FixtureRequest):
-    """Start AIMock sidecar for stub-mode pytest sessions."""
-    if verify_config.is_real_llm or not verify_config.llm_stub.aimock.enabled:
-        yield None
-        return
+def verify_config_r1_a2_stub(verify_run_spec_r1_a2_stub: RunSpec) -> VerifyConfig:
+    return build_verify_config_from_run_spec(verify_run_spec_r1_a2_stub)
 
-    from .llm_stub.aimock_launcher import AIMockSidecar
-    from .llm_stub.env import (
-        BackendProcess,
-        inject_stub_backend_env,
-        print_stub_backend_env_notice,
-        spawn_backend,
+
+@pytest.fixture(scope="session")
+def verify_run_spec_r1_a2_real(request: pytest.FixtureRequest) -> RunSpec:
+    return run_spec_for_param_set(
+        "r1_a2_real",
+        suite="real-happy-path",
+        coverage="A2",
+        llm_mode_override=request.config.getoption("--llm-mode"),
     )
 
-    backend_proc: BackendProcess | None = None
-    spawn = request.config.getoption("--spawn-backend")
 
-    with AIMockSidecar(verify_config) as session:
-        inject_stub_backend_env(session, verify_config)
-        print_stub_backend_env_notice(session, verify_config)
-        if spawn:
-            backend_proc = spawn_backend(verify_config, session)
-        yield session
-        if backend_proc is not None:
-            backend_proc.stop()
+@pytest.fixture(scope="session")
+def verify_config_r1_a2_real(verify_run_spec_r1_a2_real: RunSpec) -> VerifyConfig:
+    return build_verify_config_from_run_spec(verify_run_spec_r1_a2_real)
+
+
+@pytest.fixture(scope="session")
+def verify_run_spec_r1_a3_stub(request: pytest.FixtureRequest) -> RunSpec:
+    return run_spec_for_param_set(
+        "r1_a3_stub",
+        suite="real-happy-path",
+        coverage="A3",
+        llm_mode_override=request.config.getoption("--llm-mode"),
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_config_r1_a3_stub(verify_run_spec_r1_a3_stub: RunSpec) -> VerifyConfig:
+    return build_verify_config_from_run_spec(verify_run_spec_r1_a3_stub)
+
+
+@pytest.fixture(scope="session")
+def verify_run_spec_r1_a3_real(request: pytest.FixtureRequest) -> RunSpec:
+    return run_spec_for_param_set(
+        "r1_a3_real",
+        suite="real-happy-path",
+        coverage="A3",
+        llm_mode_override=request.config.getoption("--llm-mode"),
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_config_r1_a3_real(verify_run_spec_r1_a3_real: RunSpec) -> VerifyConfig:
+    return build_verify_config_from_run_spec(verify_run_spec_r1_a3_real)
+
+
+@pytest.fixture(scope="session")
+def mode_environment_handle(
+    verify_run_spec: RunSpec,
+    verify_config: VerifyConfig,
+    request: pytest.FixtureRequest,
+):
+    """Prepare stub/real mode environment for the pytest session."""
+    from .core.run_spec import resolve_profile_for_run_spec
+    from .modes.base import cleanup_mode, prepare_mode, resolve_mode_environment
+
+    profile = resolve_profile_for_run_spec(verify_run_spec)
+    env = resolve_mode_environment(verify_run_spec)
+    handle = prepare_mode(
+        env,
+        verify_run_spec,
+        profile,
+        config=verify_config,
+        spawn_backend=request.config.getoption("--spawn-backend"),
+    )
+    yield handle
+    cleanup_mode(env, handle)
+
+
+@pytest.fixture(scope="session")
+def aimock_sidecar(mode_environment_handle):
+    """AIMock session from the active mode environment (stub mode only)."""
+    return mode_environment_handle.aimock_session
 
 
 @pytest.fixture(scope="session")
@@ -153,27 +223,122 @@ def require_integration_ready(
 
 
 @pytest.fixture(scope="session")
+def verify_session(
+    verify_run_spec: RunSpec,
+    verify_config: VerifyConfig,
+    run_manager: RunManager,
+    metrics: MetricsAggregator,
+    corpus_manager: CorpusManager,
+    suite_ctx: dict[str, Any],
+) -> VerifySessionHandle:
+    """Orchestrator session for default MVP pytest runs."""
+    return build_session_handle(
+        spec=verify_run_spec,
+        config=verify_config,
+        run_manager=run_manager,
+        metrics=metrics,
+        corpus_path=str(pathlib.Path("tests/corpus/manifest.toml")),
+        suite_ctx=suite_ctx,
+        corpus=corpus_manager,
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_session_r1_a2_stub(
+    verify_run_spec_r1_a2_stub: RunSpec,
+    verify_config: VerifyConfig,
+    run_manager: RunManager,
+    metrics: MetricsAggregator,
+    corpus_manager: CorpusManager,
+    suite_ctx: dict[str, Any],
+) -> VerifySessionHandle:
+    apply_param_set(verify_config, verify_run_spec_r1_a2_stub.param_set_name)
+    return build_session_handle(
+        spec=verify_run_spec_r1_a2_stub,
+        config=verify_config,
+        run_manager=run_manager,
+        metrics=metrics,
+        corpus_path=str(pathlib.Path("tests/corpus/manifest.toml")),
+        suite_ctx=suite_ctx,
+        corpus=corpus_manager,
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_session_r1_a2_real(
+    verify_run_spec_r1_a2_real: RunSpec,
+    verify_config: VerifyConfig,
+    run_manager: RunManager,
+    metrics: MetricsAggregator,
+    corpus_manager: CorpusManager,
+    suite_ctx: dict[str, Any],
+) -> VerifySessionHandle:
+    apply_param_set(verify_config, verify_run_spec_r1_a2_real.param_set_name)
+    return build_session_handle(
+        spec=verify_run_spec_r1_a2_real,
+        config=verify_config,
+        run_manager=run_manager,
+        metrics=metrics,
+        corpus_path=str(pathlib.Path("tests/corpus/manifest.toml")),
+        suite_ctx=suite_ctx,
+        corpus=corpus_manager,
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_session_r1_a3_stub(
+    verify_run_spec_r1_a3_stub: RunSpec,
+    verify_config: VerifyConfig,
+    run_manager: RunManager,
+    metrics: MetricsAggregator,
+    corpus_manager: CorpusManager,
+    suite_ctx: dict[str, Any],
+) -> VerifySessionHandle:
+    apply_param_set(verify_config, verify_run_spec_r1_a3_stub.param_set_name)
+    return build_session_handle(
+        spec=verify_run_spec_r1_a3_stub,
+        config=verify_config,
+        run_manager=run_manager,
+        metrics=metrics,
+        corpus_path=str(pathlib.Path("tests/corpus/manifest.toml")),
+        suite_ctx=suite_ctx,
+        corpus=corpus_manager,
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_session_r1_a3_real(
+    verify_run_spec_r1_a3_real: RunSpec,
+    verify_config: VerifyConfig,
+    run_manager: RunManager,
+    metrics: MetricsAggregator,
+    corpus_manager: CorpusManager,
+    suite_ctx: dict[str, Any],
+) -> VerifySessionHandle:
+    apply_param_set(verify_config, verify_run_spec_r1_a3_real.param_set_name)
+    return build_session_handle(
+        spec=verify_run_spec_r1_a3_real,
+        config=verify_config,
+        run_manager=run_manager,
+        metrics=metrics,
+        corpus_path=str(pathlib.Path("tests/corpus/manifest.toml")),
+        suite_ctx=suite_ctx,
+        corpus=corpus_manager,
+    )
+
+
+@pytest.fixture(scope="session")
 def run_manager(
     verify_config: VerifyConfig,
     request: pytest.FixtureRequest,
-    aimock_sidecar,
+    mode_environment_handle,
 ) -> RunManager:
     run_id = request.config.getoption("--verify-run-id") or os.environ.get(
         "VIBE_READER_VERIFY_RUN_ID"
     )
     mgr = RunManager(verify_config, run_id=run_id or None)
-    if aimock_sidecar is not None:
-        mgr.set_aimock_info(
-            {
-                "provider": "aimock",
-                "version": aimock_sidecar.version,
-                "base_url": aimock_sidecar.base_url,
-                "fixture_hash": aimock_sidecar.fixture_hash,
-                "profile_hash": aimock_sidecar.profile_hash,
-                "strict": aimock_sidecar.strict,
-                "profile": aimock_sidecar.profile,
-            }
-        )
+    if mode_environment_handle.manifest_info.get("provider") == "aimock":
+        mgr.set_aimock_info(mode_environment_handle.manifest_info)
     mgr.start()
     yield mgr
     metrics = MetricsAggregator(mgr, verify_config)
@@ -209,6 +374,22 @@ def corpus_manager(verify_config: VerifyConfig) -> CorpusManager:
 def suite_ctx() -> dict[str, Any]:
     """Shared book/import state when running S1→S2→S3 in one pytest session."""
     return {}
+
+
+@pytest.fixture
+def reset_verify_data_before_scenario(
+    request: pytest.FixtureRequest,
+    verify_config: VerifyConfig,
+    run_manager: RunManager,
+    suite_ctx: dict[str, Any],
+) -> None:
+    """Reset backend data and sync app config before each integration scenario."""
+    if not request.config.getoption("--spawn-backend"):
+        return
+    from .data_lifecycle import prepare_run_data_dir
+
+    asyncio.run(prepare_run_data_dir(verify_config, run_manager, phase="pre"))
+    suite_ctx.clear()
 
 
 @pytest.fixture(scope="session")

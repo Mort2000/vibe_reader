@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from .agent_audit_report import render_agent_audit_markdown, render_prompt_markdown
-from .config import VerifyConfig
-from .run import RunManager
+from .core.config import VerifyConfig
+from .core.run_manager import RunManager
 
 logger = logging.getLogger(__name__)
 

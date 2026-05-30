@@ -4,194 +4,93 @@ from __future__ import annotations
 
 import pytest
 
-from .config import apply_param_set
-from .scenarios.s0_connectivity import run_s0
-from .scenarios.s1_import import run_s1
-from .scenarios.s2_continuous_reading import run_s2
-from .scenarios.s3_fast_scroll import run_s3
-from .scenarios.s4_long_context import run_s4
-from .suite import run_mvp_suite, run_real_happy_path_suite
+from .core.orchestrator import run_scenario, run_suite_scenarios
+from .scenarios.registry import SCENARIOS
 
 # All tests in this module require a live backend; skip when prerequisites fail.
-pytestmark = pytest.mark.usefixtures("require_integration_ready")
-
-
-def _with_param_set(verify_config, name: str):
-    apply_param_set(verify_config, name)
-    return verify_config
-
-
-@pytest.mark.system_verify
-@pytest.mark.system
-@pytest.mark.asyncio
-async def test_s0_connectivity(run_manager, verify_config, metrics):
-    await run_s0(run_manager, verify_config, metrics)
+pytestmark = pytest.mark.usefixtures(
+    "require_integration_ready",
+    "reset_verify_data_before_scenario",
+)
 
 
 @pytest.mark.system_verify
 @pytest.mark.system
 @pytest.mark.asyncio
-async def test_s1_book_import(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    await run_s1(
-        run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx
+async def test_s0_connectivity(verify_session):
+    await run_scenario(verify_session, SCENARIOS["S0_connectivity"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_s1_book_import(verify_session):
+    await run_scenario(verify_session, SCENARIOS["S1_book_import"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_s2_continuous_reading(verify_session):
+    await run_scenario(verify_session, SCENARIOS["S2_continuous_reading"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_s3_fast_scroll(verify_session):
+    await run_scenario(verify_session, SCENARIOS["S3_fast_scroll"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_s4_long_context(verify_session):
+    await run_scenario(verify_session, SCENARIOS["S4_long_context"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_mvp_suite(verify_session):
+    await run_suite_scenarios(
+        verify_session.run_manager,
+        verify_session.config,
+        verify_session.metrics,
+        verify_session.corpus_path,
+        suite=verify_session.spec.suite,
+        suite_ctx=verify_session.suite_ctx,
+        spec=verify_session.spec,
     )
 
 
 @pytest.mark.system_verify
 @pytest.mark.system
 @pytest.mark.asyncio
-async def test_s2_continuous_reading(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    await run_s2(
-        run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx
-    )
-
-
-@pytest.mark.system_verify
-@pytest.mark.system
-@pytest.mark.asyncio
-async def test_s3_fast_scroll(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    await run_s3(
-        run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx
-    )
-
-
-@pytest.mark.system_verify
-@pytest.mark.system
-@pytest.mark.asyncio
-async def test_s4_long_context(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    await run_s4(
-        run_manager, verify_config, metrics, corpus_manager, suite_ctx=suite_ctx
-    )
-
-
-@pytest.mark.system_verify
-@pytest.mark.system
-@pytest.mark.asyncio
-async def test_mvp_suite(run_manager, verify_config, metrics, suite_ctx):
-    corpus_path = "tests/corpus/manifest.toml"
-    await run_mvp_suite(
-        run_manager,
-        verify_config,
-        metrics,
-        corpus_path,
-        suite_ctx=suite_ctx,
-    )
-
-
-@pytest.mark.system_verify
-@pytest.mark.system
-@pytest.mark.asyncio
-async def test_r1_happy_path_a2_stub(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    cfg = _with_param_set(verify_config, "r1_a2_stub")
-    await run_real_happy_path_suite(
-        run_manager,
-        cfg,
-        metrics,
-        "tests/corpus/manifest.toml",
-        suite_ctx=suite_ctx,
-        coverage="A2",
-    )
+async def test_r1_happy_path_a2_stub(verify_session_r1_a2_stub):
+    await run_scenario(verify_session_r1_a2_stub, SCENARIOS["R1_A2_comments"])
 
 
 @pytest.mark.system_verify
 @pytest.mark.real_llm
 @pytest.mark.asyncio
-async def test_r1_happy_path_a2_real(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    cfg = _with_param_set(verify_config, "r1_a2_real")
-    if not cfg.is_real_llm:
+async def test_r1_happy_path_a2_real(verify_session_r1_a2_real):
+    if not verify_session_r1_a2_real.config.is_real_llm:
         pytest.skip("Requires --llm-mode real matching r1_a2_real param set")
-    await run_real_happy_path_suite(
-        run_manager,
-        cfg,
-        metrics,
-        "tests/corpus/manifest.toml",
-        suite_ctx=suite_ctx,
-        coverage="A2",
-    )
+    await run_scenario(verify_session_r1_a2_real, SCENARIOS["R1_A2_comments"])
 
 
 @pytest.mark.system_verify
 @pytest.mark.system
 @pytest.mark.asyncio
-async def test_r1_happy_path_a3_stub(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    cfg = _with_param_set(verify_config, "r1_a3_stub")
-    await run_real_happy_path_suite(
-        run_manager,
-        cfg,
-        metrics,
-        "tests/corpus/manifest.toml",
-        suite_ctx=suite_ctx,
-        coverage="A3",
-    )
+async def test_r1_happy_path_a3_stub(verify_session_r1_a3_stub):
+    await run_scenario(verify_session_r1_a3_stub, SCENARIOS["R1_A3_compaction"])
 
 
 @pytest.mark.system_verify
 @pytest.mark.real_llm
 @pytest.mark.asyncio
-async def test_r1_happy_path_a3_real(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    cfg = _with_param_set(verify_config, "r1_a3_real")
-    if not cfg.is_real_llm:
+async def test_r1_happy_path_a3_real(verify_session_r1_a3_real):
+    if not verify_session_r1_a3_real.config.is_real_llm:
         pytest.skip("Requires --llm-mode real matching r1_a3_real param set")
-    await run_real_happy_path_suite(
-        run_manager,
-        cfg,
-        metrics,
-        "tests/corpus/manifest.toml",
-        suite_ctx=suite_ctx,
-        coverage="A3",
-    )
-
-
-# Backward-compatible aliases for older pytest invocations.
-@pytest.mark.system_verify
-@pytest.mark.real_llm
-@pytest.mark.asyncio
-async def test_r1_real_happy_path_a2_comments(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    cfg = _with_param_set(verify_config, "r1_a2_real")
-    if not cfg.is_real_llm:
-        pytest.skip("Requires --llm-mode real matching r1_a2_real param set")
-    await run_real_happy_path_suite(
-        run_manager,
-        cfg,
-        metrics,
-        "tests/corpus/manifest.toml",
-        suite_ctx=suite_ctx,
-        coverage="A2",
-    )
-
-
-@pytest.mark.system_verify
-@pytest.mark.real_llm
-@pytest.mark.asyncio
-async def test_r1_real_happy_path_a3_compaction(
-    run_manager, verify_config, metrics, corpus_manager, suite_ctx
-):
-    cfg = _with_param_set(verify_config, "r1_a3_real")
-    if not cfg.is_real_llm:
-        pytest.skip("Requires --llm-mode real matching r1_a3_real param set")
-    await run_real_happy_path_suite(
-        run_manager,
-        cfg,
-        metrics,
-        "tests/corpus/manifest.toml",
-        suite_ctx=suite_ctx,
-        coverage="A3",
-    )
+    await run_scenario(verify_session_r1_a3_real, SCENARIOS["R1_A3_compaction"])

@@ -1,0 +1,141 @@
+{
+  "run_id": "20260524T070437Z_c9b436a7",
+  "llm_mode": "stub",
+  "usage_source": "estimate",
+  "latency": [
+    {
+      "metric": "api.get.duration_ms",
+      "count": 13,
+      "p50": 3.2482000533491373,
+      "p90": 8.660379936918616,
+      "p95": 8.763499977067113,
+      "max": 8.780600037425756
+    },
+    {
+      "metric": "api.post.duration_ms",
+      "count": 2,
+      "p50": 1918.6811744002625,
+      "p90": 3412.5445548212156,
+      "p95": 3599.2774773738347,
+      "max": 3786.010399926454
+    },
+    {
+      "metric": "api.put.duration_ms",
+      "count": 505,
+      "p50": 10.644617024809122,
+      "p90": 14.522603293880842,
+      "p95": 24.878201633691738,
+      "max": 55.988074047490954
+    },
+    {
+      "metric": "comment.agent_run_ms.max",
+      "count": 2,
+      "p50": 191.4,
+      "p90": 328.12,
+      "p95": 345.21,
+      "max": 362.3
+    },
+    {
+      "metric": "comment.agent_run_ms.p50",
+      "count": 2,
+      "p50": 187.5,
+      "p90": 327.34,
+      "p95": 344.82,
+      "max": 362.3
+    },
+    {
+      "metric": "comment.agent_run_ms.p90",
+      "count": 2,
+      "p50": 187.9,
+      "p90": 327.42,
+      "p95": 344.86,
+      "max": 362.3
+    },
+    {
+      "metric": "comment.agent_run_ms.p95",
+      "count": 2,
+      "p50": 191.4,
+      "p90": 328.12,
+      "p95": 345.21,
+      "max": 362.3
+    },
+    {
+      "metric": "comment.job_queue_wait_ms",
+      "count": 1,
+      "p50": 0.0,
+      "p90": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    {
+      "metric": "comment.job_run_ms",
+      "count": 1,
+      "p50": 0.0,
+      "p90": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    {
+      "metric": "import.duration_ms",
+      "count": 2,
+      "p50": 3665.0,
+      "p90": 3665.0,
+      "p95": 3665.0,
+      "max": 3665.0
+    },
+    {
+      "metric": "llm.ping.latency_ms",
+      "count": 1,
+      "p50": 48.05,
+      "p90": 48.05,
+      "p95": 48.05,
+      "max": 48.05
+    },
+    {
+      "metric": "progress.update.duration_ms",
+      "count": 502,
+      "p50": 10.64730854704976,
+      "p90": 13.96257372107357,
+      "p95": 25.048073928337534,
+      "max": 55.988074047490954
+    }
+  ],
+  "tokens_and_comment_metrics": {
+    "llm.ping.tokens.input": 4,
+    "llm.ping.tokens.output": 1,
+    "comment.job_queue_wait_ms": 0.0,
+    "comment.job_run_ms": 0.0,
+    "comment.telemetry_available": 1,
+    "comment.valid_count": 19.0,
+    "comment.validation_failed_count": 0.0,
+    "comment.discarded_count": 0.0,
+    "comment.density.actual": 0.0329,
+    "comment.density.soft_min": 0.05,
+    "comment.density.stat_start_paragraph_idx": 0.0,
+    "comment.density.stat_end_paragraph_idx": 521.0,
+    "comment.tool_call_count": 19.0,
+    "comment.candidate_lookup_count": 421.0,
+    "comment.agent_run_ms.p50": 12.7,
+    "comment.agent_run_ms.p90": 13.5,
+    "comment.agent_run_ms.p95": 20.5,
+    "comment.agent_run_ms.max": 20.5,
+    "tokens_per_comment_window": 13002.285714285714,
+    "tokens_per_comment": 4790.315789473684
+  },
+  "comment_density": {
+    "comment.density.actual": 0.0329,
+    "comment.density.soft_min": 0.05,
+    "comment.density.stat_start_paragraph_idx": 0.0,
+    "comment.density.stat_end_paragraph_idx": 521.0
+  },
+  "real_llm": {
+    "call_count": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "phase_coverage": {
+      "A2_comments": false,
+      "A3_compaction": false,
+      "A4_full_flow": false
+    }
+  }
+}

@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .config import VerifyConfig, validate_real_llm_config
+from .core.config import VerifyConfig, validate_real_llm_config
 from .corpus import CorpusManager
 from .data_lifecycle import assert_isolated_data_dir
 from .llm_stub.env import validate_backend_stub_llm

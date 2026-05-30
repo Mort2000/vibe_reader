@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import VerifyConfig
-from .context_assertions import extract_chapter_summary, extract_l2_chunks
-from .run import RunManager
+from .core.config import VerifyConfig
+from .assertions.context import extract_chapter_summary, extract_l2_chunks
+from .core.run_manager import RunManager
 
 MAX_SUMMARY_EXCERPT = 600
 

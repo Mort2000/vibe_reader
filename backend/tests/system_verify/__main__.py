@@ -126,7 +126,8 @@ def _apply_llm_mode(config, llm_mode: str | None) -> None:
 
 
 def _load_run_config(args: argparse.Namespace):
-    from .config import load_verify_config, validate_real_llm_config
+    from .core.config import validate_real_llm_config
+    from .core.config_loader import load_verify_config
 
     return load_verify_config(
         args.config,
@@ -161,7 +162,7 @@ def _cmd_prepare(args: argparse.Namespace) -> None:
 
 def _cmd_init_run(args: argparse.Namespace) -> None:
     from .metrics_collector import MetricsAggregator
-    from .run import RunManager
+    from .core.run_manager import RunManager
 
     config, _ = _load_run_config(args)
     if args.target_url:
@@ -180,74 +181,44 @@ def _cmd_init_run(args: argparse.Namespace) -> None:
     print(f"Manifest written to {out_dir / 'run_manifest.json'}")
 
 
-def _aimock_manifest_info(session) -> dict[str, str | bool]:
-    return {
-        "provider": "aimock",
-        "version": session.version,
-        "base_url": session.base_url,
-        "fixture_hash": session.fixture_hash,
-        "profile_hash": session.profile_hash,
-        "strict": session.strict,
-        "profile": session.profile,
-    }
-
-
-def _start_stub_sidecar(
-    config, mgr, *, spawn_backend: bool = False, dry_run: bool = False
-):
-    from .llm_stub.aimock_launcher import AIMockLaunchError, AIMockSidecar
-    from .llm_stub.env import (
-        BackendProcess,
-        assert_backend_stub_llm_ready,
-        inject_stub_backend_env,
-        print_stub_backend_env_notice,
-        spawn_backend as spawn_backend_proc,
-    )
-
-    if config.is_real_llm:
-        return None, None
-    if not config.llm_stub.aimock.enabled:
-        return None, None
-    try:
-        sidecar = AIMockSidecar(config)
-        session = sidecar.__enter__()
-    except AIMockLaunchError as exc:
-        print(f"AIMock startup failed: {exc}", file=sys.stderr)
-        sys.exit(1)
-    mgr.set_aimock_info(_aimock_manifest_info(session))
-    inject_stub_backend_env(session, config)
-    print_stub_backend_env_notice(session, config)
-
-    backend_proc: BackendProcess | None = None
-    if spawn_backend:
-        try:
-            backend_proc = spawn_backend_proc(config, session)
-            print(f"Backend spawned at {config.target.base_url}")
-        except RuntimeError as exc:
-            sidecar.__exit__(None, None, None)
-            print(f"Backend spawn failed: {exc}", file=sys.stderr)
-            sys.exit(1)
-    elif not dry_run:
-        try:
-            assert_backend_stub_llm_ready(config, session)
-        except RuntimeError as exc:
-            print(f"Backend stub LLM check failed: {exc}", file=sys.stderr)
-            sidecar.__exit__(None, None, None)
-            sys.exit(1)
-
-    return sidecar, backend_proc
-
-
 def _cmd_run(args: argparse.Namespace) -> None:
+    from .core.run_spec import (
+        build_verify_config_from_run_spec,
+        resolve_profile_for_run_spec,
+        resolve_run_spec,
+    )
     from .metrics_collector import MetricsAggregator
-    from .run import RunManager
+    from .modes.base import (
+        cleanup_mode,
+        prepare_mode,
+        resolve_mode_environment,
+        validate_mode_prerequisites,
+    )
+    from .core.run_manager import RunManager
 
-    config, validate_real_llm_config = _load_run_config(args)
+    spec = resolve_run_spec(
+        suite=args.suite,
+        coverage=args.real_coverage,
+        param_set=args.param_set,
+        llm_mode_override=args.llm_mode,
+        target_url=args.target_url,
+        corpus_path=args.corpus,
+        config_path=args.config,
+        run_id=args.run_id,
+        spawn_backend=bool(args.spawn_backend),
+        dry_run=bool(args.dry_run),
+        keep_data=bool(args.keep_data),
+    )
+    config = build_verify_config_from_run_spec(spec, config_path=args.config)
     if args.target_url:
         config.target.base_url = args.target_url
 
+    profile = resolve_profile_for_run_spec(spec)
+    env = resolve_mode_environment(spec)
     if config.is_real_llm:
-        errors = validate_real_llm_config(config)
+        real_handle = prepare_mode(env, spec, profile, config=config)
+        errors = validate_mode_prerequisites(env, real_handle)
+        cleanup_mode(env, real_handle)
         if errors:
             print("Real LLM config invalid: " + "; ".join(errors), file=sys.stderr)
             sys.exit(1)
@@ -260,20 +231,25 @@ def _cmd_run(args: argparse.Namespace) -> None:
     print(f"Param set: {config.params.name}")
 
     metrics = MetricsAggregator(mgr, config)
-    sidecar, backend_proc = _start_stub_sidecar(
-        config,
-        mgr,
+    mode_handle = prepare_mode(
+        env,
+        spec,
+        profile,
+        config=config,
         spawn_backend=bool(args.spawn_backend),
         dry_run=bool(args.dry_run),
+        assert_backend_ready=not args.dry_run and not args.spawn_backend,
+        fail_on_launch_error=True,
+        fail_on_backend_spawn_error=True,
+        fail_on_backend_ready_error=True,
     )
+    if mode_handle.manifest_info.get("provider") == "aimock":
+        mgr.set_aimock_info(mode_handle.manifest_info)
     try:
         run_failed, data_lifecycle = _execute_run(args, config, mgr, metrics)
         _finish_run(args, config, mgr, metrics, data_lifecycle, run_failed, out_dir)
     finally:
-        if backend_proc is not None:
-            backend_proc.stop()
-        if sidecar is not None:
-            sidecar.__exit__(None, None, None)
+        cleanup_mode(env, mode_handle)
 
 
 def _execute_run(args, config, mgr, metrics) -> tuple[bool, dict]:
@@ -293,17 +269,12 @@ def _execute_run(args, config, mgr, metrics) -> tuple[bool, dict]:
         if args.dry_run:
             _prepare_corpus(mgr, config, args.corpus)
             print("Dry run: scenarios skipped.")
-        elif config.run.suite in ("smoke", "mvp"):
-            asyncio.run(prepare_run_data_dir(config, mgr, phase="pre"))
-            data_lifecycle["pre_reset"] = True
-            print(f"Pre-run reset: {config.target.data_dir}")
-            asyncio.run(_run_suite(mgr, config, metrics, args.corpus))
-        elif config.run.suite == "real-happy-path":
+        elif config.run.suite in ("smoke", "mvp", "real-happy-path"):
             asyncio.run(prepare_run_data_dir(config, mgr, phase="pre"))
             data_lifecycle["pre_reset"] = True
             print(f"Pre-run reset: {config.target.data_dir}")
             asyncio.run(
-                _run_real_suite(
+                _run_orchestrated_suite(
                     mgr,
                     config,
                     metrics,
@@ -351,33 +322,28 @@ def _finish_run(
 
 
 def _prepare_corpus(mgr, config, corpus_path: str):
-    from .suite import prepare_corpus
+    from .core.orchestrator import prepare_corpus
 
     return prepare_corpus(mgr, config, corpus_path)
 
 
-async def _run_suite(mgr, config, metrics, corpus_path: str) -> None:
-    from .suite import run_mvp_suite
-
-    await run_mvp_suite(mgr, config, metrics, corpus_path)
-
-
-async def _run_real_suite(
+async def _run_orchestrated_suite(
     mgr, config, metrics, corpus_path: str, *, coverage: str
 ) -> None:
-    from .suite import run_real_happy_path_suite
+    from .core.orchestrator import run_suite_scenarios
 
-    await run_real_happy_path_suite(
+    await run_suite_scenarios(
         mgr,
         config,
         metrics,
         corpus_path,
-        coverage=coverage,
+        suite=config.run.suite,
+        coverage=coverage if config.run.suite == "real-happy-path" else None,
     )
 
 
 def _finalize_run(mgr, metrics=None) -> None:
-    from .suite import finalize_reports
+    from .core.orchestrator import finalize_reports
 
     findings: list[str] = []
     if metrics is not None:

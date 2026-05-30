@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from ..config import VerifyConfig
+from ..core.config import VerifyConfig
 from .aimock_launcher import AIMockSession
 
 

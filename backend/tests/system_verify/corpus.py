@@ -15,8 +15,8 @@ from typing import Any
 
 import toml
 
-from .config import VerifyConfig
-from .run import RunManager
+from .core.config import VerifyConfig
+from .core.run_manager import RunManager
 
 
 @dataclass
