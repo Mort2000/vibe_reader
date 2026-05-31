@@ -1,6 +1,8 @@
 import type {
   BookSummary,
   ChapterSummary,
+  ChatSession,
+  ChatTurn,
   ImportResult,
   JobInfo,
   ListResponse,
@@ -138,4 +140,108 @@ export function createEventSource(
   es.addEventListener('comment.created', handler);
   es.addEventListener('job.failed', handler);
   return es;
+}
+
+export async function getChatSession(
+  bookId: number,
+  chapterIdx: number,
+): Promise<{ session: ChatSession }> {
+  return request(`/books/${bookId}/chat/session?chapter_idx=${chapterIdx}`);
+}
+
+export async function getChatTurns(
+  sessionId: number,
+  limit = 50,
+  offset = 0,
+): Promise<ListResponse<ChatTurn>> {
+  return request(`/chat/sessions/${sessionId}/turns?limit=${limit}&offset=${offset}`);
+}
+
+export interface ChatStreamCallbacks {
+  onStarted: (data: { turn_id: number; session_id: number; trace_id: string }) => void;
+  onDelta: (turnId: number, delta: string) => void;
+  onDone: (data: { turn_id: number; session_id: number; ai_msg: string; tokens_in: number | null; tokens_out: number | null; trace_id: string }) => void;
+  onError: (data: { turn_id?: number; error: string; message: string }) => void;
+}
+
+export function streamChat(
+  bookId: number,
+  chapterIdx: number,
+  paragraphIdx: number,
+  userMsg: string,
+  sessionId: number | null,
+  callbacks: ChatStreamCallbacks,
+): AbortController {
+  const controller = new AbortController();
+
+  const body = JSON.stringify({
+    book_id: bookId,
+    chapter_idx: chapterIdx,
+    paragraph_idx: paragraphIdx,
+    session_id: sessionId,
+    user_msg: userMsg,
+  });
+
+  fetch(`${BASE}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        callbacks.onError({
+          error: 'request_failed',
+          message: errBody?.error?.message || res.statusText,
+        });
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) return;
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEvent = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const raw = line.slice(6);
+            try {
+              const data = JSON.parse(raw);
+              if (currentEvent === 'chat.started') {
+                callbacks.onStarted(data as Parameters<typeof callbacks.onStarted>[0]);
+              } else if (currentEvent === 'chat.delta') {
+                callbacks.onDelta(data.turn_id, data.delta);
+              } else if (currentEvent === 'chat.done') {
+                callbacks.onDone(data as Parameters<typeof callbacks.onDone>[0]);
+              } else if (currentEvent === 'chat.error') {
+                callbacks.onError(data as Parameters<typeof callbacks.onError>[0]);
+              }
+            } catch {
+              // ignore malformed data
+            }
+            currentEvent = '';
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if (err.name !== 'AbortError') {
+        callbacks.onError({ error: 'network_error', message: err.message });
+      }
+    });
+
+  return controller;
 }

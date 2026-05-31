@@ -43,7 +43,20 @@ class CompactionAuditContext:
     prompt_manifest: dict[str, Any] | None = None
 
 
-AuditContext = Union[CommentAuditContext, CompactionAuditContext]
+@dataclass
+class ChatAuditContext:
+    trace_id: str
+    book_id: int
+    chapter_idx: int
+    paragraph_idx: int
+    prompt: str
+    agent_result: Any
+    recent_chat_turns: list[dict[str, Any]]
+    user_msg: str = ""
+    prompt_manifest: dict[str, Any] | None = None
+
+
+AuditContext = Union[CommentAuditContext, CompactionAuditContext, ChatAuditContext]
 
 
 @dataclass

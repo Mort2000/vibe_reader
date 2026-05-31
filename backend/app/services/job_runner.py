@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 import aiosqlite
@@ -50,6 +51,16 @@ class JobRunner:
 
     def register_handler(self, job_type: str, handler: JobHandler) -> None:
         self._handlers[job_type] = handler
+
+    @asynccontextmanager
+    async def book_lock(self, book_id: int):
+        lock = self._get_book_lock(book_id)
+        async with lock:
+            yield
+
+    @property
+    def recorder(self) -> AgentRunRecorder | None:
+        return self._recorder
 
     async def start(self) -> None:
         self._running = True

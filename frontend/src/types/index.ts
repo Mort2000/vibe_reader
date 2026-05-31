@@ -116,3 +116,29 @@ export interface ProgressUpdateResponse {
   current_window: WindowInfo | null;
   jobs: JobInfo[];
 }
+
+export interface ChatSession {
+  id: number;
+  book_id: number;
+  chapter_idx: number;
+  title: string | null;
+  last_paragraph_idx: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatTurn {
+  id: number;
+  session_id: number;
+  book_id: number;
+  chapter_idx: number;
+  paragraph_idx: number;
+  user_msg: string;
+  ai_msg: string | null;
+  status: string;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  trace_id: string | null;
+  created_at: string;
+  updated_at: string;
+}

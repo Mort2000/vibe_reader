@@ -76,6 +76,7 @@ def create_app() -> FastAPI:
     from .routers.health import router as health_router
     from .routers.books import router as books_router
     from .routers.chapters import router as chapters_router
+    from .routers.chat import router as chat_router
     from .routers.progress import router as progress_router
     from .routers.events import router as events_router
     from .routers.verify import router as verify_router
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api")
     app.include_router(books_router, prefix="/api")
     app.include_router(chapters_router, prefix="/api")
+    app.include_router(chat_router, prefix="/api")
     app.include_router(progress_router, prefix="/api")
     app.include_router(events_router, prefix="/api")
     app.include_router(verify_router, prefix="/api")

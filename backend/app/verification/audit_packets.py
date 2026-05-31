@@ -974,3 +974,97 @@ def build_compaction_interaction_packet(
 
     cleaned, redactions = redact_secrets(packet)
     return cleaned
+
+
+def build_chat_interaction_packet(
+    *,
+    invocation_id: str,
+    trace_id: str,
+    verify_run_id: str,
+    verify_scenario_id: str,
+    verify_step_id: str,
+    book: dict[str, Any],
+    chapter_idx: int,
+    paragraph_idx: int,
+    prompt: str,
+    agent_result: Any,
+    settings: Settings,
+    duration_ms: float,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    recent_chat_turns: list[dict[str, Any]],
+    user_msg: str = "",
+    prompt_manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    book_payload = {"id": book.get("id"), "title": book.get("title")}
+
+    prompt_messages = [{"role": "user", "content": prompt}]
+    messages = agent_result.all_messages()
+    usage_source = "provider" if input_tokens is not None else "estimate"
+    llm_rounds = extract_llm_rounds(
+        messages,
+        model=settings.llm.model,
+        duration_ms=duration_ms,
+        usage_source=usage_source,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=None,
+    )
+    tool_events: list[dict[str, Any]] = []
+
+    chat_turns_payload = []
+    for t in recent_chat_turns:
+        chat_turns_payload.append({
+            "user_msg": t.get("user_msg", ""),
+            "ai_msg": t.get("ai_msg") or "",
+            "status": t.get("status", ""),
+        })
+
+    components = list((prompt_manifest or {}).get("components", []))
+    for comp in components:
+        if comp.get("name") == "ephemeral_recent_chat":
+            comp["content"] = {
+                "turns": chat_turns_payload,
+                "turn_count": len(chat_turns_payload),
+            }
+            break
+
+    injected_context: dict[str, Any] = {
+        "builder": "ContextBuilder",
+        "builder_version": "context_builder_v1",
+        "total_input_token_estimate": sum(
+            int(c.get("tokens") or c.get("token_estimate") or 0)
+            for c in components
+        ),
+        "context_hash": (prompt_manifest or {}).get("context_hash", ""),
+        "components": components,
+    }
+
+    packet: dict[str, Any] = {
+        "schema": _SCHEMA_VERSION,
+        "invocation_id": invocation_id,
+        "agent_name": "ReadingChatAgent",
+        "verify_run_id": verify_run_id,
+        "verify_scenario_id": verify_scenario_id,
+        "verify_step_id": verify_step_id,
+        "book": book_payload,
+        "chapter_idx": chapter_idx,
+        "paragraph_idx": paragraph_idx,
+        "user_msg": user_msg,
+        "trace_id": trace_id,
+        "prompt_manifest": prompt_manifest or {},
+        "prompt_messages": prompt_messages,
+        "injected_context": injected_context,
+        "llm_rounds": llm_rounds,
+        "tool_events": tool_events,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        },
+        "timing": {"total_ms": duration_ms},
+        "duration_ms": duration_ms,
+        "created_at": _now(),
+    }
+
+    cleaned, _ = redact_secrets(packet)
+    return cleaned

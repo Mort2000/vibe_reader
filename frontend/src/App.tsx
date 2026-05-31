@@ -5,6 +5,7 @@ import BookList from './components/BookList';
 import ChapterNav from './components/ChapterNav';
 import ReaderView from './components/ReaderView';
 import type { ReaderViewHandle } from './components/ReaderView';
+import ChatPanel from './components/ChatPanel';
 import ImportDropZone from './components/ImportDropZone';
 import './App.css';
 
@@ -20,6 +21,7 @@ export default function App() {
   const [progressParagraphIdx, setProgressParagraphIdx] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [currentWindow, setCurrentWindow] = useState<WindowInfo | null>(null);
+  const [currentParagraphIdx, setCurrentParagraphIdx] = useState<number>(0);
   const readerRef = useRef<ReaderViewHandle>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -106,6 +108,7 @@ export default function App() {
   const handleProgressChange = useCallback(
     async (chapterIdx: number, paragraphIdx: number, scrollPct: number) => {
       if (!currentBook) return;
+      setCurrentParagraphIdx(paragraphIdx);
       try {
         const resp = await api.updateProgress(currentBook.id, chapterIdx, paragraphIdx, scrollPct);
         if (resp.current_window) {
@@ -241,6 +244,15 @@ export default function App() {
             />
           )}
         </main>
+        <aside className="reader-chat">
+          {currentBook && (
+            <ChatPanel
+              bookId={currentBook.id}
+              chapterIdx={currentChapterIdx}
+              paragraphIdx={currentParagraphIdx}
+            />
+          )}
+        </aside>
       </div>
     </div>
   );

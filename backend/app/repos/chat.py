@@ -42,6 +42,30 @@ async def get_or_create_session(
     }
 
 
+async def get_session_by_id(
+    db: aiosqlite.Connection,
+    session_id: int,
+) -> dict[str, Any] | None:
+    cur = await db.execute(
+        "SELECT * FROM chat_sessions WHERE id = ?", (session_id,)
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def update_session_paragraph(
+    db: aiosqlite.Connection,
+    session_id: int,
+    paragraph_idx: int,
+) -> None:
+    now = _now()
+    await db.execute(
+        "UPDATE chat_sessions SET last_paragraph_idx = ?, updated_at = ? WHERE id = ?",
+        (paragraph_idx, now, session_id),
+    )
+    await db.commit()
+
+
 async def create_turn(
     db: aiosqlite.Connection,
     *,

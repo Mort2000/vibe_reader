@@ -195,6 +195,15 @@ def _paragraphs_to_ranges(paragraphs: list[int]) -> str:
     return ", ".join(parts)
 
 
+def _build_chat_task_block(reading_pidx: int) -> tuple[str, int]:
+    t_lines = ["<CURRENT_TASK>"]
+    t_lines.append(f"current_reading_paragraph_idx = {reading_pidx}")
+    t_lines.append("mode = chat")
+    t_lines.append("</CURRENT_TASK>")
+    text = "\n".join(t_lines)
+    return text, _estimate_text_tokens(text)
+
+
 def _build_task_block(
     frontier: int,
     focus_start: int | None,
@@ -553,9 +562,12 @@ async def build_context(
             comments, eph_comments_cfg.max_tokens
         )
 
-    task_block, task_tokens = _build_task_block(
-        frontier, focus_start, focus_end, target_paragraphs, density_hint
-    )
+    if task_type == "chat":
+        task_block, task_tokens = _build_chat_task_block(reading_pidx)
+    else:
+        task_block, task_tokens = _build_task_block(
+            frontier, focus_start, focus_end, target_paragraphs, density_hint
+        )
 
     system_tokens = 3_000
     metadata_tokens = 800

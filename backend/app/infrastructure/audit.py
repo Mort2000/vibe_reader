@@ -6,6 +6,7 @@ import aiosqlite
 
 from ..application.agent_run_result import (
     AgentRunResult,
+    ChatAuditContext,
     CommentAuditContext,
     CompactionAuditContext,
 )
@@ -127,6 +128,38 @@ class DefaultAuditSink:
                     cached_input_tokens=result.cached_input_tokens,
                     transaction_committed=audit_ctx.transaction_committed,
                     prompt_manifest=audit_ctx.prompt_manifest,
+                )
+                interaction_path = persist_interaction_packet(
+                    settings.data_dir,
+                    verify_run_id=verify_run_id,
+                    invocation_id=invocation_id,
+                    packet=packet,
+                )
+            elif isinstance(audit_ctx, ChatAuditContext):
+                from ..repos import books as book_repo
+                from ..verification.audit_packets import build_chat_interaction_packet
+
+                book = await book_repo.get_book(db, book_id) or {
+                    "id": book_id
+                }
+                packet = build_chat_interaction_packet(
+                    invocation_id=invocation_id,
+                    trace_id=audit_ctx.trace_id,
+                    verify_run_id=verify_run_id,
+                    verify_scenario_id=verify_scenario_id,
+                    verify_step_id=verify_step_id,
+                    book=book,
+                    chapter_idx=chapter_idx,
+                    paragraph_idx=audit_ctx.paragraph_idx,
+                    prompt=audit_ctx.prompt,
+                    agent_result=audit_ctx.agent_result,
+                    settings=settings,
+                    duration_ms=result.duration_ms,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    recent_chat_turns=audit_ctx.recent_chat_turns,
+                    user_msg=audit_ctx.user_msg,
+                    prompt_manifest=audit_ctx.prompt_manifest or result.prompt_manifest,
                 )
                 interaction_path = persist_interaction_packet(
                     settings.data_dir,

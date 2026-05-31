@@ -140,6 +140,41 @@ class CompactionDeps:
     raw_output: dict[str, Any] = field(default_factory=dict)
 
 
+CHAT_INSTRUCTIONS = """\
+你是一位中文小说阅读伴侣。用户正在阅读一本小说，当前有一个阅读位置和对应的上下文。
+请根据上下文回答用户的问题。
+规则：
+- 回答要围绕当前阅读位置附近的内容。
+- 不要编造文中没有的内容。
+- 如果上下文不足以回答，请如实说明。
+- 用中文回答，简洁明了。"""
+
+
+@dataclass
+class ChatDeps:
+    pass
+
+
+_chat_agent: Agent[ChatDeps, str] | None = None
+
+
+def get_chat_agent(settings: Settings) -> Agent[ChatDeps, str]:
+    global _chat_agent
+    if _chat_agent is not None:
+        return _chat_agent
+    model = get_llm_model(settings)
+    _chat_agent = Agent(
+        model,
+        deps_type=ChatDeps,
+        output_type=str,
+        instructions=CHAT_INSTRUCTIONS,
+        name="ReadingChatAgent",
+        description="围绕当前阅读位置回答用户提问",
+        retries={"output": 1},
+    )
+    return _chat_agent
+
+
 _compaction_agent: Agent[CompactionDeps, str | None] | None = None
 
 
