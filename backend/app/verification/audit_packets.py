@@ -461,6 +461,14 @@ def extract_tool_calls_from_messages(messages: list[Any]) -> list[dict[str, Any]
     return calls
 
 
+def _assistant_text_from_llm_rounds(llm_rounds: list[dict[str, Any]]) -> str:
+    for round_item in reversed(llm_rounds):
+        content = (round_item.get("response") or {}).get("content") or ""
+        if str(content).strip():
+            return str(content)
+    return ""
+
+
 def extract_llm_rounds(
     messages: list[Any],
     *,
@@ -470,10 +478,13 @@ def extract_llm_rounds(
     input_tokens: int | None,
     output_tokens: int | None,
     cached_input_tokens: int | None,
+    default_request_tools: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     rounds: list[dict[str, Any]] = []
     round_idx = 0
     pending_request: ModelRequest | None = None
+    if default_request_tools is None:
+        default_request_tools = [{"name": "emit_comment"}]
 
     for message in messages:
         if isinstance(message, ModelRequest):
@@ -524,7 +535,7 @@ def extract_llm_rounds(
                     "model": model,
                     "stream": False,
                     "tool_choice": "auto" if tool_calls or round_idx == 0 else None,
-                    "tools": [{"name": "emit_comment"}] if round_idx == 0 else [],
+                    "tools": default_request_tools if round_idx == 0 else [],
                 },
                 "response": {
                     "status": "ok",
@@ -1009,8 +1020,13 @@ def build_chat_interaction_packet(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=None,
+        default_request_tools=[],
     )
     tool_events: list[dict[str, Any]] = []
+    ai_msg = _assistant_text_from_llm_rounds(llm_rounds)
+    context_hash = (prompt_manifest or {}).get("context_hash", "")
+    if context_hash and not str(context_hash).startswith("sha256:"):
+        context_hash = f"sha256:{context_hash}"
 
     chat_turns_payload = []
     for t in recent_chat_turns:
@@ -1039,11 +1055,20 @@ def build_chat_interaction_packet(
         "context_hash": (prompt_manifest or {}).get("context_hash", ""),
         "components": components,
     }
+    injected_context = enrich_injected_context_from_build_manifest(
+        injected_context,
+        prompt_manifest,
+        prompt=prompt,
+    )
 
     packet: dict[str, Any] = {
-        "schema": _SCHEMA_VERSION,
+        "schema_version": _SCHEMA_VERSION,
         "invocation_id": invocation_id,
+        "agent": "ReadingChatAgent",
         "agent_name": "ReadingChatAgent",
+        "run_id": verify_run_id,
+        "scenario_id": verify_scenario_id,
+        "step_id": verify_step_id,
         "verify_run_id": verify_run_id,
         "verify_scenario_id": verify_scenario_id,
         "verify_step_id": verify_step_id,
@@ -1052,17 +1077,26 @@ def build_chat_interaction_packet(
         "paragraph_idx": paragraph_idx,
         "user_msg": user_msg,
         "trace_id": trace_id,
+        "prompt_version": "chat_v1",
+        "context_hash": context_hash,
         "prompt_manifest": prompt_manifest or {},
         "prompt_messages": prompt_messages,
         "injected_context": injected_context,
         "llm_rounds": llm_rounds,
         "tool_events": tool_events,
+        "final_result": {
+            "status": "completed" if ai_msg else "empty",
+            "user_msg": user_msg,
+            "ai_msg": ai_msg,
+        },
         "usage": {
+            "source": usage_source,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         },
         "timing": {"total_ms": duration_ms},
         "duration_ms": duration_ms,
+        "markdown_report_path": f"audit/agent_reports/{invocation_id}.md",
         "created_at": _now(),
     }
 

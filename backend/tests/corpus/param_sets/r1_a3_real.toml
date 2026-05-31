@@ -25,7 +25,8 @@ enforce = true
 track_usage = true
 max_calls = 96
 max_input_tokens_per_call = 128000
-max_output_tokens_per_call = 4096
+# Align with A2: compaction/comment peaks can exceed 4k output tokens.
+max_output_tokens_per_call = 8192
 max_total_cost_usd = 3.00
 
 [assertions]

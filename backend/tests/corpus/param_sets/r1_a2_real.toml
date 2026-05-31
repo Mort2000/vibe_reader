@@ -23,7 +23,8 @@ enforce = true
 track_usage = true
 max_calls = 15
 max_input_tokens_per_call = 128000
-max_output_tokens_per_call = 4096
+# A2 real run 20260531: peak single-call output 4243 (large window + thinking).
+max_output_tokens_per_call = 8192
 max_total_cost_usd = 3.00
 
 [assertions]

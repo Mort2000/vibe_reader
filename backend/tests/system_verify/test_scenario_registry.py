@@ -85,8 +85,10 @@ def test_required_probe_filtering() -> None:
     }
 
     early = scenarios_requiring_probe("early")
-    assert {scenario.id for scenario in early} == {
-        "S2_continuous_reading",
+    assert {scenario.id for scenario in early} == {"S2_continuous_reading"}
+
+    chat_live = scenarios_requiring_probe("chat_live")
+    assert {scenario.id for scenario in chat_live} == {
         "S5_direct_chat",
         "S6_followup_chat",
     }

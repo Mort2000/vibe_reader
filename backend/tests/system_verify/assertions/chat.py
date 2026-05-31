@@ -20,6 +20,12 @@ FORBIDDEN_CHAT_REQUEST_FIELDS = frozenset(
 
 STUB_CHAT_MARKER = re.compile(r"\[stub:[^\]]+\]\[chat\]", re.IGNORECASE)
 ANCHOR_MARKER = re.compile(r"anchor=P\d+", re.IGNORECASE)
+LIVE_ORIGINAL_BLOCK = re.compile(
+    r"<LIVE_ORIGINAL_CHUNKS>(.*?)</LIVE_ORIGINAL_CHUNKS>",
+    re.DOTALL | re.IGNORECASE,
+)
+L2_PARAGRAPH_MARKER = re.compile(r"\[p=(\d+)\]")
+L2_CHUNK_MARKER = re.compile(r"<CHUNK\s", re.IGNORECASE)
 
 
 def assert_chat_request_has_no_selection(body: dict[str, Any]) -> None:
@@ -155,6 +161,110 @@ def assert_recent_chat_in_injected_context(
             len(turns),
             min_turns,
             label="recent_chat_turn_count",
+        )
+
+
+def _manifest_component_tokens(manifest: dict[str, Any], name: str) -> int:
+    for component in manifest.get("components") or []:
+        if str(component.get("name") or "") == name:
+            return int(component.get("tokens") or 0)
+    return 0
+
+
+def _prompt_text_from_agent_run(agent_run: dict[str, Any]) -> str:
+    interaction = agent_run.get("interaction") or agent_run
+    parts: list[str] = []
+    for message in interaction.get("prompt_messages") or []:
+        if str(message.get("role") or "") == "user":
+            parts.append(str(message.get("content") or ""))
+    if parts:
+        return "\n".join(parts)
+    return str(interaction.get("prompt") or "")
+
+
+def _live_original_block_text(prompt: str) -> str:
+    match = LIVE_ORIGINAL_BLOCK.search(prompt)
+    return match.group(1) if match else ""
+
+
+def assert_chat_live_l2_grounded(
+    agent_run: dict[str, Any],
+    *,
+    reading_paragraph_idx: int,
+) -> None:
+    """Direct chat must inject non-empty L2 original text at the reading position.
+
+    Catches the case where compaction reclaimed early chunks but the reader is
+    still before the new live_start, leaving an empty LIVE_ORIGINAL block while
+    ``context_degraded`` remains false and ``total_estimate`` is inflated by
+    reserved budget alone.
+    """
+    interaction = agent_run.get("interaction") or agent_run
+    manifest = interaction.get("prompt_manifest") or {}
+    prompt = _prompt_text_from_agent_run(agent_run)
+    live_block = _live_original_block_text(prompt)
+    live_tokens = _manifest_component_tokens(manifest, "live_original_chunks")
+    live_chunk_ids = manifest.get("live_chunk_ids") or []
+    context_degraded = bool(manifest.get("context_degraded"))
+    raw_total = int(manifest.get("raw_total_estimate") or 0)
+    total_estimate = int(manifest.get("total_estimate") or 0)
+
+    paragraph_markers = [
+        int(match.group(1)) for match in L2_PARAGRAPH_MARKER.finditer(live_block)
+    ]
+    has_chunk_marker = bool(L2_CHUNK_MARKER.search(live_block))
+    has_paragraph_text = bool(paragraph_markers) or has_chunk_marker
+    reading_grounded = reading_paragraph_idx in paragraph_markers
+
+    if context_degraded:
+        return
+
+    if live_tokens <= 0 or not live_chunk_ids or not has_paragraph_text:
+        raise StepAssertionError(
+            assertion="chat_live_l2_grounded",
+            message=(
+                "Chat prompt must include non-empty LIVE_ORIGINAL_CHUNKS near the "
+                "reading position when context is not degraded"
+            ),
+            expected={
+                "live_original_tokens_gt": 0,
+                "live_chunk_ids_non_empty": True,
+                "prompt_contains_paragraph_markers": True,
+                "reading_paragraph_idx": reading_paragraph_idx,
+            },
+            actual={
+                "live_original_tokens": live_tokens,
+                "live_chunk_ids": live_chunk_ids,
+                "context_degraded": context_degraded,
+                "live_block_excerpt": live_block[:240],
+                "paragraph_markers": paragraph_markers[:12],
+            },
+        )
+
+    if not reading_grounded:
+        raise StepAssertionError(
+            assertion="chat_reading_paragraph_in_live_l2",
+            message=(
+                "Chat LIVE_ORIGINAL_CHUNKS must include the current reading "
+                f"paragraph [p={reading_paragraph_idx}]"
+            ),
+            expected={"reading_paragraph_idx": reading_paragraph_idx},
+            actual={"paragraph_markers": paragraph_markers[:24]},
+        )
+
+    if total_estimate > raw_total + 8_000 and raw_total < 2_000:
+        raise StepAssertionError(
+            assertion="chat_manifest_estimate_not_reserved_only",
+            message=(
+                "Chat total_estimate must not be dominated by reserved budget when "
+                "raw prompt content is nearly empty"
+            ),
+            expected={"raw_total_estimate_gte": 2_000},
+            actual={
+                "raw_total_estimate": raw_total,
+                "total_estimate": total_estimate,
+                "live_original_tokens": live_tokens,
+            },
         )
 
 

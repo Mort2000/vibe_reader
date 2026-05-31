@@ -23,7 +23,8 @@ enforce = true
 track_usage = true
 max_calls = 100
 max_input_tokens_per_call = 128000
-max_output_tokens_per_call = 4096
+# Align with A2/A3: chat + compaction summary output headroom.
+max_output_tokens_per_call = 8192
 max_total_cost_usd = 3.50
 
 [assertions]

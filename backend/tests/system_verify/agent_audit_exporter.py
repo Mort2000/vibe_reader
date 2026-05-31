@@ -44,10 +44,29 @@ def normalize_audit_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 normalized["model"] = model
                 break
 
+    if not normalized.get("agent"):
+        normalized["agent"] = normalized.get("agent_name")
+
+    if normalized.get("schema") and not normalized.get("schema_version"):
+        normalized["schema_version"] = normalized["schema"]
+
+    if not normalized.get("context_hash"):
+        injected = normalized.get("injected_context") or {}
+        manifest = normalized.get("prompt_manifest") or {}
+        context_hash = injected.get("context_hash") or manifest.get("context_hash")
+        if context_hash:
+            normalized["context_hash"] = (
+                context_hash
+                if str(context_hash).startswith("sha256:")
+                else f"sha256:{context_hash}"
+            )
+
     if not normalized.get("prompt_version"):
         agent = str(normalized.get("agent") or "")
         if "Compaction" in agent:
             normalized["prompt_version"] = "chapter_compaction_v1"
+        elif agent == "ReadingChatAgent":
+            normalized["prompt_version"] = "chat_v1"
 
     return normalized
 

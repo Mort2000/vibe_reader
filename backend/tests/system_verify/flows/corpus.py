@@ -417,14 +417,14 @@ async def setup_s5_direct_chat(
     scenario_id: str,
     step_id: str = "setup_book",
 ) -> None:
-    """Import corpus book, resolve early probe, and prepare chat audit exporters."""
+    """Import corpus book, resolve chat_live probe, and prepare chat audit exporters."""
     from ..audit_exporter import CommentAuditExporter, ensure_chat_audit_exporter
     from .reading import ReadingCursor
 
     book_id, book = await ensure_imported_book(ctx)
 
     assert ctx.corpus is not None
-    probe = get_probe(ctx.corpus, "early")
+    probe = get_probe(ctx.corpus, "chat_live")
     ctx.book_id = book_id
     ctx.book = book
     ctx.probe = probe

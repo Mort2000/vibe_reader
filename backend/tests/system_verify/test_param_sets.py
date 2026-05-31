@@ -24,6 +24,7 @@ def test_apply_r1_a2_real_param_set() -> None:
     assert config.params.llm_mode == "real"
     assert config.params.read_batch_size == 120
     assert config.params.budget.enforce is True
+    assert config.params.budget.max_output_tokens_per_call == 8192
     assert config.metrics.collect_provider_usage is True
 
 

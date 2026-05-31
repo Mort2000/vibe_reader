@@ -74,6 +74,7 @@ COMPACTION_INSTRUCTIONS = """\
 - 压缩结果必须短于输入。
 - 保留关键情节、人物动作、场景变化和重要对话。
 - anchor_excerpts 保留原文中关键的锚点片段，每个不超过 120 tokens。
+  每项可为原文引文字符串，或对象 {text, paragraph_idx, reason}；reason 用一句话说明保留该句的原因。
 - 不要编造文中没有的内容。
 - 不要输出完整人物关系图或时间线。
 - 不要输出 comment digest 或 chat digest。

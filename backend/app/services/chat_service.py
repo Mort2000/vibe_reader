@@ -135,11 +135,13 @@ async def stream_llm_response(
     tokens_out = 0
     first_delta_emitted = False
 
+    stream_result = None
     lock = job_runner.book_lock(book_id) if job_runner else nullcontext()
     async with lock:
         async with agent.run_stream(
             prompt, deps=deps, message_history=message_history,
         ) as stream:
+            stream_result = stream
             async for chunk in stream.stream_text(delta=True):
                 full_text += chunk
                 if ttft_ms is None:
@@ -152,8 +154,7 @@ async def stream_llm_response(
                     }
                 yield "chat.delta", {"turn_id": turn_id, "delta": chunk}
 
-            result = await stream.result()
-            usage = result.usage()
+            usage = stream.usage
             tokens_in = usage.request_tokens or usage.input_tokens
             tokens_out = usage.response_tokens or usage.output_tokens
 
@@ -176,7 +177,7 @@ async def stream_llm_response(
                 chapter_idx=chapter_idx,
                 paragraph_idx=paragraph_idx,
                 prompt=prompt,
-                agent_result=result,
+                agent_result=stream_result,
                 recent_chat_turns=chat_ctx.recent_chat_turns,
                 user_msg=user_msg,
                 prompt_manifest=chat_ctx.prompt_manifest,

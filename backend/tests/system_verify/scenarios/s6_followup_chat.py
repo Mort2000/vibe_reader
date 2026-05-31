@@ -36,7 +36,7 @@ async def run_s6(
     )
     builder.add_step(
         "setup_book",
-        "Import corpus book and resolve early probe",
+        "Import corpus book and resolve chat_live probe (P>180)",
         _step_setup,
         timeout_s=90.0,
     )

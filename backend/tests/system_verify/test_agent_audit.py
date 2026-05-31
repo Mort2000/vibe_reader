@@ -47,7 +47,7 @@ def _sample_packet() -> dict:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "comment_target_paragraphs = [15]"},
+                    {"type": "text", "text": "comment_target_paragraphs = [15..=15]"},
                     {
                         "type": "original_text_block",
                         "component": "current_window",
@@ -212,6 +212,71 @@ def test_enrich_comment_records_with_agent_refs(tmp_path: Path) -> None:
     row = comments_path.read_text(encoding="utf-8")
     assert "agent_invocation_id" in row
     assert "agent_report_path" in row
+
+
+def test_normalize_audit_packet_maps_chat_agent_name_and_context_hash() -> None:
+    normalized = normalize_audit_packet(
+        {
+            "agent_name": "ReadingChatAgent",
+            "verify_run_id": "run_1",
+            "injected_context": {"context_hash": "abc123def456"},
+            "llm_rounds": [
+                {
+                    "response": {
+                        "content": "这是 chat 答复正文。",
+                    }
+                }
+            ],
+            "user_msg": "压缩之后情节？",
+        }
+    )
+    assert normalized["agent"] == "ReadingChatAgent"
+    assert normalized["context_hash"] == "sha256:abc123def456"
+    assert normalized["prompt_version"] == "chat_v1"
+
+
+def test_render_chat_audit_markdown_includes_assistant_response() -> None:
+    markdown = render_agent_audit_markdown(
+        normalize_audit_packet(
+            {
+                "invocation_id": "inv_chat_R1_0000",
+                "agent_name": "ReadingChatAgent",
+                "run_id": "run_1",
+                "scenario_id": "R1_real_happy_path",
+                "step_id": "post_compaction_chat",
+                "trace_id": "trace_chat",
+                "model": "deepseek-v4-flash",
+                "book": {"id": 1, "title": "Test Book"},
+                "chapter_idx": 1,
+                "paragraph_idx": 521,
+                "user_msg": "压缩之后，前面章节的主要情节是什么？",
+                "prompt_messages": [{"role": "user", "content": "prompt body"}],
+                "injected_context": {"context_hash": "abc123", "components": []},
+                "usage": {"source": "provider", "input_tokens": 100, "output_tokens": 20},
+                "timing": {"total_ms": 1200.0},
+                "llm_rounds": [
+                    {
+                        "response": {
+                            "content": "根据压缩摘要，主要情节是王子维恩的故事。",
+                            "thinking": {"available": False, "reason": "adapter_not_exposed"},
+                        }
+                    }
+                ],
+                "final_result": {
+                    "status": "completed",
+                    "user_msg": "压缩之后，前面章节的主要情节是什么？",
+                    "ai_msg": "根据压缩摘要，主要情节是王子维恩的故事。",
+                },
+            }
+        )
+    )
+    assert "# ReadingChatAgent · inv_chat_R1_0000" in markdown
+    assert "### User" in markdown
+    assert "压缩之后，前面章节的主要情节是什么？" in markdown
+    assert "### Assistant" in markdown
+    assert "根据压缩摘要，主要情节是王子维恩的故事。" in markdown
+    assert "- Reading paragraph: P521" in markdown
+    assert "PNone" not in markdown
 
 
 def test_normalize_audit_packet_maps_legacy_compaction_fields() -> None:

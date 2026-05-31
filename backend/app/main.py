@@ -32,6 +32,29 @@ def get_settings() -> Settings:
     return _settings
 
 
+def _register_api_routers(app: FastAPI) -> None:
+    from .routers.books import router as books_router
+    from .routers.chapters import router as chapters_router
+    from .routers.chat import router as chat_router
+    from .routers.events import router as events_router
+    from .routers.health import router as health_router
+    from .routers.progress import router as progress_router
+    from .routers.verify import router as verify_router
+    from .routers.windows import router as windows_router
+
+    for router in (
+        health_router,
+        books_router,
+        chapters_router,
+        chat_router,
+        progress_router,
+        events_router,
+        verify_router,
+        windows_router,
+    ):
+        app.include_router(router, prefix="/api")
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -73,23 +96,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, generic_error_handler)  # type: ignore[arg-type]
 
-    from .routers.health import router as health_router
-    from .routers.books import router as books_router
-    from .routers.chapters import router as chapters_router
-    from .routers.chat import router as chat_router
-    from .routers.progress import router as progress_router
-    from .routers.events import router as events_router
-    from .routers.verify import router as verify_router
-    from .routers.windows import router as windows_router
-
-    app.include_router(health_router, prefix="/api")
-    app.include_router(books_router, prefix="/api")
-    app.include_router(chapters_router, prefix="/api")
-    app.include_router(chat_router, prefix="/api")
-    app.include_router(progress_router, prefix="/api")
-    app.include_router(events_router, prefix="/api")
-    app.include_router(verify_router, prefix="/api")
-    app.include_router(windows_router, prefix="/api")
+    _register_api_routers(app)
 
     frontend_dist = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
     if frontend_dist.is_dir():

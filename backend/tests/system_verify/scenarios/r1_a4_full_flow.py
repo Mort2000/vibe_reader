@@ -48,9 +48,9 @@ async def run(
     )
     builder.add_step(
         "setup",
-        "Import book and start at long chapter paragraph 0 for compaction reading",
+        "Reset verify data, import book, and start at long chapter P0",
         _step_setup,
-        timeout_s=90.0,
+        timeout_s=120.0,
     )
     builder.add_step(
         "start_sse",
@@ -123,6 +123,11 @@ async def _step_verify_runtime(ctx: ScenarioContext) -> None:
 
 
 async def _step_setup(ctx: ScenarioContext) -> None:
+    from ..data_lifecycle import prepare_run_data_dir
+
+    await prepare_run_data_dir(ctx.config, ctx.run_manager, phase="pre")
+    ctx.imported_book = None
+    ctx.import_stats = {}
     await setup_a3_long_chapter(ctx, scenario_id=SCENARIO_ID, step_id="setup")
 
 

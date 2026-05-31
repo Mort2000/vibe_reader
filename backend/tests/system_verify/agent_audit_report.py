@@ -167,9 +167,33 @@ def render_tool_calls(packet: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _packet_agent_name(packet: dict[str, Any]) -> str:
+    return str(packet.get("agent") or packet.get("agent_name") or "Agent")
+
+
+def _assistant_text_from_packet(packet: dict[str, Any]) -> str:
+    final_result = packet.get("final_result") or {}
+    ai_msg = final_result.get("ai_msg")
+    if ai_msg:
+        return str(ai_msg)
+    for round_item in reversed(packet.get("llm_rounds") or []):
+        content = (round_item.get("response") or {}).get("content") or ""
+        if str(content).strip():
+            return str(content)
+    return ""
+
+
+def _is_chat_audit_packet(packet: dict[str, Any]) -> bool:
+    return _packet_agent_name(packet) == "ReadingChatAgent" or "user_msg" in packet
+
+
 def render_final_result(packet: dict[str, Any]) -> list[str]:
     final_result = packet.get("final_result") or {}
-    lines = ["## Final Result", "", f"- status: {final_result.get('status')}"]
+    is_chat = _is_chat_audit_packet(packet)
+    status = final_result.get("status")
+    if status is None and is_chat and _assistant_text_from_packet(packet):
+        status = "completed"
+    lines = ["## Final Result", "", f"- status: {status if status is not None else 'n/a'}"]
     if final_result.get("no_call"):
         lines.append("- no_call: true")
     for comment in final_result.get("comments_created") or []:
@@ -186,6 +210,17 @@ def render_final_result(packet: dict[str, Any]) -> list[str]:
         lines.append("- sample_refs:")
         for ref in sample_refs:
             lines.append(f"  - {ref}")
+
+    if is_chat:
+        user_msg = packet.get("user_msg") or final_result.get("user_msg")
+        if user_msg:
+            lines.extend(["", "### User", "", str(user_msg)])
+        ai_msg = _assistant_text_from_packet(packet)
+        if ai_msg:
+            lines.extend(["", "### Assistant", "", ai_msg])
+        elif not final_result.get("comments_created"):
+            lines.extend(["", "_No assistant response recorded._"])
+
     lines.append("")
     return lines
 
@@ -193,6 +228,7 @@ def render_final_result(packet: dict[str, Any]) -> list[str]:
 def render_reading_position(packet: dict[str, Any]) -> list[str]:
     window = packet.get("window") or {}
     source_chunk = packet.get("source_chunk") or {}
+    has_window = window.get("start_paragraph_idx") is not None
     lines = [
         "## Reading Position",
         "",
@@ -200,13 +236,13 @@ def render_reading_position(packet: dict[str, Any]) -> list[str]:
         f"- Chapter: {packet.get('chapter_idx')}",
     ]
     # Compaction agents carry source_chunk but no L1 window; comment agents do the opposite.
-    if "source_chunk" in packet and "window" not in packet:
+    if "source_chunk" in packet and not has_window:
         lines.append(
             f"- Source chunk: P{source_chunk.get('start_paragraph_idx')}-"
             f"P{source_chunk.get('end_paragraph_idx')} "
             f"(id={source_chunk.get('id')}, seq={source_chunk.get('chunk_seq')})"
         )
-    else:
+    elif has_window:
         lines.extend(
             [
                 (
@@ -219,13 +255,15 @@ def render_reading_position(packet: dict[str, Any]) -> list[str]:
                 ),
             ]
         )
+    elif packet.get("paragraph_idx") is not None:
+        lines.append(f"- Reading paragraph: P{packet.get('paragraph_idx')}")
     lines.append("")
     return lines
 
 
 def render_agent_audit_markdown(packet: dict[str, Any]) -> str:
     invocation_id = packet.get("invocation_id", "unknown")
-    agent = packet.get("agent", "Agent")
+    agent = _packet_agent_name(packet)
 
     header = [
         f"# {agent} · {invocation_id}",

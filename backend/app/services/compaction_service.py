@@ -84,6 +84,8 @@ def _normalize_anchor_excerpts(
                     source_paragraphs,
                     str(excerpt.get("text") or ""),
                 )
+            if not str(excerpt.get("reason") or "").strip():
+                excerpt["reason"] = "anchor"
             normalized.append(excerpt)
     return normalized
 

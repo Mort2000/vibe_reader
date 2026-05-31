@@ -73,15 +73,60 @@ function hasToolResult(req) {
 }
 
 /**
+ * Expand one token: "42" or inclusive "20..=80".
+ * @param {string} token
+ * @returns {number[]}
+ */
+function expandRangeToken(token) {
+  const trimmed = token.trim();
+  if (!trimmed) return [];
+  const rangeMatch = trimmed.match(/^(\d+)\.\.=(\d+)$/);
+  if (rangeMatch) {
+    let start = parseInt(rangeMatch[1], 10);
+    let end = parseInt(rangeMatch[2], 10);
+    if (start > end) [start, end] = [end, start];
+    const out = [];
+    for (let p = start; p <= end; p += 1) out.push(p);
+    return out;
+  }
+  const single = parseInt(trimmed, 10);
+  return Number.isFinite(single) ? [single] : [];
+}
+
+/**
+ * Parse comment_target_paragraphs range notation (dev ContextBuilder format).
  * @param {string} content
  */
 function parseTargetParagraphs(content) {
-  const match = content.match(/comment_target_paragraphs\s*=\s*\[([\d,\s]+)\]/);
+  const match = content.match(/comment_target_paragraphs\s*=\s*\[([^\]]+)\]/);
   if (!match) return [];
-  return match[1]
-    .split(",")
-    .map((s) => parseInt(s.trim(), 10))
-    .filter((n) => Number.isFinite(n));
+  const seen = new Set();
+  const out = [];
+  for (const part of match[1].split(",")) {
+    for (const p of expandRangeToken(part)) {
+      if (!seen.has(p)) {
+        seen.add(p);
+        out.push(p);
+      }
+    }
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+/**
+ * @param {import("@copilotkit/aimock").MockRequest} req
+ */
+function isChatPrompt(req) {
+  const content = lastUserContent(req);
+  return (
+    content.includes("mode = chat") ||
+    content.includes("[READING_CHAT]") ||
+    content.includes("ReadingChatAgent") ||
+    (content.includes("用户提问") &&
+      content.includes("<CURRENT_TASK>") &&
+      !content.includes("comment_target_paragraphs"))
+  );
 }
 
 /**
@@ -348,25 +393,23 @@ mock.on(
   },
 );
 
-// A3: Reading chat — implemented with streamingProfile; scenario coverage pending
+// A4: Reading chat — streaming profile aligned with ContextBuilder chat task block
 mock.on(
   {
-    predicate: (req) => {
-      const content = lastUserContent(req);
-      return (
-        content.includes("[READING_CHAT]") ||
-        content.includes("ReadingChatAgent") ||
-        (content.includes("当前段落") && !content.includes("comment_target_paragraphs"))
-      );
-    },
+    predicate: (req) => isChatPrompt(req),
   },
   (req) => {
     const content = lastUserContent(req);
     const ctxHash = contextHash(content);
     const chapterMatch = content.match(/chapter[_\s=]*(\d+)/i);
+    const readingMatch = content.match(/current_reading_paragraph_idx\s*=\s*(\d+)/);
     const paragraphMatch = content.match(/paragraph[_\s=]*(\d+)/i);
     const chapter = chapterMatch ? chapterMatch[1] : "0";
-    const paragraph = paragraphMatch ? paragraphMatch[1] : "42";
+    const paragraph = readingMatch
+      ? readingMatch[1]
+      : paragraphMatch
+        ? paragraphMatch[1]
+        : "42";
     const chatCfg = /** @type {Record<string, unknown>} */ (profile.chat ?? {});
     const responseText = `[stub:${profileName}][chat][chapter=${chapter}][paragraph=${paragraph}] anchor=P${paragraph} recent_comment_hash=${ctxHash}`;
     const streamingProfile = chatCfg.stream

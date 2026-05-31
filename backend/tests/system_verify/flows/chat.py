@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..assertions.chat import (
+    assert_chat_live_l2_grounded,
     assert_chat_request_has_no_selection,
     assert_chat_sse_contract,
     assert_chat_timing_observable,
@@ -236,7 +237,44 @@ async def run_s5_direct_chat(
             question_index=0,
         )
     await verify_s5_chat_turn(ctx, turn, scenario_id=scenario_id, step_id=step_id)
+    await verify_chat_agent_l2_grounded(
+        ctx,
+        turn=turn,
+        scenario_id=scenario_id,
+        step_id=step_id,
+    )
     return turn
+
+
+async def verify_chat_agent_l2_grounded(
+    ctx: ScenarioContext,
+    *,
+    turn: ChatTurnRecord,
+    scenario_id: str,
+    step_id: str,
+) -> None:
+    """Fetch the latest chat agent run and assert L2 original text is grounded."""
+    async with TargetClient(
+        ctx.config.target.base_url,
+        ctx.run_manager,
+        scenario_id,
+        step_id,
+        context=ctx,
+    ) as client:
+        agent_runs = await fetch_verify_agent_runs(
+            client,
+            ctx.run_manager.run_id,
+            scenario_id=scenario_id,
+            step_id=step_id,
+        )
+
+    chat_runs = find_chat_agent_runs(agent_runs)
+    assert_that.gte(len(chat_runs), 1, label="chat_agent_runs_for_l2_assertion")
+    ctx.chat_agent_runs = chat_runs
+    assert_chat_live_l2_grounded(
+        chat_runs[-1],
+        reading_paragraph_idx=turn.paragraph_idx,
+    )
 
 
 async def run_s6_followup_chat(
@@ -273,6 +311,12 @@ async def run_s6_followup_chat(
         )
     await verify_s5_chat_turn(ctx, turn, scenario_id=scenario_id, step_id=step_id)
     assert_followup_continuity(first.result, turn.result, followup_user_msg=question)
+    await verify_chat_agent_l2_grounded(
+        ctx,
+        turn=turn,
+        scenario_id=scenario_id,
+        step_id=step_id,
+    )
     return turn
 
 
@@ -379,6 +423,10 @@ async def post_compaction_chat_a4(
     assert_chapter_summary_in_subsequent_context(
         injected,
         compaction_run=compaction_runs[-1],
+    )
+    assert_chat_live_l2_grounded(
+        latest_chat,
+        reading_paragraph_idx=cursor.paragraph_idx,
     )
 
     ctx.run_manager.real_llm_tracker.phase_coverage["A4_full_flow"] = True

@@ -23,6 +23,12 @@ chapter_idx = 1
 paragraph_idx = 20
 
 [[books.probes]]
+name = "chat_live"
+# After typical S4 compaction reclaims P0–179; S5/S6 chat must land in active L2.
+chapter_idx = 1
+paragraph_idx = 200
+
+[[books.probes]]
 name = "middle"
 chapter_idx = 1
 paragraph_idx = 120
