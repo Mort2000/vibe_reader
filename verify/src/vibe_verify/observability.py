@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .driver import BookFacade, TargetClient, parse_items, require_success, unwrap
+from .driver import TargetClient, parse_items, require_success, unwrap
 from .evidence import EvidenceHub, normalize_usage
 from .models import (
     AgentInvocation,
@@ -26,48 +26,14 @@ class BackendObservability:
         self.client = client
 
     async def runtime(self) -> dict[str, Any]:
-        response = await self.client.request("GET", "/api/verify/runtime")
+        response = await self.client.request("GET", "/api/runtime")
         require_success(response)
         body = unwrap(response.body)
         if not isinstance(body, dict):
-            raise TypeError("verify runtime response must be an object")
-        return body
-
-    async def runtime_if_available(self) -> dict[str, Any] | None:
-        response = await self.client.request("GET", "/api/verify/runtime")
-        if response.status_code in {404, 405}:
-            return None
-        require_success(response)
-        body = unwrap(response.body)
-        if not isinstance(body, dict):
-            raise TypeError("verify runtime response must be an object")
+            raise TypeError("runtime response must be an object")
         if "verify_mode" not in body:
-            raise TypeError("verify runtime response missing verify_mode")
+            raise TypeError("runtime response missing verify_mode")
         return body
-
-    async def list_jobs(
-        self,
-        *,
-        book: BookFacade | None = None,
-        job_type: str | None = None,
-        status: str | None = None,
-        run_id: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {
-            "run_id": self.client.correlation.run_id if run_id is None else run_id,
-            "limit": limit,
-        }
-        if book is not None:
-            params["book_id"] = book.id
-            params["chapter_idx"] = book.chapter_idx
-        if job_type is not None:
-            params["job_type"] = job_type
-        if status is not None:
-            params["status"] = status
-        response = await self.client.request("GET", "/api/verify/jobs", params=params)
-        require_success(response)
-        return parse_items(unwrap(response.body), preferred_key="jobs")
 
     async def list_agent_runs(
         self,
@@ -88,19 +54,6 @@ class BackendObservability:
             raise ObservabilityUnavailable("backend agent-run endpoint unavailable")
         require_success(response)
         return parse_items(unwrap(response.body), preferred_key="agent_runs")
-
-    async def metrics(self, *, scenario_id: str | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {"run_id": self.client.correlation.run_id}
-        if scenario_id is not None:
-            params["scenario_id"] = scenario_id
-        response = await self.client.request(
-            "GET", "/api/verify/metrics", params=params
-        )
-        require_success(response)
-        body = unwrap(response.body)
-        if not isinstance(body, dict):
-            raise TypeError("verify metrics response must be an object")
-        return body
 
     async def collect_agent_invocations(
         self,

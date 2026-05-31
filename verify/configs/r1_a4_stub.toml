@@ -10,6 +10,7 @@ corpus = "corpus/hongloumeng_manifest.toml"
 name = "r1_a4_stub"
 llm_mode = "stub"
 audit = false
+backend_agent_evidence = false
 
 [profile.stub]
 name = "r1_a4_stub"

@@ -3,13 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from vibe_verify.driver import TargetClient
-from vibe_verify.evidence import EvidenceHub
+from vibe_verify.driver import EventSubscriber, TargetClient
+from vibe_verify.evidence import EvidenceHub, LLMView
 from vibe_verify.models import AgentInvocation, Correlation, TokenUsage
+from vibe_verify.observability import BackendObservability
 from vibe_verify.provider import ProviderSession
 from vibe_verify.runner import (
     Budget,
@@ -30,10 +32,15 @@ from vibe_verify.scenario import (
     ScenarioRegistry,
     execute_scenario,
 )
+from vibe_verify.scenarios.r1_full_flow import R1_A4_SCENARIO_ID, context_compacted
 
 
 class FakeClient(TargetClient):
+    requested_paths: list[str]
+    agent_runs_requested = False
+
     def __init__(self, _base_url, *, evidence, correlation):
+        self.requested_paths = []
         super().__init__(
             "http://backend",
             evidence=evidence,
@@ -45,6 +52,26 @@ class FakeClient(TargetClient):
         )
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requested_paths.append(request.url.path)
+        if request.url.path == "/api/verify/runtime":
+            return httpx.Response(
+                500,
+                json={"error": "verify runtime endpoint must not be used"},
+            )
+        if request.url.path == "/api/verify/agent-runs":
+            type(self).agent_runs_requested = True
+            return httpx.Response(
+                500,
+                json={"error": "backend agent-run import is not enabled"},
+            )
+        if request.url.path == "/api/runtime":
+            return httpx.Response(
+                200,
+                json={
+                    "verify_mode": True,
+                    "llm": {"base_url_configured": True},
+                },
+            )
         if request.url.path.startswith("/api/verify/"):
             return httpx.Response(404, json={"error": "not found"})
         return httpx.Response(200, json={})
@@ -60,14 +87,14 @@ class BrokenCloseClient(FakeClient):
 
 class RuntimeFalseClient(FakeClient):
     def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/verify/runtime":
+        if request.url.path == "/api/runtime":
             return httpx.Response(200, json={"verify_mode": False})
         return super().handle(request)
 
 
 class RuntimeMissingBaseURLClient(FakeClient):
     def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/verify/runtime":
+        if request.url.path == "/api/runtime":
             return httpx.Response(
                 200,
                 json={
@@ -80,7 +107,7 @@ class RuntimeMissingBaseURLClient(FakeClient):
 
 class RuntimeMalformedClient(FakeClient):
     def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/verify/runtime":
+        if request.url.path == "/api/runtime":
             return httpx.Response(200, json={})
         return super().handle(request)
 
@@ -88,6 +115,7 @@ class RuntimeMalformedClient(FakeClient):
 class AgentRunsClient(FakeClient):
     def handle(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/verify/agent-runs":
+            type(self).agent_runs_requested = True
             return httpx.Response(
                 200,
                 json={
@@ -391,7 +419,7 @@ async def test_run_engine_rejects_empty_selection(tmp_path) -> None:
     assert result.error == "no scenarios selected"
 
 
-async def test_run_engine_fails_explicit_bad_verify_runtime(tmp_path) -> None:
+async def test_run_engine_fails_explicit_bad_runtime(tmp_path) -> None:
     registry = ScenarioRegistry()
     registry.register(ScenarioDefinition("passed", passing))
 
@@ -446,6 +474,7 @@ async def test_run_engine_imports_backend_agent_runs_when_local_missing(
 ) -> None:
     registry = ScenarioRegistry()
     registry.register(ScenarioDefinition("passed", passing))
+    AgentRunsClient.agent_runs_requested = False
 
     result = await RunEngine(
         registry,
@@ -453,7 +482,10 @@ async def test_run_engine_imports_backend_agent_runs_when_local_missing(
     ).run(
         RunSpec(
             suite="core",
-            profile=Profile(budget=Budget(max_cost_usd=1)),
+            profile=Profile(
+                backend_agent_evidence=True,
+                budget=Budget(max_cost_usd=1),
+            ),
             target_url="http://backend",
             artifact_root=tmp_path,
             run_id="backend-agent-runs",
@@ -467,6 +499,7 @@ async def test_run_engine_imports_backend_agent_runs_when_local_missing(
     assert result.status == "passed"
     assert manifest["llm_call_count"] == 1
     assert json.loads(lines[0])["id"] == "backend-inv-1"
+    assert AgentRunsClient.agent_runs_requested is True
 
 
 @pytest.mark.parametrize(
@@ -486,7 +519,7 @@ async def test_run_engine_reports_agent_import_failure_as_scenario_result(
     ).run(
         RunSpec(
             suite="core",
-            profile=Profile(),
+            profile=Profile(backend_agent_evidence=True),
             target_url="http://backend",
             artifact_root=tmp_path,
             run_id=f"agent-import-{client_factory.__name__}",
@@ -518,6 +551,36 @@ def test_budget_guard() -> None:
     )
     with pytest.raises(BudgetExceeded, match="cost"):
         enforce_budget(Budget(max_cost_usd=1), hub, 0)
+
+
+def test_r1_context_compaction_filters_formal_events_by_book_and_chapter() -> None:
+    hub = EvidenceHub()
+    context = ScenarioContext(  # type: ignore[arg-type]
+        app=None,
+        user=None,
+        llm=LLMView(hub),
+        observability=None,
+    )
+    events = EventSubscriber(hub, Correlation(run_id="run"))
+    book = SimpleNamespace(
+        id=7,
+        chapter_idx=1,
+        client=SimpleNamespace(
+            correlation=Correlation(run_id="run", scenario_id=R1_A4_SCENARIO_ID)
+        ),
+    )
+
+    events.ingest("context.compacted", {"book_id": 8, "chapter_idx": 1})
+    events.ingest("context.failed", {"book_id": 7, "chapter_idx": 2, "error": "bad"})
+    assert context_compacted(context, book, events) is False
+
+    events.ingest("context.compacted", {"book_id": 7, "chapter_idx": 1})
+    assert context_compacted(context, book, events) is True
+
+
+def test_verify_jobs_and_metrics_adapters_are_not_exposed() -> None:
+    assert not hasattr(BackendObservability, "list_jobs")
+    assert not hasattr(BackendObservability, "metrics")
 
 
 def test_real_mode_evidence_gap_when_usage_missing() -> None:
@@ -573,6 +636,7 @@ def test_evidence_gap_reports_missing_scenario_and_step_correlation() -> None:
 async def test_real_mode_required_evidence_gap_fails_run(tmp_path) -> None:
     registry = ScenarioRegistry()
     registry.register(ScenarioDefinition("passed", passing))
+    FakeClient.agent_runs_requested = False
     result = await RunEngine(
         registry,
         client_factory=FakeClient,
@@ -601,3 +665,4 @@ async def test_real_mode_required_evidence_gap_fails_run(tmp_path) -> None:
     assert manifest["status"] == "failed"
     assert "real_mode_agent_invocation_usage_not_observed" in manifest["evidence_gaps"]
     assert "evidence_gaps" in failure["context"]
+    assert FakeClient.agent_runs_requested is False

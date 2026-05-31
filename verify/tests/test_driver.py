@@ -256,11 +256,84 @@ async def test_event_subscriber_subscribe_uses_formal_events_endpoint() -> None:
     await client.aclose()
 
 
+async def test_app_subscribe_events_scopes_formal_event_stream() -> None:
+    hub = EvidenceHub()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/events"
+        assert request.url.params["book_id"] == "7"
+        assert request.url.params["chapter_idx"] == "1"
+        return httpx.Response(
+            200,
+            content=(
+                "event: context.compacted\n"
+                'data: {"trace_id": "t", "book_id": 7, "chapter_idx": 1}\n\n'
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    target = TargetClient(
+        "http://backend",
+        evidence=hub,
+        correlation=Correlation(run_id="run"),
+        client=httpx.AsyncClient(
+            base_url="http://backend", transport=httpx.MockTransport(handler)
+        ),
+    )
+    app = AppFacade(target, clock=InstantClock(), evidence=hub)
+
+    async with app.subscribe_events(book_id=7, chapter_idx=1) as events:
+        observed = await events.wait_for("context.compacted", timeout_s=0.1)
+
+    assert observed.correlation.book_id == 7
+    assert hub.api_interactions[-1].path == "/api/events"
+    await target._client.aclose()
+
+
+async def test_app_subscribe_events_fails_when_formal_stream_unavailable() -> None:
+    hub = EvidenceHub()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/events"
+        return httpx.Response(
+            500,
+            json={"error": "broken"},
+        )
+
+    target = TargetClient(
+        "http://backend",
+        evidence=hub,
+        correlation=Correlation(run_id="run"),
+        client=httpx.AsyncClient(
+            base_url="http://backend", transport=httpx.MockTransport(handler)
+        ),
+    )
+    app = AppFacade(target, clock=InstantClock(), evidence=hub)
+
+    with pytest.raises(RuntimeError, match="/api/events HTTP 500"):
+        async with app.subscribe_events(book_id=7, chapter_idx=1):
+            pass
+
+    assert hub.api_interactions[-1].path == "/api/events"
+    assert hub.api_interactions[-1].status_code == 500
+    await target._client.aclose()
+
+
 async def test_iter_sse_ignores_done_marker() -> None:
     events = [
         item
         async for item in iter_sse(
-            line_source(["data: " + json.dumps({"x": 1}), "", "data: [DONE]", ""])
+            line_source(
+                [
+                    "event: ping",
+                    "data: ",
+                    "",
+                    "data: " + json.dumps({"x": 1}),
+                    "",
+                    "data: [DONE]",
+                    "",
+                ]
+            )
         )
     ]
     assert events == [("message", {"x": 1})]

@@ -57,6 +57,7 @@ class ScenarioContext:
     user: UserFacade
     llm: LLMView
     observability: BackendObservability
+    backend_agent_evidence: bool = False
     params: ScenarioParameters = field(default_factory=ScenarioParameters)
 
 

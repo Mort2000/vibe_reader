@@ -35,6 +35,7 @@ class RunSettings:
     run_id: str | None = None
     corpus: Path | None = None
     audit: bool = False
+    backend_agent_evidence: bool = False
     stub_profile: str = "r1_a4_stub"
     user: UserModel = field(default_factory=UserModel)
     budget: Budget = field(default_factory=Budget)
@@ -60,6 +61,7 @@ def build_run_spec(settings: RunSettings) -> RunSpec:
         llm_mode=settings.llm_mode,
         user=settings.user,
         audit_enabled=settings.audit,
+        backend_agent_evidence=settings.backend_agent_evidence,
         budget=settings.budget,
         stub=StubProfile(name=settings.stub_profile),
         real_base_url=settings.real_base_url
@@ -94,6 +96,7 @@ def default_run_config() -> dict[str, Any]:
             "name": "r1_a4_stub",
             "llm_mode": "stub",
             "audit": False,
+            "backend_agent_evidence": False,
             "stub": {"name": "r1_a4_stub"},
             "user": {
                 "reading_paragraphs_per_second": 4.0,
@@ -228,6 +231,10 @@ def run_settings_from_mapping(data: Mapping[str, Any]) -> RunSettings:
         run_id=optional_str(data.get("run_id")),
         corpus=Path(str(corpus)) if corpus else None,
         audit=strict_bool(profile.get("audit", False), "profile.audit"),
+        backend_agent_evidence=strict_bool(
+            profile.get("backend_agent_evidence", False),
+            "profile.backend_agent_evidence",
+        ),
         stub_profile=str(stub["name"]),
         user=UserModel(
             reading_paragraphs_per_second=float(

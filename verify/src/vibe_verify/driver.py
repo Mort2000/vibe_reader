@@ -7,7 +7,7 @@ import inspect
 import json
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -138,7 +138,7 @@ class TargetClient:
         headers: dict[str, str] | None = None,
     ) -> APIResponse:
         request_headers = self._headers(headers)
-        started = time.monotonic()
+        request_started = time.monotonic()
         correlation = self.correlation
         try:
             response = await self._client.request(
@@ -149,7 +149,7 @@ class TargetClient:
                 files=files,
                 headers=request_headers,
             )
-            duration_ms = (time.monotonic() - started) * 1000
+            duration_ms = (time.monotonic() - request_started) * 1000
             body = parse_response_body(response)
             correlation = response_correlation(self.correlation, response.headers)
             self.evidence.record_api(
@@ -165,7 +165,7 @@ class TargetClient:
                 )
             )
         except Exception as exc:
-            duration_ms = (time.monotonic() - started) * 1000
+            duration_ms = (time.monotonic() - request_started) * 1000
             self.evidence.record_api(
                 APIInteraction(
                     method=method.upper(),
@@ -308,6 +308,7 @@ class EventSubscriber:
         params: dict[str, Any] | None = None,
         client: httpx.AsyncClient | None = None,
         timeout_s: float = 300,
+        ready: asyncio.Future[None] | None = None,
     ) -> None:
         """Subscribe to the formal backend event stream until the stream ends."""
         headers = {
@@ -331,10 +332,23 @@ class EventSubscriber:
                 "GET", "/api/events", headers=headers, params=params
             ) as response:
                 status_code = response.status_code
+                if response.status_code >= 400:
+                    raw = await response.aread()
+                    error = (
+                        f"/api/events HTTP {response.status_code}: "
+                        f"{raw.decode(errors='replace')[:500]}"
+                    )
+                    if ready is not None and not ready.done():
+                        ready.set_exception(RuntimeError(error))
+                    raise RuntimeError(error)
+                if ready is not None and not ready.done():
+                    ready.set_result(None)
                 async for event_type, data in iter_sse(response.aiter_lines()):
                     self.ingest(event_type, data)
         except Exception as exc:
             error = str(exc)
+            if ready is not None and not ready.done():
+                ready.set_exception(exc)
             raise
         finally:
             self.evidence.record_api(
@@ -394,6 +408,43 @@ class AppFacade:
         book_data = parse_imported_book(body)
         self._record_user("import_epub", {"path": str(path)}, started, body)
         yield BookFacade(self.client, self.clock, self.evidence, book_data)
+
+    @asynccontextmanager
+    async def subscribe_events(
+        self,
+        *,
+        book_id: int | None = None,
+        chapter_idx: int | None = None,
+    ) -> AsyncIterator[EventSubscriber]:
+        params = {
+            key: value
+            for key, value in {
+                "book_id": book_id,
+                "chapter_idx": chapter_idx,
+            }.items()
+            if value is not None
+        }
+        subscriber = EventSubscriber(self.evidence, self.client.correlation)
+        started = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(
+            subscriber.subscribe(
+                self.client.base_url,
+                params=params or None,
+                client=self.client._client,
+                ready=started,
+            )
+        )
+        try:
+            await asyncio.wait_for(asyncio.shield(started), timeout=5.0)
+            yield subscriber
+        finally:
+            if task.done():
+                with suppress(asyncio.CancelledError):
+                    task.exception()
+            else:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
     async def chat(
         self,
@@ -726,7 +777,7 @@ async def iter_sse(
             data_lines.append(line[5:].strip())
         elif not line and data_lines:
             raw = "\n".join(data_lines)
-            if raw != "[DONE]":
+            if raw and raw != "[DONE]":
                 yield event_type, json.loads(raw)
             event_type = "message"
             data_lines = []

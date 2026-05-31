@@ -65,6 +65,7 @@ class Profile:
     user: UserModel = field(default_factory=UserModel)
     budget: Budget = field(default_factory=Budget)
     audit_enabled: bool = False
+    backend_agent_evidence: bool = False
     stub: StubProfile = field(default_factory=StubProfile)
     real_base_url: str = ""
     real_api_key: str = ""
@@ -205,7 +206,7 @@ class RunEngine:
                 correlation=correlation,
             )
             observability = BackendObservability(client)
-            await verify_runtime_if_available(observability)
+            await verify_runtime(observability)
             clock = UserClock(spec.profile)
             definitions = self.registry.select(
                 suite=spec.suite,
@@ -223,6 +224,7 @@ class RunEngine:
                     user=UserFacade(clock=clock, evidence=evidence),
                     llm=LLMView(evidence),
                     observability=observability,
+                    backend_agent_evidence=spec.profile.backend_agent_evidence,
                     params=build_scenario_parameters(
                         spec,
                         definition.corpus_purpose,
@@ -344,13 +346,11 @@ class RunEngine:
         )
 
 
-async def verify_runtime_if_available(
+async def verify_runtime(
     observability: BackendObservability,
-) -> dict[str, Any] | None:
-    """Validate optional verify runtime without requiring old backends to expose it."""
-    runtime = await observability.runtime_if_available()
-    if runtime is None:
-        return None
+) -> dict[str, Any]:
+    """Validate the formal runtime endpoint before driving scenarios."""
+    runtime = await observability.runtime()
     if runtime.get("verify_mode") is not True:
         raise RuntimeError(f"backend verify mode is not enabled: {runtime!r}")
     llm = runtime.get("llm")
@@ -366,6 +366,8 @@ async def collect_agent_invocations_if_needed(
 ) -> int:
     """Import backend-recorded Agent runs when local provider evidence is absent."""
     if context.llm.calls(scenario_id=scenario_id):
+        return 0
+    if not context.backend_agent_evidence:
         return 0
     return await context.observability.collect_agent_invocations_if_available(
         context.llm.hub,

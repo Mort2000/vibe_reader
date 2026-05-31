@@ -13,7 +13,7 @@ from vibe_verify.assertions import (
     check_compaction_summary_reused,
     fail,
 )
-from vibe_verify.driver import BookFacade
+from vibe_verify.driver import BookFacade, EventSubscriber
 from vibe_verify.scenario import ScenarioContext, ScenarioDefinition
 
 R1_A4_SCENARIO_ID = "R1_A4_full_flow"
@@ -71,13 +71,18 @@ async def run_r1_a4_full_flow(context: ScenarioContext) -> None:
         if start_paragraph > 0:
             await context.user.read_until(book, start_paragraph)
 
-        # 步骤 3：持续阅读并检查评论窗口，直到上下文压缩可观测。
-        comment_windows = await read_until_context_compacted(
-            context,
-            book,
-            policy,
-            target_paragraph=target_paragraph,
-        )
+        async with context.app.subscribe_events(
+            book_id=book.id,
+            chapter_idx=book.chapter_idx,
+        ) as events:
+            # 步骤 3：持续阅读并检查评论窗口，直到上下文压缩可观测。
+            comment_windows = await read_until_context_compacted(
+                context,
+                book,
+                policy,
+                events=events,
+                target_paragraph=target_paragraph,
+            )
         if comment_windows < policy.min_comment_windows:
             fail(
                 "not enough comment windows before compaction",
@@ -111,6 +116,7 @@ async def read_until_context_compacted(
     book: BookFacade,
     policy: R1A4Policy,
     *,
+    events: EventSubscriber,
     target_paragraph: int,
 ) -> int:
     comment_windows = 0
@@ -143,12 +149,12 @@ async def read_until_context_compacted(
                 comment_windows += 1
                 last_seen_window_id = window.identity
 
-        # 压缩可能由本轮阅读触发；先查本地 LLM 证据，再查 backend job 状态。
-        if await context_compacted(context, book):
+        # 压缩可能由本轮阅读触发；先查本地 LLM 证据，再查正式事件流。
+        if context_compacted(context, book, events):
             return comment_windows
 
     # 阅读批次耗尽后仍未观察到压缩，则按场景预算显式等待一次。
-    await wait_for_context_compaction(context, book, policy)
+    await wait_for_context_compaction(context, book, policy, events)
     return comment_windows
 
 
@@ -227,29 +233,41 @@ async def wait_for_context_compaction(
     context: ScenarioContext,
     book: BookFacade,
     policy: R1A4Policy,
+    events: EventSubscriber,
 ) -> None:
     await context.user.wait_until(
         "context compaction",
-        lambda: context_compacted(context, book),
+        lambda: context_compacted(context, book, events),
         timeout_s=policy.max_wait_compaction_s,
         correlation=book.client.correlation,
     )
 
 
-async def context_compacted(context: ScenarioContext, book: BookFacade) -> bool:
-    # stub 模式优先看已采集的 LLM 调用；真实 backend 则可补充查询 verify job。
+def context_compacted(
+    context: ScenarioContext,
+    book: BookFacade,
+    events: EventSubscriber | None = None,
+) -> bool:
+    # stub 模式优先看已采集的 LLM 调用；真实 backend 则观察正式事件流。
     scenario_id = book.client.correlation.scenario_id or R1_A4_SCENARIO_ID
     if context.llm.calls("ContextCompactionAgent", scenario_id=scenario_id):
         return True
-    try:
-        jobs = await context.observability.list_jobs(
-            book=book,
-            job_type="compact_context",
-            status="done",
-        )
-    except Exception:
+    if events is None:
         return False
-    return bool(jobs)
+    for event in reversed(events.events):
+        if (
+            event.correlation.book_id != book.id
+            or event.correlation.chapter_idx != book.chapter_idx
+        ):
+            continue
+        if event.event_type == "context.failed":
+            raise RuntimeError(
+                f"context compaction failed for book={book.id} "
+                f"chapter={book.chapter_idx}: {event.data.get('error', '')}"
+            )
+        if event.event_type == "context.compacted":
+            return True
+    return False
 
 
 def policy_from_params(context: ScenarioContext) -> R1A4Policy:
