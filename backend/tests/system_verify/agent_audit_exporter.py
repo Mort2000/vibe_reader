@@ -370,3 +370,34 @@ def enrich_comment_records_with_agent_refs(
         encoding="utf-8",
     )
     return changed
+
+
+def enrich_chat_records_with_agent_refs(
+    chats_path: Path,
+    trace_to_invocation: dict[str, str],
+) -> int:
+    if not chats_path.exists() or not trace_to_invocation:
+        return 0
+
+    updated: list[dict[str, Any]] = []
+    changed = 0
+    for line in chats_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        trace_id = record.get("trace_id") or ""
+        invocation_id = trace_to_invocation.get(trace_id)
+        if invocation_id:
+            record["agent_invocation_id"] = invocation_id
+            record["agent_interaction_path"] = (
+                f"audit/agent_interactions/{invocation_id}.json"
+            )
+            record["agent_report_path"] = f"audit/agent_reports/{invocation_id}.md"
+            changed += 1
+        updated.append(record)
+
+    chats_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in updated),
+        encoding="utf-8",
+    )
+    return changed

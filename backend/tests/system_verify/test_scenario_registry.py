@@ -11,9 +11,13 @@ from tests.system_verify.scenarios.registry import (
 )
 
 
-def test_mvp_registry_contains_s0_through_s4() -> None:
+def test_mvp_registry_contains_s0_through_s6() -> None:
     selected = select_scenarios_for_run(suite="mvp", profile_name="mvp_stub")
     assert [scenario.id for scenario in selected] == list(MVP_SCENARIO_IDS)
+    assert [scenario.id for scenario in selected][-2:] == [
+        "S5_direct_chat",
+        "S6_followup_chat",
+    ]
 
 
 def test_smoke_suite_alias_matches_mvp_scenarios() -> None:
@@ -45,6 +49,15 @@ def test_real_happy_path_a3_selects_compaction_scenario() -> None:
     assert [scenario.id for scenario in selected] == ["R1_A3_compaction"]
 
 
+def test_real_happy_path_a4_selects_full_flow_scenario() -> None:
+    selected = select_scenarios_for_run(
+        suite="real-happy-path",
+        profile_name="r1_a4_stub",
+        coverage="A4",
+    )
+    assert [scenario.id for scenario in selected] == ["R1_A4_full_flow"]
+
+
 def test_profile_filter_excludes_mvp_from_r1_scenarios() -> None:
     selected = select_scenarios_for_run(
         suite="real-happy-path",
@@ -68,10 +81,15 @@ def test_required_probe_filtering() -> None:
     assert {scenario.id for scenario in happy_path} == {
         "R1_A2_comments",
         "R1_A3_compaction",
+        "R1_A4_full_flow",
     }
 
     early = scenarios_requiring_probe("early")
-    assert [scenario.id for scenario in early] == ["S2_continuous_reading"]
+    assert {scenario.id for scenario in early} == {
+        "S2_continuous_reading",
+        "S5_direct_chat",
+        "S6_followup_chat",
+    }
 
 
 def test_select_by_scenario_id_ignores_suite_tags() -> None:

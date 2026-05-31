@@ -49,3 +49,16 @@ def assert_a3_compaction_phase_coverage(
         tracker.phase_coverage.get("A3_compaction", False),
         "A3_compaction phase coverage must be marked true",
     )
+
+
+def assert_a4_full_flow_phase_coverage(
+    tracker: RealLLMCallTracker,
+    chat_runs: list[dict[str, Any]],
+) -> None:
+    """Assert A4 post-compaction chat and phase coverage were recorded."""
+    assert_that.gte(len(chat_runs), 1, label="real_chat_agent_runs")
+    assert_that.is_true(
+        tracker.phase_coverage.get("A4_full_flow", False),
+        "A4_full_flow phase coverage must be marked true",
+    )
+

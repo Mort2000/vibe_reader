@@ -171,6 +171,36 @@ def verify_config_r1_a3_real(verify_run_spec_r1_a3_real: RunSpec) -> VerifyConfi
 
 
 @pytest.fixture(scope="session")
+def verify_run_spec_r1_a4_stub(request: pytest.FixtureRequest) -> RunSpec:
+    return run_spec_for_param_set(
+        "r1_a4_stub",
+        suite="real-happy-path",
+        coverage="A4",
+        llm_mode_override=request.config.getoption("--llm-mode"),
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_config_r1_a4_stub(verify_run_spec_r1_a4_stub: RunSpec) -> VerifyConfig:
+    return build_verify_config_from_run_spec(verify_run_spec_r1_a4_stub)
+
+
+@pytest.fixture(scope="session")
+def verify_run_spec_r1_a4_real(request: pytest.FixtureRequest) -> RunSpec:
+    return run_spec_for_param_set(
+        "r1_a4_real",
+        suite="real-happy-path",
+        coverage="A4",
+        llm_mode_override=request.config.getoption("--llm-mode"),
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_config_r1_a4_real(verify_run_spec_r1_a4_real: RunSpec) -> VerifyConfig:
+    return build_verify_config_from_run_spec(verify_run_spec_r1_a4_real)
+
+
+@pytest.fixture(scope="session")
 def mode_environment_handle(
     verify_run_spec: RunSpec,
     verify_config: VerifyConfig,
@@ -318,6 +348,48 @@ def verify_session_r1_a3_real(
     apply_param_set(verify_config, verify_run_spec_r1_a3_real.param_set_name)
     return build_session_handle(
         spec=verify_run_spec_r1_a3_real,
+        config=verify_config,
+        run_manager=run_manager,
+        metrics=metrics,
+        corpus_path=str(pathlib.Path("tests/corpus/manifest.toml")),
+        suite_ctx=suite_ctx,
+        corpus=corpus_manager,
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_session_r1_a4_stub(
+    verify_run_spec_r1_a4_stub: RunSpec,
+    verify_config: VerifyConfig,
+    run_manager: RunManager,
+    metrics: MetricsAggregator,
+    corpus_manager: CorpusManager,
+    suite_ctx: dict[str, Any],
+) -> VerifySessionHandle:
+    apply_param_set(verify_config, verify_run_spec_r1_a4_stub.param_set_name)
+    return build_session_handle(
+        spec=verify_run_spec_r1_a4_stub,
+        config=verify_config,
+        run_manager=run_manager,
+        metrics=metrics,
+        corpus_path=str(pathlib.Path("tests/corpus/manifest.toml")),
+        suite_ctx=suite_ctx,
+        corpus=corpus_manager,
+    )
+
+
+@pytest.fixture(scope="session")
+def verify_session_r1_a4_real(
+    verify_run_spec_r1_a4_real: RunSpec,
+    verify_config: VerifyConfig,
+    run_manager: RunManager,
+    metrics: MetricsAggregator,
+    corpus_manager: CorpusManager,
+    suite_ctx: dict[str, Any],
+) -> VerifySessionHandle:
+    apply_param_set(verify_config, verify_run_spec_r1_a4_real.param_set_name)
+    return build_session_handle(
+        spec=verify_run_spec_r1_a4_real,
         config=verify_config,
         run_manager=run_manager,
         metrics=metrics,

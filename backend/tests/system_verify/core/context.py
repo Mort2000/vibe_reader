@@ -62,6 +62,10 @@ _LEGACY_TYPED_KEYS: frozenset[str] = frozenset(
         "post_compaction_comment_run",
         "comment_audit_exporter",
         "compaction_audit_exporter",
+        "chat_audit_exporter",
+        "chat_turns",
+        "chat_session_id",
+        "chat_agent_runs",
         "verify_jobs",
         "verify_runtime",
         "last_progress_response",
@@ -138,6 +142,10 @@ class ScenarioContext:
 
     comment_audit_exporter: Any | None = None
     compaction_audit_exporter: Any | None = None
+    chat_audit_exporter: Any | None = None
+    chat_turns: list[Any] = field(default_factory=list)
+    chat_session_id: int | None = None
+    chat_agent_runs: list[dict[str, Any]] = field(default_factory=list)
     verify_jobs: list[dict[str, Any]] = field(default_factory=list)
     verify_runtime: dict[str, Any] | None = None
     last_progress_response: dict[str, Any] | None = None
@@ -242,6 +250,10 @@ def as_legacy_dict(ctx: ScenarioContext) -> dict[str, Any]:
         ("post_compaction_comment_run", ctx.post_compaction_comment_run),
         ("comment_audit_exporter", ctx.comment_audit_exporter),
         ("compaction_audit_exporter", ctx.compaction_audit_exporter),
+        ("chat_audit_exporter", ctx.chat_audit_exporter),
+        ("chat_turns", ctx.chat_turns),
+        ("chat_session_id", ctx.chat_session_id),
+        ("chat_agent_runs", ctx.chat_agent_runs),
         ("verify_jobs", ctx.verify_jobs),
         ("verify_runtime", ctx.verify_runtime),
         ("last_progress_response", ctx.last_progress_response),
@@ -265,6 +277,8 @@ def as_legacy_dict(ctx: ScenarioContext) -> dict[str, Any]:
             "injected_contexts",
             "verify_jobs",
             "comments_before_jump_back",
+            "chat_turns",
+            "chat_agent_runs",
         ) and not value:
             continue
         if key == "import_stats" and not value:
@@ -316,6 +330,10 @@ def sync_from_legacy_dict(ctx: ScenarioContext, legacy: dict[str, Any]) -> None:
         ("post_compaction_comment_run", "post_compaction_comment_run"),
         ("comment_audit_exporter", "comment_audit_exporter"),
         ("compaction_audit_exporter", "compaction_audit_exporter"),
+        ("chat_audit_exporter", "chat_audit_exporter"),
+        ("chat_turns", "chat_turns"),
+        ("chat_session_id", "chat_session_id"),
+        ("chat_agent_runs", "chat_agent_runs"),
         ("verify_jobs", "verify_jobs"),
         ("verify_runtime", "verify_runtime"),
         ("last_progress_response", "last_progress_response"),
@@ -339,6 +357,8 @@ def sync_from_legacy_dict(ctx: ScenarioContext, legacy: dict[str, Any]) -> None:
             "comment_agent_runs",
             "injected_contexts",
             "verify_jobs",
+            "chat_turns",
+            "chat_agent_runs",
         ):
             setattr(ctx, attr, list(value or []))
         elif legacy_key == "comments_before_jump_back":

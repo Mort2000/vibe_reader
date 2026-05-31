@@ -578,6 +578,13 @@ def _is_comment_agent_run(run: dict[str, Any]) -> bool:
     )
 
 
+def _is_chat_agent_run(run: dict[str, Any]) -> bool:
+    return (
+        str(run.get("agent") or run.get("agent_name") or "") == "ReadingChatAgent"
+        or (run.get("interaction") or {}).get("agent") == "ReadingChatAgent"
+    )
+
+
 def find_compaction_agent_runs(
     agent_runs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -586,6 +593,10 @@ def find_compaction_agent_runs(
 
 def find_comment_agent_runs(agent_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [run for run in agent_runs if _is_comment_agent_run(run)]
+
+
+def find_chat_agent_runs(agent_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [run for run in agent_runs if _is_chat_agent_run(run)]
 
 
 def has_reclaimed_l2_chunk(chunks: list[dict[str, Any]]) -> bool:

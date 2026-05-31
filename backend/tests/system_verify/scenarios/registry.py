@@ -63,6 +63,30 @@ async def _invoke_s4(handle: Any) -> None:
     )
 
 
+async def _invoke_s5(handle: Any) -> None:
+    from .s5_direct_chat import run_s5
+
+    await run_s5(
+        handle.run_manager,
+        handle.config,
+        handle.metrics,
+        handle.corpus,
+        suite_ctx=handle.suite_ctx,
+    )
+
+
+async def _invoke_s6(handle: Any) -> None:
+    from .s6_followup_chat import run_s6
+
+    await run_s6(
+        handle.run_manager,
+        handle.config,
+        handle.metrics,
+        handle.corpus,
+        suite_ctx=handle.suite_ctx,
+    )
+
+
 async def _invoke_r1_a2(handle: Any) -> None:
     from .r1_a2_comments import run
 
@@ -77,6 +101,18 @@ async def _invoke_r1_a2(handle: Any) -> None:
 
 async def _invoke_r1_a3(handle: Any) -> None:
     from .r1_a3_compaction import run
+
+    await run(
+        handle.run_manager,
+        handle.config,
+        handle.metrics,
+        handle.corpus,
+        suite_ctx=handle.suite_ctx,
+    )
+
+
+async def _invoke_r1_a4(handle: Any) -> None:
+    from .r1_a4_full_flow import run
 
     await run(
         handle.run_manager,
@@ -129,6 +165,22 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         order=40,
         invoke=_invoke_s4,
     ),
+    "S5_direct_chat": ScenarioDefinition(
+        id="S5_direct_chat",
+        suite_tags=frozenset({"smoke", "mvp"}),
+        allowed_profiles=frozenset({"mvp_stub"}),
+        required_probes=("early",),
+        order=50,
+        invoke=_invoke_s5,
+    ),
+    "S6_followup_chat": ScenarioDefinition(
+        id="S6_followup_chat",
+        suite_tags=frozenset({"smoke", "mvp"}),
+        allowed_profiles=frozenset({"mvp_stub"}),
+        required_probes=("early",),
+        order=60,
+        invoke=_invoke_s6,
+    ),
     "R1_A2_comments": ScenarioDefinition(
         id="R1_A2_comments",
         suite_tags=frozenset({"real-happy-path"}),
@@ -146,6 +198,15 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         order=0,
         coverage="A3",
         invoke=_invoke_r1_a3,
+    ),
+    "R1_A4_full_flow": ScenarioDefinition(
+        id="R1_A4_full_flow",
+        suite_tags=frozenset({"real-happy-path"}),
+        allowed_profiles=frozenset({"r1_a4_stub", "r1_a4_real"}),
+        required_probes=("happy_path_current",),
+        order=0,
+        coverage="A4",
+        invoke=_invoke_r1_a4,
     ),
 }
 

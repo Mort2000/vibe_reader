@@ -216,6 +216,7 @@ async def export_agent_audit_artifacts(
     from ..agent_audit_exporter import (
         AgentAuditExporter,
         assert_agent_audit_artifacts,
+        enrich_chat_records_with_agent_refs,
         enrich_comment_records_with_agent_refs,
     )
 
@@ -243,6 +244,8 @@ async def export_agent_audit_artifacts(
 
     comments_path = run_manager.base_dir / "audit" / "comments.ndjson"
     enrich_comment_records_with_agent_refs(comments_path, exporter.trace_to_invocation)
+    chats_path = run_manager.base_dir / "audit" / "chats.ndjson"
+    enrich_chat_records_with_agent_refs(chats_path, exporter.trace_to_invocation)
 
     failures = assert_agent_audit_artifacts(run_manager.base_dir)
     if failures and config.audit.write_markdown_report:
@@ -725,4 +728,109 @@ async def export_s2_comment_audit(
         unit="count",
         scenario_id=scenario_id,
         step_id=step_id,
+    )
+
+
+async def export_chat_audit(
+    ctx: ScenarioContext,
+    *,
+    scenario_id: str,
+    step_id: str = "export_chat_audit",
+) -> None:
+    """Export chat audit samples and agent artifacts (V-15 dialogue portion)."""
+    from ..audit_exporter import ensure_chat_audit_exporter
+
+    exporter = ensure_chat_audit_exporter(ctx)
+    assert ctx.book is not None
+    assert ctx.chapter_idx is not None
+
+    audit_meta = audit_export_metadata(ctx.config)
+    turns = ctx.chat_turns or []
+    trace_ids = [
+        str(turn.result.trace_id or "")
+        for turn in turns
+        if turn.result.trace_id
+    ]
+
+    tokens_by_trace: dict[str, dict[str, Any]] = {}
+    latency_by_trace: dict[str, float] = {}
+    trace_meta_by_trace_id: dict[str, dict[str, Any]] = {}
+    async with TargetClient(
+        ctx.config.target.base_url,
+        ctx.run_manager,
+        scenario_id,
+        step_id,
+        context=ctx,
+    ) as client:
+        if trace_ids:
+            (
+                tokens_by_trace,
+                latency_by_trace,
+                trace_meta_by_trace_id,
+            ) = await collect_usage_by_trace(client, trace_ids)
+
+    paragraphs = ctx.chapter_paragraphs
+    if ctx.book_id is not None and not paragraphs:
+        paragraphs = await load_chapter_paragraphs(ctx, ctx.book_id, ctx.chapter_idx)
+
+    exporter.add_turns_from_records(
+        turns,
+        scenario_id=scenario_id,
+        book=ctx.book,
+        paragraphs=paragraphs,
+        model=audit_meta["model"] or "",
+        llm_mode=audit_meta["llm_mode"],
+        stub_profile=audit_meta["stub_profile"],
+        usage_source=audit_meta["usage_source"],
+        trace_meta_by_trace_id=trace_meta_by_trace_id,
+    )
+
+    ndjson_count, md_count = exporter.export()
+    ctx.extras["audit_export_counts"] = {
+        **(ctx.extras.get("audit_export_counts") or {}),
+        "chats_ndjson": ndjson_count,
+        "chat_markdown": md_count,
+    }
+
+    async with TargetClient(
+        ctx.config.target.base_url,
+        ctx.run_manager,
+        scenario_id,
+        "export_agent_audit_chat",
+        context=ctx,
+    ) as audit_client:
+        agent_counts = await export_agent_audit_artifacts(
+            ctx,
+            audit_client,
+            scenario_id=scenario_id,
+            step_id="export_agent_audit_chat",
+        )
+        ctx.extras["audit_export_counts"].update(agent_counts)
+
+    ctx.metrics.record(
+        "audit.chats_exported",
+        ndjson_count,
+        unit="count",
+        scenario_id=scenario_id,
+        step_id=step_id,
+    )
+
+
+async def export_a4_full_flow_audit(
+    ctx: ScenarioContext,
+    *,
+    scenario_id: str,
+    step_id: str = "export_a4_audit",
+) -> None:
+    """Export compaction, comment, and chat audit for R1 A4 full flow."""
+    await export_a3_compaction_audit(ctx, scenario_id=scenario_id, step_id=step_id)
+    await export_a3_comment_audit(
+        ctx,
+        scenario_id=scenario_id,
+        step_id=f"{step_id}_comments",
+    )
+    await export_chat_audit(
+        ctx,
+        scenario_id=scenario_id,
+        step_id=f"{step_id}_chats",
     )

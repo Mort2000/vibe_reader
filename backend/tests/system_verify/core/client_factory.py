@@ -6,7 +6,9 @@ to api_requests.ndjson, and provides typed methods for each endpoint.
 
 from __future__ import annotations
 
+import json
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,111 @@ import httpx
 
 from .context import ScenarioContext
 from .run_manager import RunManager
+
+
+@dataclass
+class ChatStreamResult:
+    """Collected SSE chat stream outcome from POST /api/chat/stream."""
+
+    user_msg: str = ""
+    session_id: int | None = None
+    turn_id: int | None = None
+    trace_id: str = ""
+    ai_msg: str = ""
+    deltas: list[str] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
+    ttft_ms: float | None = None
+    total_ms: float | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    error: dict[str, Any] | None = None
+    status_code: int | None = None
+
+    @property
+    def full_text(self) -> str:
+        if self.ai_msg:
+            return self.ai_msg
+        return "".join(self.deltas)
+
+
+def _apply_chat_started(result: ChatStreamResult, data: dict[str, Any]) -> None:
+    if data.get("session_id") is not None:
+        result.session_id = int(data["session_id"])
+    if data.get("turn_id") is not None:
+        result.turn_id = int(data["turn_id"])
+    if data.get("trace_id"):
+        result.trace_id = str(data["trace_id"])
+
+
+def _apply_chat_delta(
+    result: ChatStreamResult,
+    data: dict[str, Any],
+    *,
+    first_delta_at: float | None,
+) -> float | None:
+    delta = str(data.get("delta") or "")
+    if not delta:
+        return first_delta_at
+    result.deltas.append(delta)
+    if first_delta_at is None:
+        return time.monotonic()
+    return first_delta_at
+
+
+def _apply_chat_done(result: ChatStreamResult, data: dict[str, Any]) -> None:
+    result.ai_msg = str(data.get("ai_msg") or result.full_text)
+    if data.get("session_id") is not None:
+        result.session_id = int(data["session_id"])
+    if data.get("turn_id") is not None:
+        result.turn_id = int(data["turn_id"])
+    if data.get("trace_id"):
+        result.trace_id = str(data["trace_id"])
+    if data.get("tokens_in") is not None:
+        result.tokens_in = int(data["tokens_in"])
+    if data.get("tokens_out") is not None:
+        result.tokens_out = int(data["tokens_out"])
+
+
+def _apply_chat_error(result: ChatStreamResult, data: dict[str, Any]) -> None:
+    result.error = data
+    if data.get("trace_id"):
+        result.trace_id = str(data["trace_id"])
+
+
+def _apply_chat_sse_event(
+    result: ChatStreamResult,
+    event_type: str,
+    data: dict[str, Any],
+    *,
+    first_delta_at: float | None,
+) -> float | None:
+    result.events.append({"event_type": event_type, "data": data})
+    if event_type == "chat.started":
+        _apply_chat_started(result, data)
+    elif event_type == "chat.delta":
+        first_delta_at = _apply_chat_delta(
+            result, data, first_delta_at=first_delta_at
+        )
+    elif event_type == "chat.done":
+        _apply_chat_done(result, data)
+    elif event_type == "chat.error":
+        _apply_chat_error(result, data)
+    return first_delta_at
+
+
+def _chat_response_summary(result: ChatStreamResult) -> dict[str, Any]:
+    return {
+        "session_id": result.session_id,
+        "turn_id": result.turn_id,
+        "trace_id": result.trace_id,
+        "delta_count": len(result.deltas),
+        "ai_msg_excerpt": (result.ai_msg or result.full_text)[:200],
+        "ttft_ms": result.ttft_ms,
+        "total_ms": result.total_ms,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "error": result.error,
+    }
 
 
 class APIRecord:
@@ -399,8 +506,8 @@ class TargetClient:
         paragraph_idx: int,
         user_msg: str,
         session_id: int | None = None,
-    ) -> tuple[dict, APIRecord]:
-        """Send a chat request, collect the full streamed response."""
+    ) -> tuple[ChatStreamResult, APIRecord]:
+        """Send a chat request and collect SSE chat.* events."""
         body: dict[str, Any] = {
             "book_id": book_id,
             "chapter_idx": chapter_idx,
@@ -410,13 +517,114 @@ class TargetClient:
         if session_id is not None:
             body["session_id"] = session_id
 
+        url = f"{self.base_url}/api/chat/stream"
+        rec = APIRecord(
+            method="POST",
+            url=url,
+            verify_run_id=self.run_manager.run_id,
+            verify_scenario_id=self.verify_scenario_id,
+            verify_step_id=self.verify_step_id,
+        )
+        rec.request_body_summary = _summarize_body(body)
+
+        req_headers = {
+            **self._verify_headers(),
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
+        rec.request_headers_sanitized = self._sanitize_headers(req_headers)
+
+        result = ChatStreamResult(user_msg=user_msg)
+        start = time.monotonic()
+        first_delta_at: float | None = None
+
+        try:
+            async with self._client.stream(
+                "POST",
+                "/api/chat/stream",
+                json=body,
+                headers=req_headers,
+            ) as resp:
+                result.status_code = resp.status_code
+                rec.status_code = resp.status_code
+                rec.response_headers = dict(resp.headers)
+                rec.trace_id = resp.headers.get("x-trace-id", "")
+                rec.request_id = resp.headers.get("x-request-id", "")
+                result.trace_id = rec.trace_id
+
+                if resp.status_code >= 400:
+                    raw = await resp.aread()
+                    rec.response_body_summary = raw.decode("utf-8", errors="replace")[:500]
+                    rec.duration_ms = (time.monotonic() - start) * 1000
+                    self._records.append(rec)
+                    self._record_api_context(rec)
+                    self.run_manager.write_ndjson("api_requests.ndjson", [rec.to_dict()])
+                    return result, rec
+
+                current_event_type = "message"
+                current_data_parts: list[str] = []
+
+                async for line in resp.aiter_lines():
+                    if line.startswith("event:"):
+                        current_event_type = line[len("event:") :].strip()
+                    elif line.startswith("data:"):
+                        current_data_parts.append(line[len("data:") :].strip())
+                    elif line == "" and current_data_parts:
+                        data_str = "\n".join(current_data_parts)
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            data = {"raw": data_str}
+                        first_delta_at = _apply_chat_sse_event(
+                            result,
+                            current_event_type,
+                            data,
+                            first_delta_at=first_delta_at,
+                        )
+                        current_event_type = "message"
+                        current_data_parts = []
+
+        except Exception as exc:
+            rec.duration_ms = (time.monotonic() - start) * 1000
+            rec.error = str(exc)
+            self._records.append(rec)
+            self._record_api_context(rec)
+            self.run_manager.write_ndjson("api_requests.ndjson", [rec.to_dict()])
+            raise
+
+        end = time.monotonic()
+        rec.duration_ms = (end - start) * 1000
+        if first_delta_at is not None:
+            result.ttft_ms = (first_delta_at - start) * 1000
+        result.total_ms = (end - start) * 1000
+        rec.response_body_summary = _chat_response_summary(result)
+        self._records.append(rec)
+        self._record_api_context(rec)
+        self.run_manager.write_ndjson("api_requests.ndjson", [rec.to_dict()])
+        return result, rec
+
+    async def list_chat_turns(
+        self,
+        session_id: int,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[dict, APIRecord]:
+        params = {"limit": limit, "offset": offset}
         resp, rec = await self._request(
-            "POST",
-            "/api/chat/stream",
-            json_body=body,
-            accept="text/event-stream",
+            "GET",
+            f"/api/chat/sessions/{session_id}/turns",
+            params=params,
         )
         return resp.json(), rec
+
+    def _record_api_context(self, rec: APIRecord) -> None:
+        if self._context is None:
+            return
+        if isinstance(self._context, ScenarioContext):
+            self._context.last_api_record = rec
+        else:
+            self._context["last_api_record"] = rec
 
     @property
     def records(self) -> list[APIRecord]:

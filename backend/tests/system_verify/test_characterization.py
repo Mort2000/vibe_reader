@@ -109,7 +109,12 @@ MVP_SCENARIO_IDS = (
     "S2_continuous_reading",
     "S3_fast_scroll",
     "S4_long_context",
+    "S5_direct_chat",
+    "S6_followup_chat",
 )
+
+# Phase 0 baseline fixtures were captured before S5/S6 existed.
+MVP_BASELINE_SCENARIO_IDS = MVP_SCENARIO_IDS[:5]
 
 AUDIT_TOP_LEVEL_NDJSON = frozenset(
     {
@@ -188,7 +193,7 @@ def test_baseline_api_requests_shape(baseline_dir: Path) -> None:
 
 def test_mvp_stub_baseline_scenario_ids() -> None:
     scenarios = _read_ndjson(FIXTURES / "mvp_stub" / "scenario_results.ndjson")
-    assert [s["scenario_id"] for s in scenarios] == list(MVP_SCENARIO_IDS)
+    assert [s["scenario_id"] for s in scenarios] == list(MVP_BASELINE_SCENARIO_IDS)
 
 
 def test_mvp_stub_manifest_stub_fields() -> None:

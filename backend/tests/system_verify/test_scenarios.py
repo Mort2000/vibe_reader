@@ -52,6 +52,20 @@ async def test_s4_long_context(verify_session):
 @pytest.mark.system_verify
 @pytest.mark.system
 @pytest.mark.asyncio
+async def test_s5_direct_chat(verify_session):
+    await run_scenario(verify_session, SCENARIOS["S5_direct_chat"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_s6_followup_chat(verify_session):
+    await run_scenario(verify_session, SCENARIOS["S6_followup_chat"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.system
+@pytest.mark.asyncio
 async def test_mvp_suite(verify_session):
     await run_suite_scenarios(
         verify_session.run_manager,
@@ -94,3 +108,19 @@ async def test_r1_happy_path_a3_real(verify_session_r1_a3_real):
     if not verify_session_r1_a3_real.config.is_real_llm:
         pytest.skip("Requires --llm-mode real matching r1_a3_real param set")
     await run_scenario(verify_session_r1_a3_real, SCENARIOS["R1_A3_compaction"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.system
+@pytest.mark.asyncio
+async def test_r1_happy_path_a4_stub(verify_session_r1_a4_stub):
+    await run_scenario(verify_session_r1_a4_stub, SCENARIOS["R1_A4_full_flow"])
+
+
+@pytest.mark.system_verify
+@pytest.mark.real_llm
+@pytest.mark.asyncio
+async def test_r1_happy_path_a4_real(verify_session_r1_a4_real):
+    if not verify_session_r1_a4_real.config.is_real_llm:
+        pytest.skip("Requires --llm-mode real matching r1_a4_real param set")
+    await run_scenario(verify_session_r1_a4_real, SCENARIOS["R1_A4_full_flow"])

@@ -411,6 +411,38 @@ async def setup_s3_fast_scroll(
     ctx.chapter_paragraphs = paragraphs
 
 
+async def setup_s5_direct_chat(
+    ctx: ScenarioContext,
+    *,
+    scenario_id: str,
+    step_id: str = "setup_book",
+) -> None:
+    """Import corpus book, resolve early probe, and prepare chat audit exporters."""
+    from ..audit_exporter import CommentAuditExporter, ensure_chat_audit_exporter
+    from .reading import ReadingCursor
+
+    book_id, book = await ensure_imported_book(ctx)
+
+    assert ctx.corpus is not None
+    probe = get_probe(ctx.corpus, "early")
+    ctx.book_id = book_id
+    ctx.book = book
+    ctx.probe = probe
+    ctx.chapter_idx = probe.chapter_idx
+    ctx.cursor = ReadingCursor(probe.chapter_idx, probe.paragraph_idx)
+
+    paragraphs = await load_chapter_paragraphs(ctx, book_id, probe.chapter_idx)
+    assert_that.is_true(len(paragraphs) > 0, "Chapter must contain paragraphs")
+    ctx.chapter_paragraphs = paragraphs
+
+    if ctx.chat_audit_exporter is None:
+        ensure_chat_audit_exporter(ctx)
+    if ctx.comment_audit_exporter is None:
+        ctx.comment_audit_exporter = CommentAuditExporter(
+            ctx.run_manager, ctx.config
+        )
+
+
 async def setup_s4_long_context(
     ctx: ScenarioContext,
     *,

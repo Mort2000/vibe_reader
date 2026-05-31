@@ -26,6 +26,8 @@ PARAM_SET_TO_PROFILE: dict[str, str] = {
     "r1_a2_real": "r1_a2_real",
     "r1_a3_stub": "r1_a3_stub",
     "r1_a3_real": "r1_a3_real",
+    "r1_a4_stub": "r1_a4_stub",
+    "r1_a4_real": "r1_a4_real",
 }
 
 PROFILE_TO_PARAM_SET: dict[str, str] = {v: k for k, v in PARAM_SET_TO_PROFILE.items()}

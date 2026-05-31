@@ -578,6 +578,63 @@ async def budget_check_step(
     )
 
 
+async def record_s5_chat_metrics(
+    ctx: ScenarioContext,
+    *,
+    scenario_id: str,
+    step_id: str = "record_metrics",
+) -> None:
+    """Aggregate chat metrics recorded per turn in ``verify_s5_chat_turn``.
+
+    Per-turn ``chat.ttft_ms``, ``chat.total_ms``, and token metrics are emitted
+    during each chat step. This final step adds turn count plus percentile
+    summaries (p50/p90/max/mean) for report-friendly aggregation.
+    """
+    metrics = ctx.metrics
+    turns = ctx.chat_turns or []
+    metrics.record(
+        "chat.turn_count",
+        float(len(turns)),
+        unit="count",
+        scenario_id=scenario_id,
+        step_id=step_id,
+    )
+
+    _CHAT_AGG_METRICS: tuple[tuple[str, str], ...] = (
+        ("chat.ttft_ms", "ms"),
+        ("chat.total_ms", "ms"),
+        ("chat.tokens.input", "tokens"),
+        ("chat.tokens.output", "tokens"),
+    )
+    for metric_name, unit in _CHAT_AGG_METRICS:
+        agg = metrics.aggregate(metric_name)
+        if not agg:
+            continue
+        for stat in ("mean", "p50", "p90", "max"):
+            metrics.record(
+                f"{metric_name}.{stat}",
+                float(agg[stat]),
+                unit=unit,
+                scenario_id=scenario_id,
+                step_id=step_id,
+            )
+        ctx.extras.setdefault("chat_metric_aggregates", {})[metric_name] = agg
+
+
+async def budget_check_a4_step(
+    ctx: ScenarioContext,
+    *,
+    scenario_id: str,
+    step_id: str = "budget_check",
+) -> None:
+    """Budget check with A4 full-flow phase coverage assertions."""
+    from ..assertions.metrics import assert_a4_full_flow_phase_coverage
+
+    await budget_check_a3_step(ctx, scenario_id=scenario_id, step_id=step_id)
+    tracker = ctx.run_manager.real_llm_tracker
+    assert_a4_full_flow_phase_coverage(tracker, ctx.chat_agent_runs or [])
+
+
 async def budget_check_a3_step(
     ctx: ScenarioContext,
     *,
