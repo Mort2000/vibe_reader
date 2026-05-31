@@ -1,0 +1,48 @@
+suite = "real-happy-path"
+scenarios = ["R1_A4_full_flow"]
+target_url = "http://127.0.0.1:8000"
+artifact_root = "verify_runs"
+# Local corpus manifests are intentionally not tracked. Prepare this file under
+# corpus/ before running, or copy this config and point to another local manifest.
+corpus = "corpus/hongloumeng_manifest.toml"
+
+[profile]
+name = "r1_a4_stub"
+llm_mode = "stub"
+audit = false
+
+[profile.stub]
+name = "r1_a4_stub"
+
+[profile.user]
+reading_paragraphs_per_second = 4.0
+page_delay_s = 0.25
+patience_s = 30.0
+poll_interval_s = 0.1
+
+[profile.budget]
+max_calls = 50
+max_tokens = 1000000
+max_duration_s = 600.0
+max_cost_usd = 0.0
+
+[params]
+read_batches = 6
+read_batch_size = 4
+min_comment_windows = 2
+post_compaction_comment_windows = 1
+min_chat_turns = 1
+max_wait_comment_s = 60.0
+max_wait_compaction_s = 120.0
+
+[backend]
+command = "uv run vibe-reader"
+cwd = "../backend"
+config_file = "configs/backend_r1_a4_stub.toml"
+ready_path = "/api/health"
+ready_timeout_s = 30.0
+
+[backend.env]
+VIBE_READER_DATA_DIR = "/tmp/vibe_reader_verify_r1_a4_stub"
+VIBE_READER_VERIFY_MODE = "1"
+VIBE_READER_OBSERVABILITY_ENABLED = "0"

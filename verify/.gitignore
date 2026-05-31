@@ -1,0 +1,10 @@
+.coverage
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+verify_runs/
+corpus/*
+!corpus/
+!corpus/README.md

@@ -1,0 +1,25 @@
+[reader]
+lookahead_paragraphs = 4
+
+[window_l1]
+focus_target_tokens = 30000
+focus_max_tokens = 60000
+min_focus_paragraphs = 1
+max_focus_paragraphs = 8
+trigger_advance_ratio = 0.75
+comment_density_soft_min = 0.05
+comment_density_stat_window_paragraphs = 40
+
+[context_l2]
+target_chunk_tokens = 7000
+min_chunk_tokens = 5000
+max_chunk_tokens = 9000
+max_live_original_tokens = 12000
+min_live_chunks_after_compaction = 2
+
+[context_l3]
+preflight_trigger_input_tokens = 12000
+compression_trigger_input_tokens = 12000
+max_completed_l2_chunks_before_compaction = 3
+min_completed_l2_chunks_before_compaction = 1
+compaction_timeout_s = 120

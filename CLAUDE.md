@@ -22,20 +22,16 @@ uv run pytest -m "not system and not real_llm"   # unit tests (no live backend)
 
 Single test: `uv run pytest tests/path/to/test.py::test_name`
 
-System verification (see `tests/README.md` for full guide):
+System verification lives in the sibling `verify/` project, not in backend
+tests:
 
 ```bash
-# CLI
-uv run vibe-verify prepare --corpus tests/corpus/manifest.toml
-uv run vibe-verify run --suite mvp --spawn-backend              # stub S0–S4
-uv run vibe-verify run --suite real-happy-path --param-set r1_a2_real --llm-mode real --real-coverage A2
-
-# pytest — stub integration (auto-starts AIMock + backend)
-uv run pytest tests/system_verify/test_scenarios.py -m "system and not real_llm" --spawn-backend --require-integration
-
-# pytest — real LLM (start backend manually with .env first)
-uv run pytest tests/system_verify/test_scenarios.py::test_r1_happy_path_a2_real \
-  -m real_llm --llm-mode real --param-set r1_a2_real --require-integration
+cd ../verify
+uv sync --extra dev
+uv run ruff check
+uv run pytest
+uv run vibe-verify validate-corpus corpus/hongloumeng_manifest.toml
+uv run vibe-verify run --config configs/r1_a4_stub.toml
 ```
 
 ### Frontend (from `frontend/`)
@@ -86,27 +82,34 @@ Plain React SPA, no routing library or state management library. Two views (libr
 
 Vite dev server proxies `/api` to `http://127.0.0.1:8000`.
 
-### System Verification (`backend/tests/system_verify/`)
+### System Verification (`verify/`)
 
-Black-box HTTP/SSE testing against a live backend. Does not import product `app/` code.
+Independent black-box HTTP/SSE verification against a live backend. It does not
+import product `app/` code.
 
-- CLI: `vibe-verify` (registered in `pyproject.toml` scripts)
-- Layered layout: `core/` (RunSpec, Orchestrator, ScenarioContext), `flows/` (step logic), `assertions/`, `modes/` (stub AIMock / real LLM), `profiles/`, `scenarios/` (thin entries + `registry.py`)
-- Scenarios: S0–S4 (MVP stub suite), R1_A2_comments, R1_A3_compaction (real-happy-path)
-- Param sets: `tests/corpus/param_sets/` (`mvp`, `r1_a2_{stub|real}`, `r1_a3_{stub|real}`)
-- Output: `backend/verify_runs/<run_id>/` with JSON/NDJSON manifests and V-16 reports
-- Corpus: epub files in `tests/corpus/books/` (gitignored), declared in `tests/corpus/manifest.toml`
-- Baseline: `fixtures/baseline/` + `test_characterization.py` guard refactor regressions
-- Security: API key leak scanning in output files
+- CLI: `vibe-verify` from `verify/pyproject.toml`
+- Layout: `runner.py`, `driver.py`, `provider.py`, `evidence.py`,
+  `artifact_store.py`, `corpus.py`, `assertions.py`, `scenario.py`, and
+  `scenarios/`
+- Current built-in scenario: `R1_A4_full_flow` for import, reading, comments,
+  compaction, and post-compaction streaming chat
+- Configs: `verify/configs/r1_a4_stub.toml` and backend config templates
+- Output: `verify/verify_runs/<run_id>/` with manifest, evidence, stub journal,
+  reports, audit files when enabled, and failure snapshots
+- Corpus: epub files under `verify/corpus/books/`, declared in
+  `verify/corpus/*_manifest.toml`
+- Design docs: root `docs/verify/`
 
 ### Design docs
 
-Specifications in sibling repo `vibe_reader_doc/`: `spec_mini.md`, `task_mini.md`, `spec_interface.md`, `spec_telemetry.md`.
+Specifications and plans in root `docs/`: `spec_mini.md`, `task_mini.md`,
+`spec_interface.md`, `spec_telemetry.md`, and `docs/verify/`.
 
 ## Conventions
 
 - Commit messages: conventional commits (`feat(slice1):`, `chore(backend):`, etc.)
 - Python linting: ruff (line-length 88, target py311, max complexity 12, max statements 60)
-- pytest: `asyncio_mode = "auto"`, markers `system_verify` / `system` (stub integration) / `real_llm`
+- pytest: backend uses `asyncio_mode = "auto"`; verify framework tests run from
+  `verify/` with normal pytest
 - `.env` is auto-loaded by `conftest.py`; shell env vars override `.env` values
 - Backend uses `set -a && source ../.env && set +a` pattern for env loading in manual runs
