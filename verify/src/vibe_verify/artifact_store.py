@@ -133,6 +133,16 @@ class ArtifactStore:
         )
         return path
 
+    def write_llm_interaction_report(
+        self, invocations: Iterable[AgentInvocation]
+    ) -> Path:
+        if not self.audit_enabled:
+            raise RuntimeError(
+                "full LLM interaction report requires audit_enabled=True"
+            )
+        text = render_llm_interaction_report(self.run_id, list(invocations))
+        return self.write_text("audit/llm_interactions.md", text, immutable=True)
+
     def write_failure(
         self, summary: str, context: dict[str, Any] | None = None
     ) -> Path:
@@ -233,6 +243,8 @@ class ArtifactStore:
                 "- `evidence/agent_invocations.ndjson`: sanitized LLM invocation "
                 "summaries",
                 "- `stub/journal.ndjson`: sanitized stub provider journal",
+                "- `audit/llm_interactions.md`: human-readable full LLM "
+                "interaction transcript when audit is enabled",
                 "- `audit/`: full prompts and provider records when audit is enabled",
                 "- `failure/snapshot.json`: failure context when present",
             ]
@@ -265,8 +277,153 @@ def invocation_to_packet(invocation: AgentInvocation) -> dict[str, Any]:
         "agent_invocations": "evidence/agent_invocations.ndjson",
         "stub_journal": "stub/journal.ndjson",
         "audit_prompt": f"audit/prompts/{invocation.id}.md",
+        "llm_interactions_report": "audit/llm_interactions.md",
     }
     return packet
+
+
+def render_llm_interaction_report(
+    run_id: str, invocations: list[AgentInvocation]
+) -> str:
+    """Render high-sensitivity Agent invocations for human audit."""
+    lines = [
+        "# LLM Interaction Audit Report",
+        "",
+        f"- run_id: `{run_id}`",
+        f"- llm_call_count: `{len(invocations)}`",
+        "- sensitivity: `high`",
+        "- source: `AgentInvocation` evidence captured during this verify run",
+        "",
+    ]
+    if not invocations:
+        lines.append("No LLM invocations were recorded.")
+        return "\n".join(lines) + "\n"
+
+    for index, invocation in enumerate(invocations, start=1):
+        lines.extend(render_invocation_section(index, invocation))
+    return "\n".join(lines) + "\n"
+
+
+def render_invocation_section(index: int, invocation: AgentInvocation) -> list[str]:
+    usage = invocation.usage.to_dict()
+    correlation = jsonable(invocation.correlation)
+    lines = [
+        f"## {index}. `{invocation.id}`",
+        "",
+        "### Metadata",
+        "",
+        f"- agent: `{invocation.agent}`",
+        f"- model: `{usage.get('model', '')}`",
+        f"- usage_source: `{usage.get('source', '')}`",
+        f"- tokens_input: `{usage.get('input', 0)}`",
+        f"- tokens_output: `{usage.get('output', 0)}`",
+        f"- tokens_cached_input: `{usage.get('cached_input', 0)}`",
+        f"- tokens_total: `{usage.get('total', 0)}`",
+        f"- cost_usd: `{usage.get('cost_usd', 0.0)}`",
+        f"- ttft_ms: `{format_optional(invocation.ttft_ms)}`",
+        f"- duration_ms: `{format_optional(invocation.duration_ms)}`",
+        f"- retries: `{invocation.retries}`",
+        "",
+        "### Correlation",
+        "",
+        markdown_code_block(correlation, "json"),
+        "",
+        "### Prompt Messages",
+        "",
+    ]
+    if invocation.prompt_messages:
+        for message_index, message in enumerate(invocation.prompt_messages, start=1):
+            lines.extend(render_prompt_message(message_index, message))
+    else:
+        lines.append("No prompt messages recorded.")
+
+    lines.extend(
+        ["", "### Model Response", "", markdown_code_block(invocation.response)]
+    )
+
+    if invocation.thinking is not None:
+        lines.extend(
+            ["", "### Thinking", "", markdown_code_block(invocation.thinking)]
+        )
+    elif invocation.thinking_unavailable_reason:
+        lines.extend(
+            [
+                "",
+                "### Thinking",
+                "",
+                f"`{invocation.thinking_unavailable_reason}`",
+            ]
+        )
+
+    lines.extend(["", "### Tool Calls", ""])
+    if invocation.tool_calls:
+        lines.append(markdown_code_block(invocation.tool_calls, "json"))
+    else:
+        lines.append("No tool calls recorded.")
+
+    lines.extend(["", "### Tool Results", ""])
+    if invocation.tool_results:
+        lines.append(markdown_code_block(invocation.tool_results, "json"))
+    else:
+        lines.append("No tool results recorded.")
+
+    if invocation.error:
+        lines.extend(["", "### Error", "", markdown_code_block(invocation.error)])
+
+    lines.extend(
+        [
+            "",
+            "### Artifact References",
+            "",
+            f"- `audit/agent_interactions/{invocation.id}.json`",
+            f"- `audit/prompts/{invocation.id}.md`",
+            "- `evidence/agent_invocations.ndjson`",
+        ]
+    )
+    return lines
+
+
+def render_prompt_message(index: int, message: dict[str, Any]) -> list[str]:
+    role = str(message.get("role", "unknown"))
+    metadata = {
+        key: value for key, value in message.items() if key not in {"content", "role"}
+    }
+    lines = [
+        f"#### Message {index}: `{role}`",
+        "",
+        "**Content**",
+        "",
+        markdown_code_block(message.get("content", "")),
+    ]
+    if metadata:
+        lines.extend(["", "**Message Metadata**", "", markdown_code_block(metadata)])
+    return lines
+
+
+def markdown_code_block(value: Any, info: str | None = None) -> str:
+    rendered = render_markdown_value(value)
+    rendered = redact_secrets_text(rendered)
+    fence = "```"
+    while fence in rendered:
+        fence += "`"
+    language = info if info is not None else markdown_language(value)
+    return f"{fence}{language}\n{rendered}\n{fence}"
+
+
+def render_markdown_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(jsonable(value), indent=2, ensure_ascii=False, default=str)
+
+
+def markdown_language(value: Any) -> str:
+    return "text" if isinstance(value, str) else "json"
+
+
+def format_optional(value: float | None) -> str:
+    if value is None:
+        return ""
+    return str(round(float(value), 3))
 
 
 def redact_headers(headers: dict[str, str]) -> dict[str, str]:

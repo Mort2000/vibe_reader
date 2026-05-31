@@ -81,5 +81,8 @@ Each run writes to `verify_runs/<run_id>/`:
 - `evidence/agent_invocations.ndjson`: sanitized LLM invocation summaries and
   token estimates.
 - `stub/journal.ndjson`: sanitized stub-provider request / response summaries.
-- `audit/`: full prompt and provider records when audit mode is enabled.
+- `audit/llm_interactions.md`: human-readable full LLM prompt / response / tool
+  transcript when audit mode is enabled.
+- `audit/`: full prompt, provider records, and user interaction records when
+  audit mode is enabled.
 - `failure/snapshot.json`: failure context when a scenario fails.

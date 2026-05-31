@@ -278,6 +278,8 @@ class RunEngine:
             if not error:
                 error = "; ".join(cleanup_errors)
             store.write_failure(error, {"cleanup_errors": cleanup_errors})
+        if spec.profile.audit_enabled:
+            store.write_llm_interaction_report(evidence.invocations)
         findings = store.scan_secrets()
         manifest = build_manifest(
             spec,
@@ -527,6 +529,18 @@ def build_manifest(
 ) -> dict[str, Any]:
     ended = datetime.now(UTC)
     gaps = evidence_gaps(evidence, spec.profile)
+    artifact_paths = {
+        "summary": "reports/summary.md",
+        "api": "evidence/api.ndjson",
+        "sse": "evidence/sse.ndjson",
+        "user_interactions": "evidence/user_interactions.ndjson",
+        "agent_invocations": "evidence/agent_invocations.ndjson",
+        "stub_journal": "stub/journal.ndjson",
+        "failure": "failure/snapshot.json",
+        "audit": "audit/",
+    }
+    if spec.profile.audit_enabled:
+        artifact_paths["llm_interactions_report"] = "audit/llm_interactions.md"
     return {
         "artifact_schema": "vibe-verify-artifacts/v1",
         "run_id": spec.run_id,
@@ -556,16 +570,7 @@ def build_manifest(
         if session is not None
         else False,
         "corpus": resolved_corpora or [],
-        "artifact_paths": {
-            "summary": "reports/summary.md",
-            "api": "evidence/api.ndjson",
-            "sse": "evidence/sse.ndjson",
-            "user_interactions": "evidence/user_interactions.ndjson",
-            "agent_invocations": "evidence/agent_invocations.ndjson",
-            "stub_journal": "stub/journal.ndjson",
-            "failure": "failure/snapshot.json",
-            "audit": "audit/",
-        },
+        "artifact_paths": artifact_paths,
     }
 
 

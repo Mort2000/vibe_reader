@@ -56,14 +56,24 @@ def test_artifact_store_writes_manifest_audit_and_summary(tmp_path) -> None:
     assert store.start().exists()
     store.append_ndjson("evidence/items.ndjson", [{"value": 1}])
     packet = store.write_audit_packet(invocation())
+    transcript = store.write_llm_interaction_report([invocation()])
     store.write_manifest({"run_id": "run-1"})
     summary = store.write_summary(status="passed", scenarios=[], findings=[])
 
     assert json.loads(packet.read_text())["usage"]["total"] == 5
     assert "evidence_refs" in json.loads(packet.read_text())
+    assert json.loads(packet.read_text())["evidence_refs"][
+        "llm_interactions_report"
+    ] == "audit/llm_interactions.md"
     assert (store.run_dir / "audit/prompts/inv-1.md").exists()
+    transcript_text = transcript.read_text()
+    assert "# LLM Interaction Audit Report" in transcript_text
+    assert "## 1. `inv-1`" in transcript_text
+    assert "hello" in transcript_text
+    assert "world" in transcript_text
     assert "No scenarios executed" in summary.read_text()
     assert "Artifact Index" in summary.read_text()
+    assert "audit/llm_interactions.md" in summary.read_text()
     with pytest.raises(FileExistsError):
         store.write_manifest({"run_id": "other"})
 
@@ -96,6 +106,8 @@ def test_artifact_store_requires_explicit_audit_and_scans_secrets(tmp_path) -> N
     store.start()
     with pytest.raises(RuntimeError):
         store.write_audit_packet(invocation())
+    with pytest.raises(RuntimeError):
+        store.write_llm_interaction_report([invocation()])
     store.write_text("evidence/leak.md", "api_key: sk-1234567890abcdef")
     findings = store.scan_secrets()
     assert findings and findings[0].path == "evidence/leak.md"

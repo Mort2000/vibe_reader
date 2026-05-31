@@ -195,6 +195,24 @@ async def leaking_secret(_context: ScenarioContext) -> None:
     raise AssertionError("Authorization: Bearer top-secret")
 
 
+async def records_llm_interaction(context: ScenarioContext) -> None:
+    context.llm.hub.record_invocation(
+        AgentInvocation(
+            id="script-inv",
+            agent="ReadingChatAgent",
+            prompt_messages=[{"role": "user", "content": "audit prompt"}],
+            response={"content": "audit answer"},
+            usage=TokenUsage(input=4, output=2, source="estimate"),
+            correlation=Correlation(
+                "audit-run",
+                scenario_id="audit-scenario",
+                step_id="scenario",
+                trace_id="trace-1",
+            ),
+        )
+    )
+
+
 def sync_script(context: ScenarioContext) -> None:
     assert context.params.answer == 42
 
@@ -437,6 +455,31 @@ async def test_run_engine_scans_final_manifest_and_summary(tmp_path) -> None:
     assert manifest["safety_findings"]
     assert "top-secret" not in summary
     assert "***REDACTED***" in summary
+
+
+async def test_run_engine_writes_audit_llm_interaction_report(tmp_path) -> None:
+    registry = ScenarioRegistry()
+    registry.register(ScenarioDefinition("audit-scenario", records_llm_interaction))
+    result = await RunEngine(registry, client_factory=FakeClient).run(
+        RunSpec(
+            suite="core",
+            profile=Profile(audit_enabled=True),
+            target_url="http://backend",
+            artifact_root=tmp_path,
+            run_id="audit-run",
+        )
+    )
+
+    manifest = json.loads((result.artifact_dir / "run_manifest.json").read_text())
+    transcript = result.artifact_dir / "audit/llm_interactions.md"
+    text = transcript.read_text()
+    assert result.status == "passed"
+    assert manifest["artifact_paths"]["llm_interactions_report"] == (
+        "audit/llm_interactions.md"
+    )
+    assert "script-inv" in text
+    assert "audit prompt" in text
+    assert "audit answer" in text
 
 
 async def test_run_engine_rejects_empty_selection(tmp_path) -> None:
