@@ -10,9 +10,13 @@ import pytest
 from vibe_verify.assertions import (
     check_audit_invocation,
     check_available_count,
+    check_chat_requests_without_selection,
     check_chat_response,
+    check_chat_sse_contract,
+    check_chat_usage,
     check_comments,
     check_compaction_summary_reused,
+    check_followup_session,
     check_prompt_contains,
     check_response_status,
     check_sse_sequence,
@@ -20,7 +24,13 @@ from vibe_verify.assertions import (
 )
 from vibe_verify.corpus import CorpusCatalog, CorpusRequirement
 from vibe_verify.driver import ChatResponse
-from vibe_verify.models import AgentInvocation, Correlation, SSEEvent, TokenUsage
+from vibe_verify.models import (
+    AgentInvocation,
+    APIInteraction,
+    Correlation,
+    SSEEvent,
+    TokenUsage,
+)
 
 
 def write_manifest(tmp_path, *, sha256: str, license: str = "public-domain"):
@@ -127,12 +137,51 @@ def test_assertion_helpers_happy_path() -> None:
             text="answer",
             ttft_ms=1,
             duration_ms=2,
+            tokens_in=3,
+            tokens_out=2,
+            usage_source="sse",
             events=[
                 SSEEvent("chat.started", {}, Correlation("r")),
                 SSEEvent("chat.delta", {}, Correlation("r")),
                 SSEEvent("chat.done", {}, Correlation("r")),
             ],
         )
+    )
+    check_chat_usage(
+        ChatResponse(
+            text="answer",
+            ttft_ms=1,
+            duration_ms=2,
+            tokens_in=3,
+            tokens_out=2,
+            usage_source="sse",
+        )
+    )
+    check_chat_sse_contract(
+        [
+            SSEEvent("chat.started", {}, Correlation("r")),
+            SSEEvent("chat.first_delta", {}, Correlation("r")),
+            SSEEvent("chat.delta", {}, Correlation("r")),
+            SSEEvent("chat.done", {}, Correlation("r")),
+        ]
+    )
+    check_followup_session(
+        ChatResponse(session_id=1, turn_id=1),
+        ChatResponse(session_id=1, turn_id=2),
+    )
+    check_chat_requests_without_selection(
+        [
+            APIInteraction(
+                method="POST",
+                path="/api/chat/stream",
+                status_code=200,
+                duration_ms=1,
+                correlation=Correlation("r"),
+                request_body={
+                    "keys": ["book_id", "chapter_idx", "paragraph_idx", "user_msg"]
+                },
+            )
+        ]
     )
     check_prompt_contains(invoke(), "anchor")
     check_token_usage(
@@ -213,6 +262,55 @@ def test_compaction_summary_reuse_rejects_marker_only_prompt() -> None:
             end=1,
         ),
         lambda: check_chat_response(ChatResponse()),
+        lambda: check_chat_usage(ChatResponse(tokens_in=1, tokens_out=1)),
+        lambda: check_chat_usage(
+            ChatResponse(tokens_in=0, tokens_out=0, usage_source="sse")
+        ),
+        lambda: check_chat_sse_contract(
+            [
+                SSEEvent("chat.started", {}, Correlation("r")),
+                SSEEvent("chat.done", {}, Correlation("r")),
+            ]
+        ),
+        lambda: check_chat_sse_contract(
+            [
+                SSEEvent("chat.delta", {}, Correlation("r")),
+                SSEEvent("chat.started", {}, Correlation("r")),
+                SSEEvent("chat.done", {}, Correlation("r")),
+            ]
+        ),
+        lambda: check_followup_session(ChatResponse(session_id=1), ChatResponse()),
+        lambda: check_followup_session(
+            ChatResponse(session_id=1, turn_id=2),
+            ChatResponse(session_id=1, turn_id=1),
+        ),
+        lambda: check_chat_requests_without_selection(
+            [
+                APIInteraction(
+                    method="POST",
+                    path="/api/chat/stream",
+                    status_code=200,
+                    duration_ms=1,
+                    correlation=Correlation("r"),
+                    request_body={"keys": ["book_id", "selection"]},
+                )
+            ]
+        ),
+        lambda: check_chat_requests_without_selection(
+            [
+                APIInteraction(
+                    method="POST",
+                    path="/api/chat/stream",
+                    status_code=200,
+                    duration_ms=1,
+                    correlation=Correlation("r"),
+                    request_body={
+                        "keys": ["book_id", "anchor"],
+                        "deep_keys": ["book_id", "anchor", "selectedText"],
+                    },
+                )
+            ]
+        ),
         lambda: check_chat_response(
             ChatResponse(
                 text="answer",

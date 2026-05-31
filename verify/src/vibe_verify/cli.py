@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from collections.abc import Mapping
@@ -89,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--backend-ready-timeout-s",
         type=float,
+        default=argparse.SUPPRESS,
+    )
+    run.add_argument(
+        "--backend-reset-data-dir",
+        action=argparse.BooleanOptionalAction,
         default=argparse.SUPPRESS,
     )
     return parser
@@ -184,10 +190,32 @@ def prepare_backend_data_dir(
         data_dir = env.get("VIBE_READER_DATA_DIR")
     if not data_dir:
         raise ValueError("backend.config_file requires VIBE_READER_DATA_DIR")
+    if backend.reset_data_dir:
+        reset_backend_data_dir(backend, data_dir, env)
     source = backend.config_file
     target = Path(data_dir) / "config.toml"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def reset_backend_data_dir(
+    backend: BackendSettings,
+    data_dir: str,
+    env: Mapping[str, str] | None,
+) -> None:
+    verify_mode = backend.env.get("VIBE_READER_VERIFY_MODE")
+    if verify_mode is None and env is not None:
+        verify_mode = env.get("VIBE_READER_VERIFY_MODE")
+    if verify_mode not in {"1", "true", "True"}:
+        raise ValueError("backend.reset_data_dir requires VIBE_READER_VERIFY_MODE=1")
+    path = Path(data_dir).resolve()
+    if path == path.parent:
+        raise ValueError("refusing to reset filesystem root as backend data dir")
+    if not str(path).startswith("/tmp/"):
+        raise ValueError("backend.reset_data_dir is limited to /tmp data dirs")
+    if path.exists():
+        shutil.rmtree(path)
+
 
 def wait_for_backend_ready(
     target_url: str,

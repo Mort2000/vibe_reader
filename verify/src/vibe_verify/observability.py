@@ -35,6 +35,14 @@ class BackendObservability:
             raise TypeError("runtime response missing verify_mode")
         return body
 
+    async def llm_ping(self) -> dict[str, Any]:
+        response = await self.client.request("POST", "/api/verify/llm-ping")
+        require_success(response)
+        body = unwrap(response.body)
+        if not isinstance(body, dict):
+            raise TypeError("LLM ping response must be an object")
+        return body
+
     async def list_agent_runs(
         self,
         *,
@@ -119,7 +127,7 @@ def agent_invocation_from_backend_row(row: dict[str, Any]) -> AgentInvocation:
                 usage.get("source")
                 or interaction.get("usage_source")
                 or row.get("usage_source")
-                or "framework"
+                or "estimate"
             ),
             agent=agent,
             model=str(interaction.get("model") or row.get("model") or ""),

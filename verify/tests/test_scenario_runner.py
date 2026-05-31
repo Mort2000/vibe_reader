@@ -13,6 +13,7 @@ from vibe_verify.evidence import EvidenceHub, LLMView
 from vibe_verify.models import AgentInvocation, Correlation, TokenUsage
 from vibe_verify.observability import BackendObservability
 from vibe_verify.provider import ProviderSession
+from vibe_verify.run_config import load_run_config, run_settings_from_mapping
 from vibe_verify.runner import (
     Budget,
     BudgetExceeded,
@@ -32,6 +33,7 @@ from vibe_verify.scenario import (
     ScenarioRegistry,
     execute_scenario,
 )
+from vibe_verify.scenarios import build_registry
 from vibe_verify.scenarios.r1_full_flow import R1_A4_SCENARIO_ID, context_compacted
 
 
@@ -212,6 +214,37 @@ def test_registry_register_select_and_reject_unknown() -> None:
         registry.register(ScenarioDefinition("core", passing))
     with pytest.raises(LookupError):
         registry.select(suite="core", profile="stub", scenario_ids=("missing",))
+
+
+def test_builtin_registry_exposes_s0_to_s6_core_scenarios() -> None:
+    registry = build_registry()
+    selected = registry.select(suite="core", profile="r1_a4_stub")
+
+    assert [item.id for item in selected] == [
+        "S0_environment_connectivity",
+        "S1_import_book",
+        "S2_continuous_reading_comments",
+        "S3_fast_scroll",
+        "S4_context_compaction",
+        "S5_direct_chat",
+        "S6_followup_chat",
+    ]
+
+
+def test_s0_s6_stub_config_selects_all_split_scenarios() -> None:
+    settings = run_settings_from_mapping(load_run_config("configs/s0_s6_stub.toml"))
+
+    assert settings.suite == "core"
+    assert settings.backend.reset_data_dir is True
+    assert settings.scenarios == (
+        "S0_environment_connectivity",
+        "S1_import_book",
+        "S2_continuous_reading_comments",
+        "S3_fast_scroll",
+        "S4_context_compaction",
+        "S5_direct_chat",
+        "S6_followup_chat",
+    )
 
 
 async def test_execute_scenario_records_failure() -> None:

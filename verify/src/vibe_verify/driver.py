@@ -56,6 +56,7 @@ class ChatResponse:
     duration_ms: float | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
+    usage_source: str = ""
     error: dict[str, Any] | None = None
 
 
@@ -225,10 +226,16 @@ class TargetClient:
                         result.turn_id = optional_int(data.get("turn_id"))
                     elif event_type == "chat.done":
                         result.text = str(data.get("ai_msg") or result.text)
-                        result.session_id = optional_int(data.get("session_id"))
-                        result.turn_id = optional_int(data.get("turn_id"))
+                        session_id = optional_int(data.get("session_id"))
+                        turn_id = optional_int(data.get("turn_id"))
+                        if session_id is not None:
+                            result.session_id = session_id
+                        if turn_id is not None:
+                            result.turn_id = turn_id
                         result.tokens_in = optional_int(data.get("tokens_in"))
                         result.tokens_out = optional_int(data.get("tokens_out"))
+                        if "tokens_in" in data or "tokens_out" in data:
+                            result.usage_source = "sse"
                     elif event_type == "chat.error":
                         result.error = data
         except Exception as exc:
@@ -247,6 +254,7 @@ class TargetClient:
                     "ttft_ms": result.ttft_ms,
                     "tokens_in": result.tokens_in,
                     "tokens_out": result.tokens_out,
+                    "usage_source": result.usage_source,
                     "error": result.error,
                 }
             self.evidence.record_api(
@@ -570,6 +578,14 @@ class BookFacade:
         body = unwrap(response.body)
         return parse_items(body, preferred_key="comments")
 
+    async def get_progress(self) -> dict[str, Any]:
+        response = await self.client.request("GET", f"/api/books/{self.id}/progress")
+        require_success(response)
+        body = unwrap(response.body)
+        if not isinstance(body, dict):
+            raise TypeError("progress response must be an object")
+        return body
+
     async def wait_for_current_window_ready(
         self,
         user: UserFacade,
@@ -654,13 +670,19 @@ class UserFacade:
     async def read_until(self, book: BookFacade, paragraph_idx: int) -> None:
         distance = max(0, paragraph_idx - book.progress_paragraph_idx)
         await self.clock.reading(distance)
-        await book.update_progress(paragraph_idx, scroll_pct=1.0)
-        self.evidence.record_user(
-            UserInteraction(
-                action="read_until",
-                arguments={"book_id": book.id, "paragraph_idx": paragraph_idx},
-                correlation=book.client.correlation,
-            )
+        await self._update_progress_action(
+            "read_until", book, paragraph_idx, scroll_pct=1.0
+        )
+
+    async def fast_scroll_to(
+        self,
+        book: BookFacade,
+        paragraph_idx: int,
+        *,
+        scroll_pct: float = 1.0,
+    ) -> None:
+        await self._update_progress_action(
+            "fast_scroll_to", book, paragraph_idx, scroll_pct=scroll_pct
         )
 
     async def page_down_or_next_chapter(self, book: BookFacade) -> None:
@@ -709,6 +731,27 @@ class UserFacade:
             )
         )
         return response
+
+    async def _update_progress_action(
+        self,
+        action: str,
+        book: BookFacade,
+        paragraph_idx: int,
+        *,
+        scroll_pct: float,
+    ) -> None:
+        await book.update_progress(paragraph_idx, scroll_pct=scroll_pct)
+        self.evidence.record_user(
+            UserInteraction(
+                action=action,
+                arguments={
+                    "book_id": book.id,
+                    "paragraph_idx": paragraph_idx,
+                    "scroll_pct": scroll_pct,
+                },
+                correlation=book.client.correlation,
+            )
+        )
 
     async def wait_until(
         self,

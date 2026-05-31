@@ -333,6 +333,7 @@ def safe_payload_summary(value: Any) -> dict[str, Any] | None:
     }
     if isinstance(raw, dict):
         summary["keys"] = sorted(str(key) for key in raw)
+        summary["deep_keys"] = sorted(deep_payload_keys(raw))
         for key in (
             "ok",
             "status",
@@ -359,6 +360,34 @@ def safe_payload_summary(value: Any) -> dict[str, Any] | None:
     elif isinstance(raw, list | tuple | str | bytes):
         summary["length"] = len(raw)
     return summary
+
+
+def deep_payload_keys(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        result = {
+            str(key)
+            for key in value
+            if not sensitive_key_name(str(key))
+        }
+        for key, nested in value.items():
+            if sensitive_key_name(str(key)):
+                continue
+            result.update(deep_payload_keys(nested))
+        return result
+    if isinstance(value, list | tuple):
+        result: set[str] = set()
+        for item in value:
+            result.update(deep_payload_keys(item))
+        return result
+    return set()
+
+
+def sensitive_key_name(key: str) -> bool:
+    normalized = key.replace("_", "").replace("-", "").lower()
+    return any(
+        marker in normalized
+        for marker in ("apikey", "authorization", "secret", "token", "password")
+    )
 
 
 def payload_summary(value: Any) -> dict[str, Any] | None:

@@ -48,3 +48,4 @@ def test_backend_agent_run_preserves_zero_and_numeric_correlation_fields() -> No
     assert invocation.correlation.book_id == 7
     assert invocation.correlation.chapter_idx == 0
     assert invocation.correlation.job_id == 4
+    assert invocation.usage.source == "estimate"

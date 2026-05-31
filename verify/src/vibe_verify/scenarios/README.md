@@ -31,3 +31,14 @@ driver behavior, provider behavior, evidence recording, corpus validation, and
 generic assertion helpers should continue to have normal unit tests outside this
 directory. Do not mock backend internals or duplicate backend algorithms to make
 a scenario unit test pass.
+
+## Built-in Scenario IDs
+
+- `S0_environment_connectivity`
+- `S1_import_book`
+- `S2_continuous_reading_comments`
+- `S3_fast_scroll`
+- `S4_context_compaction`
+- `S5_direct_chat`
+- `S6_followup_chat`
+- `R1_A4_full_flow`

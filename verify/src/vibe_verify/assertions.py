@@ -7,9 +7,31 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from .models import AgentInvocation, SSEEvent, TokenUsage
+from .models import AgentInvocation, APIInteraction, SSEEvent, TokenUsage
 
 COMMENT_TYPES = {"observation", "question", "craft", "humor", "warning"}
+CHAT_TERMINAL_EVENTS = {"chat.done", "chat.error"}
+CHAT_SELECTION_KEYS = {
+    "selection",
+    "selectedtext",
+    "selectedrange",
+    "selectedspan",
+    "selectionstart",
+    "selectionend",
+    "selected_text",
+    "selected_range",
+    "selected_span",
+    "selection_start",
+    "selection_end",
+    "span",
+    "spanstart",
+    "spanend",
+    "sourcespan",
+    "span_start",
+    "span_end",
+    "source_span",
+}
+CHAT_NON_TERMINAL_EVENTS = {"chat.started", "chat.first_delta", "chat.delta"}
 
 
 def fail(message: str, **fields: Any) -> None:
@@ -106,6 +128,149 @@ def check_chat_response(response: Any) -> None:
     for event_type in ("chat.started", "chat.delta", "chat.done"):
         if event_type not in actual:
             fail("chat stream missing event", expected=event_type, actual=actual)
+    check_chat_sse_contract(events)
+
+
+def check_chat_usage(response: Any) -> None:
+    """Require chat usage fields to be present on the public SSE terminal event."""
+    tokens_in = getattr(response, "tokens_in", None)
+    tokens_out = getattr(response, "tokens_out", None)
+    usage_source = getattr(response, "usage_source", "")
+    if tokens_in is None:
+        fail("chat input token usage missing")
+    if tokens_out is None:
+        fail("chat output token usage missing")
+    if tokens_in <= 0 or tokens_out <= 0:
+        fail(
+            "chat token usage must be positive",
+            input=tokens_in,
+            output=tokens_out,
+        )
+    if usage_source not in {"sse", "provider", "framework", "estimate"}:
+        fail("chat usage source missing", actual=usage_source)
+
+
+def check_chat_sse_contract(
+    events: Iterable[SSEEvent],
+    *,
+    allow_error: bool = False,
+) -> None:
+    """Validate streamed chat event ordering without depending on text content."""
+    items = list(events)
+    actual = [event.event_type for event in items]
+    if not actual:
+        fail("chat SSE events missing")
+    unknown = [
+        event_type
+        for event_type in actual
+        if event_type.startswith("chat.")
+        and event_type not in CHAT_NON_TERMINAL_EVENTS
+        and event_type not in CHAT_TERMINAL_EVENTS
+    ]
+    if unknown:
+        fail("unexpected chat SSE event", actual=actual, unexpected=unknown)
+    if "chat.started" not in actual:
+        fail("chat stream missing event", expected="chat.started", actual=actual)
+    if actual.count("chat.started") != 1:
+        fail("chat stream must contain exactly one started event", actual=actual)
+    if actual[0] != "chat.started":
+        fail("chat stream must start with chat.started", actual=actual)
+    terminal_indices = [
+        index
+        for index, event_type in enumerate(actual)
+        if event_type in CHAT_TERMINAL_EVENTS
+    ]
+    if len(terminal_indices) != 1:
+        fail("chat stream must contain exactly one terminal event", actual=actual)
+    terminal_index = terminal_indices[0]
+    terminal = actual[terminal_index]
+    if terminal == "chat.error" and not allow_error:
+        fail("chat.error event observed", actual=actual)
+    if terminal == "chat.done" and "chat.delta" not in actual[:terminal_index]:
+        fail("chat.done observed before any chat.delta", actual=actual)
+    if any(
+        event_type == "chat.started"
+        for event_type in actual[1:terminal_index]
+    ):
+        fail("chat.started repeated before terminal event", actual=actual)
+    trailing = actual[terminal_index + 1 :]
+    if any(event_type.startswith("chat.") for event_type in trailing):
+        fail("chat events observed after terminal event", actual=actual)
+
+
+def check_chat_requests_without_selection(
+    interactions: Iterable[APIInteraction],
+    *,
+    minimum: int = 1,
+) -> None:
+    """Ensure formal chat requests are anchored only by book/chapter/paragraph."""
+    chat_requests = [item for item in interactions if item.path == "/api/chat/stream"]
+    if len(chat_requests) < minimum:
+        fail(
+            "not enough chat API requests",
+            expected=f">={minimum}",
+            actual=len(chat_requests),
+        )
+    for index, request in enumerate(chat_requests):
+        keys = payload_keys(request.request_body)
+        forbidden = sorted(key for key in keys if is_selection_key(key))
+        if forbidden:
+            fail(
+                "chat request contains selection/span fields",
+                index=index,
+                keys=forbidden,
+            )
+
+
+def check_followup_session(first: Any, followup: Any) -> None:
+    first_session = getattr(first, "session_id", None)
+    followup_session = getattr(followup, "session_id", None)
+    if first_session is None:
+        fail("first chat session_id missing")
+    if followup_session is None:
+        fail("followup chat session_id missing")
+    if first_session != followup_session:
+        fail(
+            "followup did not reuse chat session",
+            expected=first_session,
+            actual=followup_session,
+        )
+    first_turn = getattr(first, "turn_id", None)
+    followup_turn = getattr(followup, "turn_id", None)
+    if (
+        first_turn is not None
+        and followup_turn is not None
+        and followup_turn <= first_turn
+    ):
+        fail(
+            "followup turn did not advance",
+            first_turn=first_turn,
+            followup_turn=followup_turn,
+        )
+
+
+def payload_keys(value: Any) -> set[str]:
+    """Extract request keys from raw or sanitized payload summaries."""
+    if not isinstance(value, dict):
+        return set()
+    result: set[str] = set()
+    for summary_key in ("keys", "deep_keys"):
+        keys = value.get(summary_key)
+        if isinstance(keys, list):
+            result.update(str(key) for key in keys)
+    for key, nested in value.items():
+        result.add(str(key))
+        if isinstance(nested, dict):
+            result.update(payload_keys(nested))
+        elif isinstance(nested, list):
+            for item in nested:
+                result.update(payload_keys(item))
+    return result
+
+
+def is_selection_key(key: str) -> bool:
+    normalized = key.replace("_", "").replace("-", "").lower()
+    return normalized in {item.replace("_", "").lower() for item in CHAT_SELECTION_KEYS}
 
 
 def check_prompt_contains(invocation: AgentInvocation, *fragments: str) -> None:

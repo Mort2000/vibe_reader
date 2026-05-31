@@ -21,6 +21,7 @@ class BackendSettings:
     config_file: Path | None = None
     ready_path: str = "/api/health"
     ready_timeout_s: float = 30.0
+    reset_data_dir: bool = False
     env: dict[str, str] = field(default_factory=dict)
 
 
@@ -131,6 +132,7 @@ def default_run_config() -> dict[str, Any]:
             "config_file": None,
             "ready_path": "/api/health",
             "ready_timeout_s": 30.0,
+            "reset_data_dir": False,
             "env": {},
         },
     }
@@ -179,6 +181,7 @@ def cli_run_config(args: argparse.Namespace) -> dict[str, Any]:
         "backend_ready_timeout_s",
         ("backend", "ready_timeout_s"),
     )
+    set_if_present(data, args, "backend_reset_data_dir", ("backend", "reset_data_dir"))
     return data
 
 
@@ -259,6 +262,10 @@ def run_settings_from_mapping(data: Mapping[str, Any]) -> RunSettings:
             else None,
             ready_path=str(backend.get("ready_path", "/api/health")),
             ready_timeout_s=float(backend.get("ready_timeout_s", 30.0)),
+            reset_data_dir=strict_bool(
+                backend.get("reset_data_dir", False),
+                "backend.reset_data_dir",
+            ),
             env={str(key): env_value(value) for key, value in backend_env.items()},
         ),
         real_base_url=str(real.get("base_url", "")),

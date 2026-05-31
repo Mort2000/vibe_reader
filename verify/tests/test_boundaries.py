@@ -311,6 +311,42 @@ def test_backend_data_dir_preparation_writes_backend_config(tmp_path) -> None:
     )
 
 
+def test_backend_data_dir_preparation_can_reset_verify_tmp_dir(tmp_path) -> None:
+    source = tmp_path / "backend.toml"
+    source.write_text("[reader]\nlookahead_paragraphs = 4\n", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    (data_dir / "stale").mkdir(parents=True)
+    (data_dir / "stale/file.txt").write_text("old", encoding="utf-8")
+
+    prepare_backend_data_dir(
+        BackendSettings(
+            config_file=source,
+            reset_data_dir=True,
+            env={
+                "VIBE_READER_DATA_DIR": str(data_dir),
+                "VIBE_READER_VERIFY_MODE": "1",
+            },
+        )
+    )
+
+    assert not (data_dir / "stale").exists()
+    assert (data_dir / "config.toml").exists()
+
+
+def test_backend_data_dir_reset_requires_verify_mode(tmp_path) -> None:
+    source = tmp_path / "backend.toml"
+    source.write_text("[reader]\nlookahead_paragraphs = 4\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="VERIFY_MODE"):
+        prepare_backend_data_dir(
+            BackendSettings(
+                config_file=source,
+                reset_data_dir=True,
+                env={"VIBE_READER_DATA_DIR": str(tmp_path / "data")},
+            )
+        )
+
+
 def test_backend_preparer_cleans_process_when_ready_wait_fails(
     tmp_path,
     monkeypatch,

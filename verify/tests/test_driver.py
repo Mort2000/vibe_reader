@@ -68,6 +68,12 @@ def backend(request: httpx.Request) -> httpx.Response:
             json={"book_id": 7, "chapter_idx": 1, "items": [{"idx": 0}], "total": 1},
             headers=headers,
         )
+    if path == "/api/books/7/progress" and request.method == "GET":
+        return httpx.Response(
+            200,
+            json={"book_id": 7, "chapter_idx": 0, "paragraph_idx": 2},
+            headers=headers,
+        )
     if path == "/api/books/7/progress":
         assert "scroll_pct" in json.loads(request.content)
         return httpx.Response(200, json={"data": {"ok": True}}, headers=headers)
@@ -142,7 +148,9 @@ async def test_app_book_user_facades_drive_formal_api(tmp_path) -> None:
     async with app.import_epub(corpus) as book:
         await user.open_chapter(book, 0)
         await user.read_until(book, 2)
+        assert (await book.get_progress())["paragraph_idx"] == 2
         assert book.get_proceeded_paragraph_num() == 3
+        await user.fast_scroll_to(book, 3, scroll_pct=0.5)
         window = await book.wait_for_current_window_ready(user)
         assert window.end == 3
         assert window.status == "done"
@@ -164,10 +172,13 @@ async def test_app_book_user_facades_drive_formal_api(tmp_path) -> None:
         response = await app.chat(book, paragraph_idx=0, message="why")
         await user.wait_for_chat_response(response)
         assert response.text == "answer"
+        assert response.session_id == 1
         assert response.tokens_in == 3
+        assert response.usage_source == "sse"
 
     assert clock.reads == [2]
     assert clock.waits == [-1, -1, 0]
+    assert any(item.action == "fast_scroll_to" for item in hub.user_interactions)
     assert any(item.action == "retry_window" for item in hub.user_interactions)
     assert len(hub.api_interactions) >= 9
     assert hub.api_interactions[0].correlation.trace_id == "trace"
