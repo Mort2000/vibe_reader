@@ -18,6 +18,7 @@ from ..repos import paragraphs as paragraph_repo
 from ..repos import summaries as summary_repo
 from .agent_base import (
     ChapterCompressedSummaryOutput,
+    COMPACTION_INSTRUCTIONS,
     CompactionDeps,
     get_compaction_agent,
 )
@@ -124,6 +125,69 @@ def _build_compaction_prompt(
     lines.append("</SOURCE_ORIGINAL_CHUNK>")
 
     return "\n".join(lines)
+
+
+def _build_compaction_prompt_manifest(
+    *,
+    prompt: str,
+    source_chunk: OriginalTextChunk,
+    previous_summary_row: ChapterCompressedSummary | None,
+    summary_row: ChapterCompressedSummary,
+) -> dict[str, Any]:
+    system_tokens = _estimate_tokens(COMPACTION_INSTRUCTIONS)
+    previous_tokens = (
+        int(previous_summary_row.token_estimate or 0)
+        if previous_summary_row
+        else 0
+    )
+    source_tokens = int(source_chunk.token_estimate or 0)
+    prompt_hash = f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}"
+    return {
+        "builder": "CompactionPromptBuilder",
+        "builder_version": "compaction_prompt_v1",
+        "components": [
+            {
+                "name": "system_policy",
+                "tokens": system_tokens,
+                "source": "prompt_template",
+            },
+            {
+                "name": "previous_chapter_summary",
+                "tokens": previous_tokens,
+                "source": "context_builder",
+                "included": previous_summary_row is not None,
+                "content": (
+                    {
+                        "summary_id": previous_summary_row.id,
+                        "covered_start_paragraph_idx": previous_summary_row.covered_start_paragraph_idx,
+                        "covered_end_paragraph_idx": previous_summary_row.covered_end_paragraph_idx,
+                        "compaction_epoch": previous_summary_row.compaction_epoch,
+                    }
+                    if previous_summary_row
+                    else None
+                ),
+            },
+            {
+                "name": "source_original_chunk",
+                "tokens": source_tokens,
+                "source": "book_paragraphs",
+                "content": {
+                    "chunk_id": source_chunk.id,
+                    "chunk_seq": source_chunk.chunk_seq,
+                    "start_paragraph_idx": source_chunk.start_paragraph_idx,
+                    "end_paragraph_idx": source_chunk.end_paragraph_idx,
+                    "text_hash": source_chunk.text_hash,
+                    "token_estimate": source_tokens,
+                },
+            },
+        ],
+        "total_estimate": system_tokens + previous_tokens + source_tokens,
+        "raw_total_estimate": _estimate_tokens(prompt) + system_tokens,
+        "context_hash": prompt_hash,
+        "source_chunk_id": source_chunk.id,
+        "summary_id": summary_row.id,
+        "compaction_epoch": summary_row.compaction_epoch,
+    }
 
 
 async def _run_compaction_llm(
@@ -332,6 +396,12 @@ async def run_compaction_task(
         source_chunk.end_paragraph_idx - source_chunk.start_paragraph_idx + 1
     )
     source_token_estimate = source_chunk.token_estimate or token_estimate
+    prompt_manifest = _build_compaction_prompt_manifest(
+        prompt=prompt,
+        source_chunk=source_chunk,
+        previous_summary_row=previous_summary_row,
+        summary_row=summary_row,
+    )
 
     return AgentRunResult(
         agent_name="ContextCompactionAgent",
@@ -341,6 +411,8 @@ async def run_compaction_task(
         output_tokens=usage.response_tokens or usage.output_tokens,
         cached_input_tokens=usage.cache_read_tokens or None,
         context_hash=source_hash,
+        context_estimated_tokens=prompt_manifest["total_estimate"],
+        prompt_manifest=prompt_manifest,
         source_chunk_id=source_chunk.id,
         reclaimed_chunk_id=source_chunk.id,
         summary_id=summary_row.id,
@@ -368,7 +440,7 @@ async def run_compaction_task(
             prompt=prompt,
             agent_result=result,
             transaction_committed=transaction_committed,
-            prompt_manifest=None,
+            prompt_manifest=prompt_manifest,
         ),
     )
 

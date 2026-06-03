@@ -104,6 +104,17 @@ def test_build_chat_packet_injected_context_passes_r1_a4_summary_assertion() -> 
     )
 
 
+def test_build_chat_packet_normalizes_manifest_tokens_without_duplicate_summary() -> None:
+    packet = _build_packet()
+    components = packet["injected_context"]["components"]
+    summary_components = [
+        c for c in components if c.get("name") == "chapter_compressed_summary"
+    ]
+    assert len(summary_components) == 1
+    assert summary_components[0]["token_estimate"] == 4200
+    assert packet["injected_context"]["total_input_token_estimate"] == 10050
+
+
 def test_raw_manifest_only_tokens_fails_summary_assertion() -> None:
     """Documents the pre-fix gap: manifest uses ``tokens``, not verify ``content``."""
     manifest = _context_builder_manifest()

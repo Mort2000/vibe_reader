@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.domain.models import ChapterCompressedSummary, OriginalTextChunk
+from app.config import Settings
+from app.domain.models import ChapterCompressedSummary, OriginalTextChunk, ReadingWindow
 from app.verification.audit_packets import (
     CURRENT_WINDOW_TAG,
     _round_usage,
     _split_user_prompt_segments,
+    build_comment_interaction_packet,
     build_compaction_interaction_packet,
     build_tool_events,
 )
@@ -32,7 +34,7 @@ def test_round_usage_marks_follow_up_rounds() -> None:
     assert usage["note"] == "per_round_usage_not_available_from_adapter"
 
 
-def test_split_user_prompt_segments_warns_without_anchor(caplog) -> None:
+def test_split_user_prompt_segments_without_anchor_keeps_actual_prompt_only() -> None:
     segments = _split_user_prompt_segments(
         "plain prompt without anchor",
         [{"paragraph_idx": 1, "text": "hello", "char_count": 5}],
@@ -41,11 +43,86 @@ def test_split_user_prompt_segments_warns_without_anchor(caplog) -> None:
         text_mode="range_edge_excerpt",
         edge_paragraph_max_chars=800,
     )
-    assert len(segments) == 2
+    assert len(segments) == 1
     assert segments[0]["type"] == "text"
-    assert segments[1]["type"] == "original_text_block"
     assert CURRENT_WINDOW_TAG not in "plain prompt without anchor"
-    assert any("prompt_segment_split_failed" in r.message for r in caplog.records)
+
+
+def test_build_comment_packet_uses_prompt_manifest_not_current_window() -> None:
+    prompt = "\n".join(
+        [
+            "<LIVE_ORIGINAL_CHUNKS>",
+            "<CHUNK seq=1 start_p=180 end_p=359>",
+            "[p=180] live text",
+            "</CHUNK>",
+            "</LIVE_ORIGINAL_CHUNKS>",
+            "<CURRENT_TASK>",
+            "comment_target_paragraphs = [180..=180]",
+            "</CURRENT_TASK>",
+        ]
+    )
+    manifest = {
+        "context_hash": "ctx123",
+        "total_estimate": 19_000,
+        "live_chunk_ids": [10],
+        "components": [
+            {"name": "system_policy", "tokens": 3000},
+            {"name": "reserved", "tokens": 12000},
+            {"name": "live_original_chunks", "tokens": 4000},
+            {"name": "current_task", "tokens": 30},
+        ],
+    }
+
+    packet = build_comment_interaction_packet(
+        invocation_id="inv_comment_R1_0002",
+        trace_id="trace_x",
+        verify_run_id="run_1",
+        verify_scenario_id="R1_real_happy_path",
+        verify_step_id="advance_for_comments",
+        job_id=2,
+        book={"id": 1, "title": "Test Book"},
+        chapter_idx=1,
+        window=ReadingWindow(
+            id=7,
+            book_id=1,
+            chapter_idx=1,
+            window_seq=2,
+            start_paragraph_idx=197,
+            end_paragraph_idx=320,
+            focus_start_paragraph_idx=197,
+            focus_end_paragraph_idx=320,
+            assistant_frontier_paragraph_idx=320,
+        ),
+        window_paragraphs=[
+            {"paragraph_idx": 197, "text": "window edge", "char_count": 11}
+        ],
+        target_paragraphs=[180],
+        density_hint=None,
+        prompt=prompt,
+        agent_result=None,
+        settings=Settings(),
+        duration_ms=1.0,
+        input_tokens=100,
+        output_tokens=5,
+        cached_input_tokens=None,
+        raw_payloads=[],
+        valid_comments=[],
+        discarded=[],
+        validation_failed_count=0,
+        no_call=True,
+        usage_source="provider",
+        context_manifest=manifest,
+    )
+
+    component_names = [
+        c["name"] for c in packet["injected_context"]["components"]
+    ]
+    assert "live_original_chunks" in component_names
+    assert "current_window" not in component_names
+    assert packet["injected_context"]["total_input_token_estimate"] == 19_000
+    user_content = packet["prompt_messages"][1]["content"]
+    assert len(user_content) == 1
+    assert "LIVE_ORIGINAL_CHUNKS" in user_content[0]["text"]
 
 
 def test_build_tool_events_uses_provider_tool_call_ids() -> None:
@@ -155,3 +232,9 @@ def test_build_compaction_interaction_packet_includes_report_metadata() -> None:
     assert packet["book"]["title"] == "Test Book"
     assert packet["prompt_version"] == "chapter_compaction_v1"
     assert "verify_scenario_id" not in packet
+    assert packet["prompt_manifest"]["builder"] == "CompactionPromptBuilder"
+    assert {
+        c["name"] for c in packet["prompt_manifest"]["components"]
+    } >= {"system_policy", "source_original_chunk"}
+    assert packet["injected_context"]["total_input_token_estimate"] > 0
+    assert packet["final_result"]["summary_id"] == 1

@@ -31,6 +31,19 @@ logger = logging.getLogger(__name__)
 
 CURRENT_WINDOW_TAG = "<CURRENT_WINDOW>"
 
+_MANIFEST_COMPONENT_SOURCES = {
+    "system_policy": "prompt_template",
+    "metadata": "runtime_metadata",
+    "reserved": "token_budget",
+    "chapter_compressed_summary": "context_builder",
+    "previous_chapter_summary": "context_builder",
+    "source_original_chunk": "book_paragraphs",
+    "live_original_chunks": "book_paragraphs",
+    "ephemeral_recent_comments": "comment_history",
+    "ephemeral_recent_chat": "chat_history",
+    "current_task": "runtime_metadata",
+}
+
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(api[_-]?key|authorization|bearer\s+\S+|sk-[a-z0-9]{20,})"),
     re.compile(r"(?i)(cookie|session[_-]?token)\s*[:=]\s*\S+"),
@@ -65,6 +78,10 @@ def sha256_text(text: str) -> str:
 
 def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 3)
+
+
+def _component_tokens(component: dict[str, Any]) -> int:
+    return int(component.get("token_estimate") or component.get("tokens") or 0)
 
 
 def redact_secrets(value: Any) -> tuple[Any, int]:
@@ -191,29 +208,8 @@ def _split_user_prompt_segments(
     segments: list[dict[str, Any]] = []
 
     if CURRENT_WINDOW_TAG not in prompt:
-        logger.warning(
-            "agent_audit.prompt_segment_split_failed",
-            extra={
-                "event": "agent_audit.prompt_segment_split_failed",
-                "fields": {
-                    "anchor": CURRENT_WINDOW_TAG,
-                    "fallback": "prompt_text_plus_window_block",
-                },
-            },
-        )
         if prompt.strip():
             segments.append({"type": "text", "text": prompt.strip()})
-        if window_paragraphs:
-            segments.append(
-                build_original_text_block(
-                    component="current_window",
-                    paragraphs=window_paragraphs,
-                    book_id=book_id,
-                    chapter_idx=chapter_idx,
-                    text_mode=text_mode,
-                    edge_paragraph_max_chars=edge_paragraph_max_chars,
-                )
-            )
         return segments
 
     before, _, after = prompt.partition(CURRENT_WINDOW_TAG)
@@ -341,6 +337,114 @@ def _extract_tagged_prompt_block(prompt: str, tag: str) -> str | None:
     return text or None
 
 
+def _manifest_component_content(
+    name: str,
+    component: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    prompt: str,
+    recent_chat_turns: list[dict[str, Any]] | None,
+) -> Any:
+    if component.get("content") is not None:
+        return component.get("content")
+
+    if name == "chapter_compressed_summary":
+        content: dict[str, Any] = {}
+        if manifest.get("summary_id") is not None:
+            content["summary_id"] = manifest.get("summary_id")
+        summary_text = _extract_tagged_prompt_block(
+            prompt, "CHAPTER_COMPRESSED_SUMMARY"
+        )
+        if summary_text:
+            content["summary"] = summary_text
+        return content or None
+
+    if name == "live_original_chunks":
+        return {
+            "live_chunk_ids": manifest.get("live_chunk_ids") or [],
+            "live_start_paragraph_idx": manifest.get("live_start_paragraph_idx"),
+            "frontier_paragraph_idx": manifest.get("frontier_paragraph_idx"),
+            "partial_chunk_id": manifest.get("partial_chunk_id"),
+            "partial_frontier_paragraph_idx": manifest.get(
+                "partial_frontier_paragraph_idx"
+            ),
+        }
+
+    if name == "ephemeral_recent_chat" and recent_chat_turns is not None:
+        return {
+            "turns": recent_chat_turns,
+            "turn_count": len(recent_chat_turns),
+        }
+
+    return None
+
+
+def build_injected_context_from_prompt_manifest(
+    manifest: dict[str, Any] | None,
+    *,
+    prompt: str = "",
+    context_hash: str = "",
+    recent_chat_turns: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Build verify sidecar context from the actual ContextBuilder manifest."""
+    if not manifest:
+        return None
+
+    components: list[dict[str, Any]] = []
+    for entry in manifest.get("components") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "")
+        if not name:
+            continue
+        normalized: dict[str, Any] = {
+            "name": name,
+            "source": entry.get("source")
+            or _MANIFEST_COMPONENT_SOURCES.get(name, "context_builder"),
+            "included": bool(entry.get("included", True)),
+            "token_estimate": _component_tokens(entry),
+        }
+        for key in ("hash", "render_action", "drop_reason"):
+            if entry.get(key) is not None:
+                normalized[key] = entry[key]
+
+        content = _manifest_component_content(
+            name,
+            entry,
+            manifest,
+            prompt=prompt,
+            recent_chat_turns=recent_chat_turns,
+        )
+        if content is not None:
+            normalized["content"] = content
+        components.append(normalized)
+
+    total_estimate = manifest.get("total_estimate")
+    if total_estimate is None:
+        total_estimate = manifest.get("safe_total_estimate")
+    if total_estimate is None:
+        total_estimate = sum(_component_tokens(c) for c in components)
+
+    return {
+        "builder": manifest.get("builder", "ContextBuilder"),
+        "builder_version": manifest.get("builder_version", "context_builder_v1"),
+        "total_input_token_estimate": int(total_estimate or 0),
+        "raw_total_estimate": manifest.get("raw_total_estimate"),
+        "safe_total_estimate": manifest.get("safe_total_estimate"),
+        "hard_input_cap": manifest.get("hard_cap"),
+        "attention_target": manifest.get("attention_target"),
+        "context_hash": context_hash or manifest.get("context_hash", ""),
+        "components": components,
+        "live_chunk_ids": manifest.get("live_chunk_ids") or [],
+        "summary_id": manifest.get("summary_id"),
+        "compaction_epoch": manifest.get("compaction_epoch"),
+        "context_degraded": bool(manifest.get("context_degraded", False)),
+        "preflight_triggered": bool(manifest.get("preflight_triggered", False)),
+        "hard_triggered": bool(manifest.get("hard_triggered", False)),
+        "token_estimator": manifest.get("token_estimator"),
+    }
+
+
 def enrich_injected_context_from_build_manifest(
     injected_context: dict[str, Any],
     manifest: dict[str, Any] | None,
@@ -348,49 +452,28 @@ def enrich_injected_context_from_build_manifest(
     prompt: str | None = None,
 ) -> dict[str, Any]:
     """Attach chapter summary / compaction metadata from ContextBuilder manifest."""
-    if not manifest:
+    manifest_context = build_injected_context_from_prompt_manifest(
+        manifest,
+        prompt=prompt or "",
+        context_hash=injected_context.get("context_hash") or "",
+    )
+    if not manifest_context:
         return injected_context
 
-    summary_id = manifest.get("summary_id")
-    summary_tokens = 0
-    for entry in manifest.get("components") or []:
-        if entry.get("name") == "chapter_compressed_summary":
-            summary_tokens = int(entry.get("tokens") or 0)
-            break
-
-    if not summary_id and not summary_tokens:
-        return injected_context
-
-    summary_text = _extract_tagged_prompt_block(
-        prompt or "", "CHAPTER_COMPRESSED_SUMMARY"
-    )
-    content: dict[str, Any] = {}
-    if summary_id is not None:
-        content["summary_id"] = summary_id
-    if summary_text:
-        content["summary"] = summary_text
-
-    components = list(injected_context.get("components") or [])
-    components.insert(
-        1,
-        {
-            "name": "chapter_compressed_summary",
-            "source": "context_builder",
-            "included": True,
-            "token_estimate": summary_tokens,
-            "content": content or None,
-        },
-    )
-    injected_context = {
-        **injected_context,
-        "components": components,
-        "compaction_epoch": manifest.get("compaction_epoch"),
-        "summary_id": summary_id,
+    manifest_names = {
+        str(c.get("name") or "") for c in manifest_context.get("components") or []
     }
-    injected_context["total_input_token_estimate"] = sum(
-        int(c.get("token_estimate") or 0) for c in components
-    )
-    return injected_context
+    extra_components = [
+        c
+        for c in injected_context.get("components") or []
+        if str(c.get("name") or "") not in manifest_names
+    ]
+    if extra_components:
+        manifest_context = {
+            **manifest_context,
+            "components": manifest_context["components"] + extra_components,
+        }
+    return manifest_context
 
 
 def _extract_thinking(response: ModelResponse) -> dict[str, Any]:
@@ -551,6 +634,14 @@ def extract_llm_rounds(
         round_idx += 1
         pending_request = None
 
+    if len(rounds) > 1 and input_tokens is not None:
+        usage = (rounds[0].get("response") or {}).get("usage") or {}
+        usage["scope"] = "run_aggregate"
+        usage["note"] = (
+            "provider usage is aggregated for the full tool-calling run; "
+            "per-round usage is not available from the adapter"
+        )
+
     if not rounds and pending_request is not None:
         rounds.append(
             {
@@ -703,21 +794,22 @@ def build_comment_interaction_packet(
         {"role": "user", "content": user_segments},
     ]
 
-    injected_context = build_injected_context(
-        window_paragraphs=window_paragraphs,
-        target_paragraphs=target_paragraphs,
-        density_hint=density_hint,
-        book_id=book["id"],
-        chapter_idx=chapter_idx,
-        text_mode=text_mode,
-        edge_paragraph_max_chars=edge_paragraph_max_chars,
-        context_hash=context_hash,
-    )
-    injected_context = enrich_injected_context_from_build_manifest(
-        injected_context,
+    injected_context = build_injected_context_from_prompt_manifest(
         context_manifest,
         prompt=prompt,
+        context_hash=context_hash,
     )
+    if injected_context is None:
+        injected_context = build_injected_context(
+            window_paragraphs=window_paragraphs,
+            target_paragraphs=target_paragraphs,
+            density_hint=density_hint,
+            book_id=book["id"],
+            chapter_idx=chapter_idx,
+            text_mode=text_mode,
+            edge_paragraph_max_chars=edge_paragraph_max_chars,
+            context_hash=context_hash,
+        )
 
     messages = agent_result.all_messages() if agent_result is not None else []
     llm_rounds = extract_llm_rounds(
@@ -788,6 +880,7 @@ def build_comment_interaction_packet(
         "trace_id": trace_id,
         "job_id": job_id,
         "prompt_messages": prompt_messages,
+        "prompt_manifest": context_manifest or {},
         "injected_context": injected_context,
         "llm_rounds": llm_rounds,
         "tool_events": tool_events,
@@ -856,6 +949,59 @@ def build_compaction_interaction_packet(
 
     from ..services.agent_base import COMPACTION_INSTRUCTIONS
 
+    if prompt_manifest is None:
+        system_tokens = estimate_tokens(COMPACTION_INSTRUCTIONS)
+        previous_tokens = (
+            int(previous_summary_row.token_estimate or 0)
+            if previous_summary_row
+            else 0
+        )
+        prompt_manifest = {
+            "builder": "CompactionPromptBuilder",
+            "builder_version": "compaction_prompt_v1",
+            "total_estimate": system_tokens
+            + previous_tokens
+            + int(source_chunk.token_estimate or 0),
+            "context_hash": sha256_text(prompt),
+            "components": [
+                {
+                    "name": "system_policy",
+                    "tokens": system_tokens,
+                    "source": "prompt_template",
+                },
+                {
+                    "name": "previous_chapter_summary",
+                    "tokens": previous_tokens,
+                    "source": "context_builder",
+                    "included": previous_summary_row is not None,
+                    "content": (
+                        {
+                            "summary_id": previous_summary_row.id,
+                            "covered_start_paragraph_idx": previous_summary_row.covered_start_paragraph_idx,
+                            "covered_end_paragraph_idx": previous_summary_row.covered_end_paragraph_idx,
+                            "compaction_epoch": previous_summary_row.compaction_epoch,
+                        }
+                        if previous_summary_row
+                        else None
+                    ),
+                },
+                {
+                    "name": "source_original_chunk",
+                    "tokens": int(source_chunk.token_estimate or 0),
+                    "source": "book_paragraphs",
+                    "content": {
+                        "chunk_id": source_chunk.id,
+                        "chunk_seq": source_chunk.chunk_seq,
+                        "start_paragraph_idx": source_chunk.start_paragraph_idx,
+                        "end_paragraph_idx": source_chunk.end_paragraph_idx,
+                        "token_estimate": source_chunk.token_estimate,
+                    },
+                },
+            ],
+            "summary_id": next_summary_row.id,
+            "compaction_epoch": next_summary_row.compaction_epoch,
+        }
+
     prompt_messages = [
         {
             "role": "system",
@@ -886,32 +1032,38 @@ def build_compaction_interaction_packet(
             }
         )
 
-    injected_context: dict[str, Any] = {
-        "components": [
-            {
-                "name": "source_original_chunk",
-                "content": {
-                    "chunk_id": source_chunk.id,
-                    "start_paragraph_idx": source_chunk.start_paragraph_idx,
-                    "end_paragraph_idx": source_chunk.end_paragraph_idx,
-                    "token_estimate": source_chunk.token_estimate,
-                },
-            },
-            {
-                "name": "chapter_compressed_summary",
-                "content": {
-                    "id": next_summary_row.id,
-                    "covered_start_paragraph_idx": next_summary_row.covered_start_paragraph_idx,
-                    "covered_end_paragraph_idx": next_summary_row.covered_end_paragraph_idx,
-                    "token_estimate": next_summary_row.token_estimate,
-                    "compaction_epoch": next_summary_row.compaction_epoch,
-                },
-            },
-        ],
-        "total_input_token_estimate": input_tokens
-        or source_chunk.token_estimate,
-    }
     context_hash = sha256_text(prompt)
+    injected_context = build_injected_context_from_prompt_manifest(
+        prompt_manifest,
+        prompt=prompt,
+        context_hash=context_hash,
+    )
+    if injected_context is None:
+        injected_context = {
+            "components": [
+                {
+                    "name": "source_original_chunk",
+                    "content": {
+                        "chunk_id": source_chunk.id,
+                        "start_paragraph_idx": source_chunk.start_paragraph_idx,
+                        "end_paragraph_idx": source_chunk.end_paragraph_idx,
+                        "token_estimate": source_chunk.token_estimate,
+                    },
+                },
+                {
+                    "name": "chapter_compressed_summary",
+                    "content": {
+                        "id": next_summary_row.id,
+                        "covered_start_paragraph_idx": next_summary_row.covered_start_paragraph_idx,
+                        "covered_end_paragraph_idx": next_summary_row.covered_end_paragraph_idx,
+                        "token_estimate": next_summary_row.token_estimate,
+                        "compaction_epoch": next_summary_row.compaction_epoch,
+                    },
+                },
+            ],
+            "total_input_token_estimate": input_tokens
+            or source_chunk.token_estimate,
+        }
     book_payload = {
         "id": book.get("id", book_id),
         "title": book.get("title"),
@@ -966,6 +1118,15 @@ def build_compaction_interaction_packet(
         "injected_context": injected_context,
         "llm_rounds": llm_rounds,
         "tool_events": tool_events,
+        "final_result": {
+            "status": "completed" if transaction_committed else "not_committed",
+            "summary_id": next_summary_row.id,
+            "summary": next_summary_row.summary,
+            "anchor_excerpts": next_summary_row.anchor_excerpts,
+            "covered_start_paragraph_idx": next_summary_row.covered_start_paragraph_idx,
+            "covered_end_paragraph_idx": next_summary_row.covered_end_paragraph_idx,
+            "compaction_epoch": next_summary_row.compaction_epoch,
+        },
         "usage": {
             "source": usage_source,
             "input_tokens": input_tokens,
@@ -1036,7 +1197,7 @@ def build_chat_interaction_packet(
             "status": t.get("status", ""),
         })
 
-    components = list((prompt_manifest or {}).get("components", []))
+    components = [dict(c) for c in (prompt_manifest or {}).get("components", [])]
     for comp in components:
         if comp.get("name") == "ephemeral_recent_chat":
             comp["content"] = {
@@ -1045,21 +1206,19 @@ def build_chat_interaction_packet(
             }
             break
 
-    injected_context: dict[str, Any] = {
+    normalized_manifest = {**(prompt_manifest or {}), "components": components}
+    injected_context = build_injected_context_from_prompt_manifest(
+        normalized_manifest,
+        prompt=prompt,
+        context_hash=(prompt_manifest or {}).get("context_hash", ""),
+        recent_chat_turns=chat_turns_payload,
+    ) or {
         "builder": "ContextBuilder",
         "builder_version": "context_builder_v1",
-        "total_input_token_estimate": sum(
-            int(c.get("tokens") or c.get("token_estimate") or 0)
-            for c in components
-        ),
+        "total_input_token_estimate": sum(_component_tokens(c) for c in components),
         "context_hash": (prompt_manifest or {}).get("context_hash", ""),
         "components": components,
     }
-    injected_context = enrich_injected_context_from_build_manifest(
-        injected_context,
-        prompt_manifest,
-        prompt=prompt,
-    )
 
     packet: dict[str, Any] = {
         "schema_version": _SCHEMA_VERSION,

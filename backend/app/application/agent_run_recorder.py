@@ -55,6 +55,18 @@ class AgentRunRecorder:
     ) -> None:
         if result.input_tokens is None:
             return
+        if result.usage_scope != "single_request":
+            logger.debug(
+                "agent_run_recorder.skip_aggregate_token_calibration",
+                extra={
+                    "event": "agent_run_recorder.skip_aggregate_token_calibration",
+                    "fields": {
+                        "agent_name": result.agent_name,
+                        "usage_scope": result.usage_scope,
+                    },
+                },
+            )
+            return
         prompt_manifest = result.prompt_manifest or {}
         has_live_chunks = any(
             c.get("name") == "live_original_chunks"

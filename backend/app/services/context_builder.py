@@ -353,48 +353,19 @@ async def _apply_overflow(
     ):
         return plan, safe_estimated_tokens, False, True
 
-    context_degraded = True
-    if plan.live_chunks.chunk_ids:
-        target_set = set(target_paragraphs) if target_paragraphs else set()
-        skip_id: int | None = None
-        for cid in plan.live_chunks.chunk_ids:
-            if cid == plan.live_chunks.partial_chunk_id:
-                continue
-            chunk = await chunk_repo.get_chunk(db, cid)
-            if chunk is None:
-                continue
-            c_start = chunk.start_paragraph_idx
-            c_end = chunk.end_paragraph_idx
-            if target_set and target_set & set(range(c_start, c_end + 1)):
-                continue
-            skip_id = cid
-            break
-
-        if skip_id is not None:
-            skip_ids = {skip_id}
-            (
-                original_block,
-                live_chunk_ids,
-                partial_chunk_id,
-                partial_frontier_pidx,
-                original_tokens,
-            ) = await _build_original_block(
-                db,
-                book_id,
-                chapter_idx,
-                plan.live_start,
-                plan.frontier,
-                skip_chunk_ids=skip_ids,
-            )
-            plan.live_chunks = LiveOriginalChunkSelection(
-                block_text=original_block,
-                chunk_ids=live_chunk_ids,
-                partial_chunk_id=partial_chunk_id,
-                partial_frontier_paragraph_idx=partial_frontier_pidx,
-                estimated_tokens=original_tokens,
-            )
-
-    return plan, safe_estimated_tokens, context_degraded, False
+    logger.warning(
+        "context_builder.overflow_without_live_drop",
+        extra={
+            "event": "context_builder.overflow_without_live_drop",
+            "fields": {
+                "book_id": book_id,
+                "chapter_idx": chapter_idx,
+                "frontier": plan.frontier,
+                "estimated_tokens": safe_estimated_tokens,
+            },
+        },
+    )
+    return plan, safe_estimated_tokens, False, False
 
 
 def render_context(
@@ -469,6 +440,12 @@ def render_context(
         "hard_cap": ctx_cfg.emergency_input_cap_tokens,
         "attention_target": ctx_cfg.attention_target_input_tokens,
         "live_chunk_ids": plan.live_chunks.chunk_ids,
+        "live_start_paragraph_idx": plan.live_start,
+        "frontier_paragraph_idx": plan.frontier,
+        "partial_chunk_id": plan.live_chunks.partial_chunk_id,
+        "partial_frontier_paragraph_idx": (
+            plan.live_chunks.partial_frontier_paragraph_idx
+        ),
         "summary_id": plan.summary_id,
         "compaction_epoch": plan.compaction_epoch,
         "context_hash": ctx_hash,

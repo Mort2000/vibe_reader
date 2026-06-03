@@ -72,6 +72,7 @@ class AgentRunResult:
     context_estimated_tokens: int = 0
     prompt_version: str = ""
     prompt_manifest: dict[str, Any] | None = None
+    usage_scope: str = "single_request"
 
     no_call: bool = False
     tool_call_count: int = 0
@@ -133,4 +134,5 @@ class AgentRunResult:
             "context_degraded": self.context_degraded,
             "prompt_version": self.prompt_version,
             "prompt_manifest": self.prompt_manifest,
+            "usage_scope": self.usage_scope,
         }

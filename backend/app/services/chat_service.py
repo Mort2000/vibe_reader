@@ -99,6 +99,12 @@ async def build_chat_context(
             comp["turn_count"] = len(recent_turns)
             break
     ctx_result.estimated_tokens += chat_tokens
+    ctx_result.prompt_manifest["total_estimate"] = ctx_result.estimated_tokens
+    for key in ("safe_total_estimate", "raw_total_estimate"):
+        if ctx_result.prompt_manifest.get(key) is not None:
+            ctx_result.prompt_manifest[key] = (
+                int(ctx_result.prompt_manifest[key]) + chat_tokens
+            )
 
     return ChatContextResult(
         prompt=ctx_result.prompt,

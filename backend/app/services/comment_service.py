@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 import aiosqlite
+from pydantic_ai.messages import ModelResponse, ToolCallPart
 
 from ..config import Settings
 from ..domain.models import ReadingWindow
@@ -85,6 +86,20 @@ def _no_evidence_telemetry(
 
 
 logger = logging.getLogger(__name__)
+
+
+def _usage_scope_from_messages(messages: list[Any]) -> str:
+    response_rounds = 0
+    has_tool_call = False
+    for message in messages:
+        if not isinstance(message, ModelResponse):
+            continue
+        response_rounds += 1
+        if any(isinstance(part, ToolCallPart) for part in message.parts):
+            has_tool_call = True
+    if response_rounds > 1 or has_tool_call:
+        return "run_aggregate"
+    return "single_request"
 
 
 async def _has_running_compaction(
@@ -504,6 +519,7 @@ async def run_comment_task(
     )
 
     usage = result.usage()
+    usage_scope = _usage_scope_from_messages(result.all_messages())
 
     log_fields: dict[str, Any] = {
         "job_id": job_id,
@@ -559,6 +575,7 @@ async def run_comment_task(
         if usage.response_tokens is not None
         else usage.output_tokens
     )
+    usage_source = "provider" if usage_input is not None else "estimate"
 
     return AgentRunResult(
         agent_name="ParagraphCommentAgent",
@@ -583,6 +600,7 @@ async def run_comment_task(
         preflight_triggered=ctx_result.preflight_triggered,
         hard_triggered=ctx_result.hard_triggered,
         context_degraded=context_degraded,
+        usage_scope=usage_scope,
         prompt_manifest=ctx_result.prompt_manifest,
         audit_context=CommentAuditContext(
             trace_id=trace_id,
@@ -599,7 +617,7 @@ async def run_comment_task(
             discarded=discarded,
             validation_failed_count=validation_failed_count,
             no_call=no_call,
-            usage_source="estimate",
+            usage_source=usage_source,
             context_manifest=ctx_result.prompt_manifest,
         ),
     )
