@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from vibe_verify.artifact_store import ArtifactStore, redact_headers
+from vibe_verify.artifact_store import (
+    ArtifactStore,
+    format_duration_seconds,
+    format_token_count,
+    redact_headers,
+    render_llm_interaction_report,
+)
 from vibe_verify.evidence import EvidenceHub, LLMView, normalize_usage
 from vibe_verify.models import (
     AgentInvocation,
@@ -91,6 +97,104 @@ def test_artifact_store_rejects_reused_run_and_path_escape(tmp_path) -> None:
         store.write_text("../escape.txt", "bad")
     with pytest.raises(ValueError, match="agent invocation id"):
         store.write_audit_packet(invocation(id="../bad"))
+
+
+def test_format_token_count_and_duration() -> None:
+    assert format_token_count(60) == "60"
+    assert format_token_count(999) == "999"
+    assert format_token_count(1000) == "1.000 K"
+    assert format_token_count(22542) == "22.542 K"
+    assert format_token_count(1_500_000) == "1.500 M"
+    assert format_token_count(None) == ""
+    assert format_duration_seconds(1200.5) == "1.20 s"
+    assert format_duration_seconds(23318.7) == "23.32 s"
+    assert format_duration_seconds(None) == ""
+
+
+def test_llm_interaction_report_human_readable_rendering() -> None:
+    chapter_body = "第一行\n第二行\n<CHUNK seq=0>\n" + ("正文摘录。" * 20)
+    prompt_text = f"<TASK>\n{chapter_body}\n</TASK>"
+    raw_tool_args = (
+        '{"paragraph_idx": 42, "comment": "测试评论", "comment_type": "humor"}'
+    )
+    invocation = AgentInvocation(
+        id="inv-rich",
+        agent="ParagraphCommentAgent",
+        prompt_messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {
+                        "type": "original_text_block",
+                        "component": "current_window",
+                        "paragraph_range": [120, 200],
+                        "paragraph_count": 81,
+                        "char_count": 100,
+                        "token_estimate": 50,
+                        "content_hash": "sha256:abc",
+                        "text_mode": "range_edge_excerpt",
+                        "first_paragraph": {"paragraph_idx": 120, "text": "段首"},
+                        "last_paragraph": {"paragraph_idx": 200, "text": "段尾"},
+                    },
+                ],
+            }
+        ],
+        response={
+            "schema_version": "verify_agent_interaction_v1",
+            "created_at": "2026-05-31T12:00:00Z",
+            "context_hash": "sha256:ctx123",
+            "final_result": {
+                "comments_created": [
+                    {
+                        "paragraph_idx": 42,
+                        "comment_type": "humor",
+                        "text": "测试评论",
+                    }
+                ]
+            },
+            "llm_rounds": [
+                {
+                    "round_idx": 0,
+                    "response": {
+                        "thinking": {
+                            "available": True,
+                            "text": "需要先阅读段落再决定是否评论。",
+                        },
+                        "content": "",
+                    },
+                }
+            ],
+        },
+        usage=TokenUsage(
+            input=100, output=20, cached_input=10, agent="ParagraphCommentAgent"
+        ),
+        correlation=Correlation(run_id="r1", scenario_id="S1", trace_id="t1"),
+        tool_calls=[
+            ToolCall(
+                id="c1",
+                name="emit_comment",
+                arguments={"payload": {"raw": raw_tool_args}},
+            )
+        ],
+        duration_ms=1200.5,
+    )
+
+    report = render_llm_interaction_report("run-rich", [invocation])
+
+    assert "### Prompt 内容" in report
+    assert "### AI 思考" in report
+    assert "### AI 答复" in report
+    assert "### 工具调用" in report
+    assert "第二行" in report
+    assert "block_hash: `sha256:abc`" in report
+    assert "答复时间: `2026-05-31T12:00:00Z`" in report
+    assert "tokens_input: `100`" in report
+    assert "duration_s: `1.20 s`" in report
+    assert "需要先阅读段落" in report
+    assert '"paragraph_idx": 42' in report
+    assert "### Model Response" not in report
+    assert "injected_context" not in report
 
 
 def test_artifact_store_rejects_duplicate_audit_id(tmp_path) -> None:

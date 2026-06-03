@@ -389,6 +389,94 @@ def normalize_text(value: str) -> str:
     return " ".join(value.split())
 
 
+def _load_json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return value
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _summary_from_mapping(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for key in ("chapter_compressed_summary", "chapter_summary", "summary_payload"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            summary = str(nested.get("summary", "")).strip()
+            if summary:
+                return summary
+    summary = str(value.get("summary", "")).strip()
+    return summary
+
+
+def _summary_from_tool_arguments(arguments: Any, *, _depth: int = 0) -> str:
+    if _depth > 4:
+        return ""
+    value = _load_json_value(arguments)
+    if isinstance(value, str):
+        return ""
+    if not isinstance(value, dict):
+        return ""
+
+    summary = _summary_from_mapping(value)
+    if summary:
+        return summary
+
+    for key in ("payload", "raw"):
+        nested = value.get(key)
+        if nested is None:
+            continue
+        summary = _summary_from_tool_arguments(nested, _depth=_depth + 1)
+        if summary:
+            return summary
+    return ""
+
+
+def _summary_from_tool_calls(tool_calls: Any) -> str:
+    if not isinstance(tool_calls, list):
+        return ""
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        if isinstance(function, dict):
+            summary = _summary_from_tool_arguments(function.get("arguments"))
+            if summary:
+                return summary
+        summary = _summary_from_tool_arguments(tool_call.get("arguments"))
+        if summary:
+            return summary
+    return ""
+
+
+def _summary_from_agent_interaction(value: dict[str, Any]) -> str:
+    tool_events = value.get("tool_events")
+    if isinstance(tool_events, list):
+        for event in tool_events:
+            if isinstance(event, dict):
+                summary = _summary_from_tool_arguments(event.get("arguments"))
+                if summary:
+                    return summary
+
+    llm_rounds = value.get("llm_rounds")
+    if isinstance(llm_rounds, list):
+        for round_item in llm_rounds:
+            if not isinstance(round_item, dict):
+                continue
+            response = round_item.get("response")
+            if isinstance(response, dict):
+                summary = _summary_from_tool_calls(response.get("tool_calls"))
+                if summary:
+                    return summary
+
+    return _summary_from_tool_calls(value.get("tool_calls"))
+
+
 def extract_summary_text(value: Any) -> str:
     if isinstance(value, str):
         try:
@@ -397,38 +485,24 @@ def extract_summary_text(value: Any) -> str:
             return ""
     if not isinstance(value, dict):
         return ""
-    for key in ("chapter_compressed_summary", "chapter_summary", "summary_payload"):
-        nested = value.get(key)
-        if isinstance(nested, dict) and str(nested.get("summary", "")).strip():
-            return str(nested["summary"])
-    if str(value.get("summary", "")).strip():
-        return str(value["summary"])
+
+    summary = _summary_from_mapping(value)
+    if summary:
+        return summary
+
+    summary = _summary_from_agent_interaction(value)
+    if summary:
+        return summary
+
     choices = value.get("choices")
     if isinstance(choices, list) and choices:
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, str):
-            try:
-                parsed = json.loads(content)
-            except json.JSONDecodeError:
-                return ""
-            return extract_summary_text(parsed)
-        tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
-        if isinstance(tool_calls, list):
-            for tool_call in tool_calls:
-                function = (
-                    tool_call.get("function") if isinstance(tool_call, dict) else None
-                )
-                arguments = (
-                    function.get("arguments") if isinstance(function, dict) else None
-                )
-                if not isinstance(arguments, str):
-                    continue
-                try:
-                    parsed = json.loads(arguments)
-                except json.JSONDecodeError:
-                    continue
-                summary = extract_summary_text(parsed.get("payload", parsed))
-                if summary:
-                    return summary
+            return extract_summary_text(_load_json_value(content))
+        summary = _summary_from_tool_calls(
+            message.get("tool_calls") if isinstance(message, dict) else None
+        )
+        if summary:
+            return summary
     return ""

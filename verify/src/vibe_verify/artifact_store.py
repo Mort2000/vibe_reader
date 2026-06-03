@@ -45,7 +45,6 @@ _SENSITIVE_HEADER_NAMES = {
     "anthropic-api-key",
 }
 
-
 @dataclass(frozen=True)
 class SafetyFinding:
     """Potential secret leak in a persisted artifact."""
@@ -305,109 +304,348 @@ def render_llm_interaction_report(
 
 
 def render_invocation_section(index: int, invocation: AgentInvocation) -> list[str]:
+    packet = _audit_packet(invocation)
     usage = invocation.usage.to_dict()
-    correlation = jsonable(invocation.correlation)
     lines = [
-        f"## {index}. `{invocation.id}`",
-        "",
-        "### Metadata",
-        "",
-        f"- agent: `{invocation.agent}`",
-        f"- model: `{usage.get('model', '')}`",
-        f"- usage_source: `{usage.get('source', '')}`",
-        f"- tokens_input: `{usage.get('input', 0)}`",
-        f"- tokens_output: `{usage.get('output', 0)}`",
-        f"- tokens_cached_input: `{usage.get('cached_input', 0)}`",
-        f"- tokens_total: `{usage.get('total', 0)}`",
-        f"- cost_usd: `{usage.get('cost_usd', 0.0)}`",
-        f"- ttft_ms: `{format_optional(invocation.ttft_ms)}`",
-        f"- duration_ms: `{format_optional(invocation.duration_ms)}`",
-        f"- retries: `{invocation.retries}`",
-        "",
-        "### Correlation",
-        "",
-        markdown_code_block(correlation, "json"),
-        "",
-        "### Prompt Messages",
+        f"## {index}. `{invocation.id}` · {invocation.agent}",
         "",
     ]
-    if invocation.prompt_messages:
-        for message_index, message in enumerate(invocation.prompt_messages, start=1):
-            lines.extend(render_prompt_message(message_index, message))
-    else:
-        lines.append("No prompt messages recorded.")
-
-    lines.extend(
-        ["", "### Model Response", "", markdown_code_block(invocation.response)]
-    )
-
-    if invocation.thinking is not None:
-        lines.extend(
-            ["", "### Thinking", "", markdown_code_block(invocation.thinking)]
-        )
-    elif invocation.thinking_unavailable_reason:
-        lines.extend(
-            [
-                "",
-                "### Thinking",
-                "",
-                f"`{invocation.thinking_unavailable_reason}`",
-            ]
-        )
-
-    lines.extend(["", "### Tool Calls", ""])
-    if invocation.tool_calls:
-        lines.append(markdown_code_block(invocation.tool_calls, "json"))
-    else:
-        lines.append("No tool calls recorded.")
-
-    lines.extend(["", "### Tool Results", ""])
-    if invocation.tool_results:
-        lines.append(markdown_code_block(invocation.tool_results, "json"))
-    else:
-        lines.append("No tool results recorded.")
-
+    lines.extend(_render_audit_metadata(invocation, packet, usage))
+    lines.extend(["", "### Prompt 内容", ""])
+    lines.extend(_render_audit_prompt(invocation.prompt_messages))
+    lines.extend(["", "### AI 思考", ""])
+    lines.extend(_render_audit_thinking(invocation, packet))
+    lines.extend(["", "### AI 答复", ""])
+    lines.extend(_render_audit_reply(invocation, packet))
+    lines.extend(["", "### 工具调用", ""])
+    lines.extend(_render_audit_tool_calls(invocation))
     if invocation.error:
-        lines.extend(["", "### Error", "", markdown_code_block(invocation.error)])
-
+        lines.extend(["", "### 错误", "", _text_fence(str(invocation.error))])
     lines.extend(
         [
             "",
-            "### Artifact References",
-            "",
-            f"- `audit/agent_interactions/{invocation.id}.json`",
-            f"- `audit/prompts/{invocation.id}.md`",
-            "- `evidence/agent_invocations.ndjson`",
+            f"- 完整记录：`audit/agent_interactions/{invocation.id}.json`",
         ]
     )
     return lines
 
 
-def render_prompt_message(index: int, message: dict[str, Any]) -> list[str]:
-    role = str(message.get("role", "unknown"))
-    metadata = {
-        key: value for key, value in message.items() if key not in {"content", "role"}
-    }
+def _audit_packet(invocation: AgentInvocation) -> dict[str, Any]:
+    response = invocation.response
+    if isinstance(response, dict):
+        return response
+    return {}
+
+
+def _is_audit_packet(packet: dict[str, Any]) -> bool:
+    return bool(
+        packet.get("schema_version")
+        or packet.get("llm_rounds")
+        or packet.get("prompt_messages")
+    )
+
+
+def _render_audit_metadata(
+    invocation: AgentInvocation,
+    packet: dict[str, Any],
+    usage: dict[str, Any],
+) -> list[str]:
+    correlation = jsonable(invocation.correlation)
+    context_hash = str(
+        packet.get("context_hash")
+        or correlation.get("context_hash")
+        or ""
+    )
+    packet_usage = packet.get("usage") if isinstance(packet.get("usage"), dict) else {}
+    timing = packet.get("timing") if isinstance(packet.get("timing"), dict) else {}
+    input_tokens = int(usage.get("input") or packet_usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output") or packet_usage.get("output_tokens") or 0)
+    cached_tokens = int(
+        usage.get("cached_input") or packet_usage.get("cached_input_tokens") or 0
+    )
+    total_tokens = int(
+        usage.get("total") or input_tokens + output_tokens
+    )
+    duration_ms = invocation.duration_ms
+    if duration_ms is None:
+        duration_ms = timing.get("total_ms")
+    ttft_ms = invocation.ttft_ms
+    if ttft_ms is None:
+        ttft_ms = timing.get("ttft_ms")
     lines = [
-        f"#### Message {index}: `{role}`",
-        "",
-        "**Content**",
-        "",
-        markdown_code_block(message.get("content", "")),
+        f"- model: `{usage.get('model') or packet.get('model', '')}`",
+        f"- usage_source: `{usage.get('source') or packet_usage.get('source', '')}`",
+        f"- tokens_input: `{format_token_count(input_tokens)}`",
+        f"- tokens_output: `{format_token_count(output_tokens)}`",
+        f"- tokens_cached_input: `{format_token_count(cached_tokens)}`",
+        f"- tokens_total: `{format_token_count(total_tokens)}`",
+        f"- duration_s: `{format_duration_seconds(duration_ms)}`",
+        f"- ttft_s: `{format_duration_seconds(ttft_ms)}`",
+        f"- retries: `{invocation.retries or timing.get('retry_count', 0)}`",
     ]
-    if metadata:
-        lines.extend(["", "**Message Metadata**", "", markdown_code_block(metadata)])
+    created_at = packet.get("created_at")
+    if created_at:
+        lines.append(f"- 答复时间: `{created_at}`")
+    started_at = packet.get("started_at") or packet.get("request_started_at")
+    if started_at:
+        lines.append(f"- 请求时间: `{started_at}`")
+    if context_hash:
+        lines.append(f"- context_hash: `{context_hash}`")
+    block_hashes = _collect_content_block_hashes(invocation.prompt_messages)
+    for block_hash in block_hashes:
+        lines.append(f"- block_hash: `{block_hash}`")
     return lines
 
 
-def markdown_code_block(value: Any, info: str | None = None) -> str:
-    rendered = render_markdown_value(value)
-    rendered = redact_secrets_text(rendered)
+def _collect_content_block_hashes(messages: list[dict[str, Any]]) -> list[str]:
+    hashes: list[str] = []
+    seen: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            block_hash = value.get("content_hash") or value.get("hash")
+            if isinstance(block_hash, str) and block_hash and block_hash not in seen:
+                seen.add(block_hash)
+                hashes.append(block_hash)
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    for message in messages:
+        visit(message.get("content"))
+    return hashes
+
+
+def _render_audit_prompt(messages: list[dict[str, Any]]) -> list[str]:
+    if not messages:
+        return ["（无 Prompt 记录）", ""]
+    lines: list[str] = []
+    for message in messages:
+        role = str(message.get("role", "unknown"))
+        lines.extend([f"#### {role}", ""])
+        content = message.get("content", "")
+        if isinstance(content, str):
+            if content.strip():
+                lines.extend([_text_fence(content), ""])
+            continue
+        if isinstance(content, list):
+            for segment in content:
+                if isinstance(segment, dict):
+                    lines.extend(_render_prompt_segment(segment))
+                elif segment:
+                    lines.append(str(segment))
+                    lines.append("")
+    return lines
+
+
+def _render_prompt_segment(segment: dict[str, Any]) -> list[str]:
+    if segment.get("type") == "original_text_block":
+        para_range = segment.get("paragraph_range") or [None, None]
+        lines = [
+            (
+                f"**{segment.get('component', 'original_text_block')}** · "
+                f"P{para_range[0]}–P{para_range[1]} · "
+                f"{segment.get('paragraph_count', 0)} 段 · "
+                f"{segment.get('char_count', 0)} 字 · "
+                f"~{segment.get('token_estimate', 0)} tokens"
+            ),
+            f"- block_hash: `{segment.get('content_hash', '')}`",
+            "",
+        ]
+        if segment.get("text_mode") == "full":
+            for para in segment.get("paragraphs") or []:
+                if not isinstance(para, dict):
+                    continue
+                lines.extend(
+                    [
+                        f"##### P{para.get('paragraph_idx')}",
+                        "",
+                        _text_fence(str(para.get("text", ""))),
+                        "",
+                    ]
+                )
+        else:
+            first = segment.get("first_paragraph") or {}
+            last = segment.get("last_paragraph") or {}
+            if first.get("text"):
+                lines.extend(
+                    [
+                        "##### 段首",
+                        "",
+                        _text_fence(str(first.get("text", ""))),
+                        "",
+                    ]
+                )
+            if last.get("text") and last.get("paragraph_idx") != first.get(
+                "paragraph_idx"
+            ):
+                lines.extend(
+                    [
+                        "##### 段尾",
+                        "",
+                        _text_fence(str(last.get("text", ""))),
+                        "",
+                    ]
+                )
+        return lines
+    text = str(segment.get("text", ""))
+    if not text.strip():
+        return []
+    return [_text_fence(text), ""]
+
+
+def _render_audit_thinking(
+    invocation: AgentInvocation, packet: dict[str, Any]
+) -> list[str]:
+    chunks: list[str] = []
+    if invocation.thinking:
+        chunks.append(str(invocation.thinking))
+    elif _is_audit_packet(packet):
+        for round_index, round_item in enumerate(packet.get("llm_rounds") or [], 1):
+            thinking = (round_item.get("response") or {}).get("thinking") or {}
+            if thinking.get("available") and thinking.get("text"):
+                multi_round = len(packet.get("llm_rounds") or []) > 1
+                prefix = f"#### Round {round_index}" if multi_round else ""
+                if prefix:
+                    chunks.extend([prefix, ""])
+                chunks.append(str(thinking["text"]))
+                chunks.append("")
+            elif thinking.get("reason"):
+                chunks.append(f"_不可用: {thinking['reason']}_")
+    if chunks:
+        body = "\n".join(chunks).strip()
+        return [_text_fence(redact_secrets_text(body)), ""]
+    if invocation.thinking_unavailable_reason:
+        return [f"_{invocation.thinking_unavailable_reason}_", ""]
+    return ["_（未捕获思考内容）_", ""]
+
+
+def _assistant_text_from_packet(packet: dict[str, Any]) -> str:
+    final_result = packet.get("final_result") or {}
+    ai_msg = final_result.get("ai_msg")
+    if ai_msg:
+        return str(ai_msg)
+    for round_item in reversed(packet.get("llm_rounds") or []):
+        content = (round_item.get("response") or {}).get("content") or ""
+        if str(content).strip():
+            return str(content)
+    return ""
+
+
+def _render_audit_reply(
+    invocation: AgentInvocation, packet: dict[str, Any]
+) -> list[str]:
+    if _is_audit_packet(packet):
+        lines: list[str] = []
+        final_result = packet.get("final_result") or {}
+        assistant_text = _assistant_text_from_packet(packet)
+        if assistant_text.strip():
+            lines.extend([_text_fence(redact_secrets_text(assistant_text)), ""])
+        comments = final_result.get("comments_created") or []
+        if comments:
+            lines.append("**已创建评论**")
+            lines.append("")
+            for comment in comments:
+                if not isinstance(comment, dict):
+                    continue
+                lines.append(
+                    f"- P{comment.get('paragraph_idx')}: "
+                    f"`{comment.get('comment_type')}` — {comment.get('text')}"
+                )
+            lines.append("")
+        if final_result.get("no_call"):
+            lines.append("- 模型未调用工具（no_call）")
+            lines.append("")
+        if not lines:
+            lines.append("_（无自然语言答复；结果见工具调用）_")
+            lines.append("")
+        return lines
+    response = invocation.response
+    if isinstance(response, str) and response.strip():
+        return [_text_fence(redact_secrets_text(response)), ""]
+    if isinstance(response, dict):
+        for key in ("content", "ai_msg", "text", "message"):
+            value = response.get(key)
+            if isinstance(value, str) and value.strip():
+                return [_text_fence(redact_secrets_text(value)), ""]
+        return [
+            _json_fence(redact_secrets_text(json.dumps(response, ensure_ascii=False))),
+            "",
+        ]
+    if response not in (None, ""):
+        return [_text_fence(redact_secrets_text(str(response))), ""]
+    return ["_（无答复记录）_", ""]
+
+
+def _normalize_tool_arguments(arguments: dict[str, Any]) -> Any:
+    payload = arguments.get("payload")
+    if isinstance(payload, dict):
+        raw = payload.get("raw")
+        if isinstance(raw, str):
+            parsed = _try_parse_embedded_json(raw)
+            if parsed is not None:
+                return parsed
+    return arguments
+
+
+def _render_audit_tool_calls(invocation: AgentInvocation) -> list[str]:
+    if not invocation.tool_calls:
+        return ["（无工具调用）", ""]
+    lines: list[str] = []
+    for index, call in enumerate(invocation.tool_calls, start=1):
+        args = _normalize_tool_arguments(dict(call.arguments))
+        payload = {
+            "id": call.id,
+            "name": call.name,
+            "arguments": args,
+        }
+        lines.extend(
+            [f"#### 调用 {index}: `{call.name}`", "", _json_fence(payload), ""]
+        )
+    return lines
+
+
+def _text_fence(text: str) -> str:
+    rendered = redact_secrets_text(text)
     fence = "```"
     while fence in rendered:
         fence += "`"
-    language = info if info is not None else markdown_language(value)
-    return f"{fence}{language}\n{rendered}\n{fence}"
+    return f"{fence}text\n{rendered}\n{fence}"
+
+
+def _json_fence(value: Any) -> str:
+    body = json.dumps(value, indent=2, ensure_ascii=False, default=str)
+    body = redact_secrets_text(body)
+    fence = "```"
+    while fence in body:
+        fence += "`"
+    return f"{fence}json\n{body}\n{fence}"
+
+
+def _try_parse_embedded_json(text: str) -> Any | None:
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, (dict, list)):
+        return parsed
+    return None
+
+
+def markdown_code_block(value: Any, info: str | None = None) -> str:
+    if isinstance(value, str) and info in (None, "text"):
+        return _text_fence(value)
+    language = "json" if info == "json" else "text"
+    if language == "json":
+        return _json_fence(jsonable(value))
+    if isinstance(value, str):
+        return _text_fence(value)
+    return _json_fence(jsonable(value))
 
 
 def render_markdown_value(value: Any) -> str:
@@ -424,6 +662,26 @@ def format_optional(value: float | None) -> str:
     if value is None:
         return ""
     return str(round(float(value), 3))
+
+
+def format_token_count(value: int | float | None) -> str:
+    """Format token counts as plain integer, K, or M with three decimal places."""
+    if value is None:
+        return ""
+    count = int(value)
+    magnitude = abs(count)
+    if magnitude < 1000:
+        return str(count)
+    if magnitude >= 1_000_000:
+        return f"{count / 1_000_000:.3f} M"
+    return f"{count / 1000:.3f} K"
+
+
+def format_duration_seconds(value_ms: float | None) -> str:
+    """Format millisecond durations as seconds with two decimal places."""
+    if value_ms is None:
+        return ""
+    return f"{float(value_ms) / 1000:.2f} s"
 
 
 def redact_headers(headers: dict[str, str]) -> dict[str, str]:

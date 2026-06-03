@@ -6,10 +6,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from ..config import Settings
+from .llm_model import CompatibleOpenAIChatModel
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +81,14 @@ COMPACTION_INSTRUCTIONS = """\
 - summary 和 anchor_excerpts 都以 JSON 结构化输出。"""
 
 
-_model: OpenAIChatModel | None = None
+_model: CompatibleOpenAIChatModel | None = None
 
 
-def get_llm_model(settings: Settings) -> OpenAIChatModel:
+def get_llm_model(settings: Settings) -> CompatibleOpenAIChatModel:
     global _model
     if _model is not None:
         return _model
-    _model = OpenAIChatModel(
+    _model = CompatibleOpenAIChatModel(
         settings.llm.model,
         provider=OpenAIProvider(
             base_url=settings.llm.base_url,

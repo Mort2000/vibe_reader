@@ -10,7 +10,7 @@ scenarios = [
 ]
 target_url = "http://127.0.0.1:8000"
 artifact_root = "verify_runs"
-corpus = "corpus/hongloumeng_manifest.toml"
+corpus = "corpus/long_cn_novel_01_manifest.toml"
 
 [profile]
 name = "r1_a4_stub"
@@ -30,20 +30,20 @@ poll_interval_s = 0.1
 [profile.budget]
 max_calls = 80
 max_tokens = 1000000
-max_duration_s = 900.0
+max_duration_s = 1200.0
 max_cost_usd = 0.0
 
 [params]
 read_batches = 8
-read_batch_size = 4
+read_batch_size = 64
 min_comment_windows = 1
 post_compaction_comment_windows = 1
 min_chat_turns = 2
 s6_chat_turns = 8
 chat_history_recent_turns = 6
 fast_scroll_offsets = [1, 2, 4, 6]
-max_wait_comment_s = 60.0
-max_wait_compaction_s = 120.0
+max_wait_comment_s = 300.0
+max_wait_compaction_s = 600.0
 
 [backend]
 command = "uv run vibe-reader"

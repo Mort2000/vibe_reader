@@ -5,32 +5,35 @@ artifact_root = "verify_runs"
 corpus = "corpus/long_cn_novel_01_manifest.toml"
 
 [profile]
-name = "r1_a4_stub"
-llm_mode = "stub"
-audit = false
-backend_agent_evidence = false
+name = "r1_a4_real"
+llm_mode = "real"
+audit = true
+backend_agent_evidence = true
 
-[profile.stub]
-name = "r1_a4_stub"
+[profile.real]
+# Leave empty to use VIBE_READER_LLM_* from the shell environment (.env).
+base_url = ""
+api_key = ""
+model = ""
 
 [profile.user]
 reading_paragraphs_per_second = 4.0
-page_delay_s = 0.25
-patience_s = 30.0
-poll_interval_s = 0.1
+page_delay_s = 0.1
+patience_s = 60.0
+poll_interval_s = 0.25
 
 [profile.budget]
-max_calls = 30
-max_tokens = 1000000
-max_duration_s = 900.0
-max_cost_usd = 0.0
+max_calls = 100
+max_tokens = 2000000
+max_duration_s = 3600.0
+max_cost_usd = 3.5
 
 [params]
-# genius_prince ch1: start P0 -> compaction ~P80, chat anchor P275 (~522 paragraphs)
+# happy_path_current: ch1 P0 -> compaction, chat anchor P275
 read_batches = 8
-read_batch_size = 64
+read_batch_size = 120
 min_comment_windows = 2
-post_compaction_comment_windows = 1
+post_compaction_comment_windows = 3
 min_chat_turns = 1
 max_wait_comment_s = 300.0
 max_wait_compaction_s = 600.0
@@ -40,10 +43,10 @@ command = "uv run vibe-reader"
 cwd = "../backend"
 config_file = "configs/backend_r1_a4_stub.toml"
 ready_path = "/api/health"
-ready_timeout_s = 30.0
+ready_timeout_s = 60.0
 reset_data_dir = true
 
 [backend.env]
-VIBE_READER_DATA_DIR = "/tmp/vibe_reader_verify_r1_a4_stub"
+VIBE_READER_DATA_DIR = "/tmp/vibe_reader_verify_r1_a4_real"
 VIBE_READER_VERIFY_MODE = "1"
 VIBE_READER_OBSERVABILITY_ENABLED = "0"

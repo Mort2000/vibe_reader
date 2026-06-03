@@ -21,6 +21,7 @@ from vibe_verify.assertions import (
     check_response_status,
     check_sse_sequence,
     check_token_usage,
+    extract_summary_text,
 )
 from vibe_verify.corpus import CorpusCatalog, CorpusRequirement
 from vibe_verify.driver import ChatResponse
@@ -224,6 +225,48 @@ def test_compaction_summary_reuse_checks_actual_summary_text() -> None:
             agent_invocation(
                 "ReadingChatAgent",
                 prompt=f"Use prior context: {summary}",
+            ),
+        ]
+    )
+
+
+def test_extract_summary_text_reads_compaction_v1_tool_events() -> None:
+    summary = "纳特拉王国，国王病倒，维恩担任摄政。"
+    raw_payload = json.dumps(
+        {"payload": {"summary": summary, "anchor_excerpts": []}},
+        ensure_ascii=False,
+    )
+    compaction_response = {
+        "schema_version": "compaction_v1",
+        "tool_events": [
+            {
+                "tool_name": "emit_chapter_compressed_summary",
+                "arguments": {"payload": {"raw": raw_payload}},
+            }
+        ],
+        "llm_rounds": [
+            {
+                "response": {
+                    "tool_calls": [
+                        {
+                            "name": "emit_chapter_compressed_summary",
+                            "arguments": {"raw": raw_payload},
+                        }
+                    ]
+                }
+            }
+        ],
+    }
+    assert extract_summary_text(compaction_response) == summary
+    check_compaction_summary_reused(
+        [
+            agent_invocation(
+                "ContextCompactionAgent",
+                response=compaction_response,
+            ),
+            agent_invocation(
+                "ReadingChatAgent",
+                prompt=f"<CHAPTER_COMPRESSED_SUMMARY>\n{summary}\n</CHAPTER_COMPRESSED_SUMMARY>",
             ),
         ]
     )
