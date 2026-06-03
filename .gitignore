@@ -5,10 +5,6 @@ __pycache__/
 .eggs/
 *.egg
 
-backend/verify_runs/
-backend/tests/corpus/books/
-backend/tests/system_verify/llm_stub/aimock/node_modules/
-
 frontend/node_modules/
 frontend/dist/
 

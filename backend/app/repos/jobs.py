@@ -92,30 +92,15 @@ async def increment_attempt(db: aiosqlite.Connection, job_id: int) -> None:
 async def list_jobs(
     db: aiosqlite.Connection,
     *,
-    run_id: str | None = None,
     book_id: int | None = None,
     chapter_idx: int | None = None,
     status: str | None = None,
     job_type: str | None = None,
     limit: int = 100,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List AI jobs.
-
-    When ``run_id`` is set (verify-only), inner-joins ``verify_agent_runs`` on
-    ``trace_id`` and keeps only jobs whose agent run belongs to that verify run.
-    Jobs without a matching telemetry row are excluded; omit ``run_id`` for the
-    full job list.
-    """
+    """List AI jobs."""
     conditions: list[str] = []
     params: list[Any] = []
-    join_clause = ""
-
-    if run_id:
-        join_clause = (
-            " INNER JOIN verify_agent_runs var ON var.trace_id = ai_jobs.trace_id"
-        )
-        conditions.append("var.verify_run_id = ?")
-        params.append(run_id)
 
     if book_id is not None:
         conditions.append("ai_jobs.book_id = ?")
@@ -133,13 +118,11 @@ async def list_jobs(
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     table = "ai_jobs"
 
-    count_cur = await db.execute(
-        f"SELECT COUNT(*) FROM {table}{join_clause} {where}", params
-    )
+    count_cur = await db.execute(f"SELECT COUNT(*) FROM {table} {where}", params)
     total = (await count_cur.fetchone())[0]
 
     cur = await db.execute(
-        f"SELECT ai_jobs.* FROM {table}{join_clause} {where} "
+        f"SELECT ai_jobs.* FROM {table} {where} "
         f"ORDER BY ai_jobs.created_at DESC LIMIT ?",
         params + [limit],
     )

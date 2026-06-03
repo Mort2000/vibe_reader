@@ -17,7 +17,7 @@ uv sync --extra dev                    # install deps (editable, registers CLI e
 uv run vibe-reader                     # start dev server (reload, 127.0.0.1:8000)
 uv run ruff check .                    # lint
 uv run ruff format .                   # format
-uv run pytest -m "not system and not real_llm"   # unit tests (no live backend)
+uv run pytest                          # unit/module tests (no live backend)
 ```
 
 Single test: `uv run pytest tests/path/to/test.py::test_name`
@@ -48,7 +48,7 @@ npm run lint    # ESLint
 Build frontend first, then backend serves static files from `frontend/dist/` at `/`:
 ```bash
 cd frontend && npm run build
-cd ../backend && set -a && source ../.env && set +a && uv run vibe-reader
+cd ../backend && set -a && source .env && set +a && uv run vibe-reader
 ```
 
 ## Architecture
@@ -111,5 +111,5 @@ Specifications and plans in root `docs/`: `spec_mini.md`, `task_mini.md`,
 - Python linting: ruff (line-length 88, target py311, max complexity 12, max statements 60)
 - pytest: backend uses `asyncio_mode = "auto"`; verify framework tests run from
   `verify/` with normal pytest
-- `.env` is auto-loaded by `conftest.py`; shell env vars override `.env` values
-- Backend uses `set -a && source ../.env && set +a` pattern for env loading in manual runs
+- Backend manual runs can load `backend/.env` with
+  `set -a && source .env && set +a`; shell env vars override `.env` values

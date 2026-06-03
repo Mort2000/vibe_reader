@@ -1,5 +1,5 @@
 # Backend test config for long_cn_novel_01 stub runs.
-# Aligned with backend/tests/corpus/verify.toml (7K L2, 24K L3, ch1 compaction).
+# Uses 7K L2 chunks, 24K L3 compaction, and chapter 1 compaction thresholds.
 
 [reader]
 lookahead_paragraphs = 80

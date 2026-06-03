@@ -41,6 +41,7 @@ from vibe_verify.scenarios.r1_full_flow import R1_A4_SCENARIO_ID
 class FakeClient(TargetClient):
     requested_paths: list[str]
     agent_runs_requested = False
+    legacy_verify_runtime_requested = False
 
     def __init__(self, _base_url, *, evidence, correlation):
         self.requested_paths = []
@@ -56,7 +57,9 @@ class FakeClient(TargetClient):
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requested_paths.append(request.url.path)
+        # Negative guard: runtime probes must use the formal /api/runtime path.
         if request.url.path == "/api/verify/runtime":
+            type(self).legacy_verify_runtime_requested = True
             return httpx.Response(
                 500,
                 json={"error": "verify runtime endpoint must not be used"},
@@ -328,6 +331,7 @@ async def test_user_clock_stub_is_noop_and_real_uses_model() -> None:
 async def test_run_engine_success_and_failure_artifacts(tmp_path) -> None:
     registry = ScenarioRegistry()
     registry.register(ScenarioDefinition("passed", passing))
+    FakeClient.legacy_verify_runtime_requested = False
     result = await RunEngine(registry, client_factory=FakeClient).run(
         RunSpec(
             suite="core",
@@ -342,6 +346,7 @@ async def test_run_engine_success_and_failure_artifacts(tmp_path) -> None:
     assert manifest["llm_mode"] == "stub"
     assert manifest["usage_source"] == "estimate"
     assert manifest["backend_env_applied"] is True
+    assert FakeClient.legacy_verify_runtime_requested is False
 
     failed_registry = ScenarioRegistry()
     failed_registry.register(ScenarioDefinition("failed", failing))

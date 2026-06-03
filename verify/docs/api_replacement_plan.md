@@ -5,6 +5,19 @@ driven through formal product APIs, gray-box access is read-only, and backend
 test-only endpoints are either removed from the default path or isolated as
 temporary compatibility.
 
+## Current Status
+
+- `GET /api/verify/runtime`, `GET /api/verify/jobs`, and verify metrics access
+  have been removed from the new Verify default path.
+- Runtime readiness uses the formal `GET /api/runtime` endpoint.
+- `POST /api/verify/llm-ping` remains a temporary S0 compatibility endpoint for
+  LLM connectivity. Replace it with a formal runtime or evidence path when one
+  exists.
+- `GET /api/verify/agent-runs` is only used when
+  `backend_agent_evidence=true` enables the real/audit compatibility path.
+  Default stub runs use local stub evidence and must not import backend Agent
+  runs.
+
 ## Phase 1: Runtime Probe
 
 - Replace `GET /api/verify/runtime` with the formal `GET /api/runtime`.
@@ -27,4 +40,4 @@ temporary compatibility.
   real/audit evidence until a standard OTEL or audit sink replaces it. Stub mode
   must use local stub evidence by default.
 - Acceptance: default stub runs do not depend on `/api/verify/agent-runs`; the
-  remaining verify endpoint dependency is isolated and documented.
+  remaining verify endpoint dependencies are isolated and documented.

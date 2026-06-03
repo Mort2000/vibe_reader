@@ -11,8 +11,10 @@ and asserts the externally visible outcome from collected evidence.
 - Keep the script readable as a behavior flow. Prefer `context.user`,
   `context.app`, and `BookFacade` helpers over low-level HTTP calls.
 - Use `context.observability` only for read-only verify-mode evidence such as
-  runtime checks, job status, metrics, or backend-recorded Agent runs. Do not
-  mix those calls into user-facing `app` actions.
+  formal runtime checks, the temporary S0 LLM ping compatibility probe, or
+  backend-recorded Agent runs in `backend_agent_evidence=true` real/audit
+  profiles. Prefer standard runner evidence for assertions when available, and
+  do not mix observability calls into user-facing `app` actions.
 - Put scenario knobs in a small policy object and map CLI / run params into that
   policy at the script boundary.
 - Resolve corpus-dependent positions through manifest probes rather than

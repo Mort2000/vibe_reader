@@ -127,16 +127,6 @@ async def record_agent_run(
     await db.commit()
 
 
-async def get_agent_run(
-    db: aiosqlite.Connection, trace_id: str
-) -> dict[str, Any] | None:
-    cur = await db.execute(
-        "SELECT * FROM verify_agent_runs WHERE trace_id = ?", (trace_id,)
-    )
-    row = await cur.fetchone()
-    return dict(row) if row else None
-
-
 async def list_agent_runs(
     db: aiosqlite.Connection,
     *,

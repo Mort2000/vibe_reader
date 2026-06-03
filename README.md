@@ -14,6 +14,7 @@
 vibe_reader/
   backend/          FastAPI 后端（uv 项目根）
   frontend/         React + TypeScript + Vite 前端
+  verify/           独立黑盒系统验证工程
 ```
 
 本地数据目录默认为 `~/.vibe_reader/`（可通过 `VIBE_READER_DATA_DIR` 覆盖）：
@@ -31,7 +32,7 @@ vibe_reader/
 ### 1. 安装依赖
 
 ```bash
-# 后端：editable 安装，注册 vibe-reader / vibe-verify CLI
+# 后端：editable 安装，注册 vibe-reader CLI
 cd backend
 uv sync --extra dev
 
@@ -45,11 +46,11 @@ npm install
 在 `backend/` 目录：
 
 ```bash
-set -a && source ../.env && set +a
+set -a && source .env && set +a
 uv run vibe-reader
 ```
 
-`vibe-reader` 以 reload 模式监听 `127.0.0.1:8000`。若 `.env` 仅用于验证，日常开发可省略 `source` 步骤。
+`vibe-reader` 以 reload 模式监听 `127.0.0.1:8000`。若不需要覆盖环境变量，日常开发可省略 `source` 步骤。
 
 健康检查：
 
@@ -87,11 +88,17 @@ cd ../backend && uv run vibe-reader
 | `VIBE_READER_LLM_MODEL` | 模型名（默认 `deepseek-v4-flash`） |
 | `VIBE_READER_VERIFY_MODE` | 设为 `1` 启用 `/api/verify/*` 诊断接口 |
 
-完整列表见 [.env.example](.env.example)。
+完整列表见 [backend/.env.example](backend/.env.example)。
 
 ## 测试
 
-系统验证说明见 [backend/tests/README.md](backend/tests/README.md)。
+后端单元/模块测试在 `backend/` 目录运行：
+
+```bash
+uv run pytest
+```
+
+系统验证由独立 `verify/` 工程提供，说明见 [verify/README.md](verify/README.md)。
 
 ## 配置说明
 

@@ -1,8 +1,0 @@
-{
-  "name": "vibe-reader-aimock-stub",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@copilotkit/aimock": "1.27.1"
-  }
-}
