@@ -4,23 +4,30 @@ import hashlib
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from vibe_verify.assertions import (
     check_audit_invocation,
     check_available_count,
+    check_chat_prompt_context,
     check_chat_requests_without_selection,
     check_chat_response,
+    check_chat_session_sequence,
     check_chat_sse_contract,
     check_chat_usage,
     check_comments,
     check_compaction_summary_reused,
     check_followup_session,
+    check_paragraphs,
+    check_progress,
     check_prompt_contains,
     check_response_status,
     check_sse_sequence,
     check_token_usage,
+    check_window_covers,
+    extract_chat_response_text,
     extract_summary_text,
 )
 from vibe_verify.corpus import CorpusCatalog, CorpusRequirement
@@ -133,6 +140,19 @@ def test_assertion_helpers_happy_path() -> None:
         start=1,
         end=3,
     )
+    check_paragraphs(
+        [{"idx": 0, "text": "one"}, {"idx": 1, "text": "two"}],
+        minimum=2,
+        expected_start=0,
+        require_text=True,
+    )
+    check_progress(
+        {"book_id": 7, "chapter_idx": 0, "paragraph_idx": 2},
+        book_id=7,
+        chapter_idx=0,
+        paragraph_idx=2,
+    )
+    check_window_covers(SimpleNamespace(start=1, end=3), paragraph_idx=2)
     check_chat_response(
         ChatResponse(
             text="answer",
@@ -169,6 +189,43 @@ def test_assertion_helpers_happy_path() -> None:
     check_followup_session(
         ChatResponse(session_id=1, turn_id=1),
         ChatResponse(session_id=1, turn_id=2),
+    )
+    check_chat_session_sequence(
+        [
+            ChatResponse(session_id=1, turn_id=1),
+            ChatResponse(session_id=1, turn_id=2),
+            ChatResponse(session_id=1, turn_id=3),
+        ],
+        minimum=3,
+    )
+    check_chat_prompt_context(
+        agent_invocation(
+            "ReadingChatAgent",
+            prompt="mode = chat\ncurrent_reading_paragraph_idx = 2",
+        ),
+        paragraph_idx=2,
+    )
+    assert extract_chat_response_text({"content": "answer"}) == "answer"
+    assert (
+        extract_chat_response_text({"final_result": {"ai_msg": "audit answer"}})
+        == "audit answer"
+    )
+    assert (
+        extract_chat_response_text(
+            {
+                "llm_rounds": [
+                    {"response": {"content": ""}},
+                    {
+                        "response": {
+                            "choices": [
+                                {"message": {"content": "round answer"}}
+                            ]
+                        }
+                    },
+                ]
+            }
+        )
+        == "round answer"
     )
     check_chat_requests_without_selection(
         [
@@ -289,6 +346,67 @@ def test_compaction_summary_reuse_rejects_marker_only_prompt() -> None:
 
 
 @pytest.mark.parametrize(
+    ("call", "message"),
+    [
+        (
+            lambda: check_comments(
+                [
+                    {
+                        "paragraph_idx": 1,
+                        "comment_type": "observation",
+                        "comment": "ok",
+                        "span_start": 0,
+                    }
+                ],
+                start=0,
+                end=1,
+            ),
+            "comment contains span fields",
+        ),
+        (
+            lambda: check_paragraphs([], minimum=1),
+            "not enough paragraphs",
+        ),
+        (
+            lambda: check_paragraphs(
+                [{"idx": 1, "text": "one"}],
+                expected_start=0,
+            ),
+            "paragraph idx does not start at expected value",
+        ),
+        (
+            lambda: check_paragraphs([{"idx": 0}], require_text=True),
+            "paragraph text is empty",
+        ),
+        (
+            lambda: check_chat_session_sequence(
+                [
+                    ChatResponse(session_id=1, turn_id=1),
+                    ChatResponse(session_id=1),
+                ],
+                minimum=2,
+            ),
+            "chat turn_id missing",
+        ),
+        (
+            lambda: check_progress({"book_id": 1}, book_id=2),
+            "progress book_id mismatch",
+        ),
+        (
+            lambda: check_chat_prompt_context(
+                agent_invocation("ReadingChatAgent", prompt="mode = chat"),
+                paragraph_idx=2,
+            ),
+            "chat prompt missing current reading paragraph",
+        ),
+    ],
+)
+def test_assertion_helper_failure_messages(call, message) -> None:
+    with pytest.raises(AssertionError, match=message):
+        call()
+
+
+@pytest.mark.parametrize(
     "call",
     [
         lambda: check_response_status(500),
@@ -304,6 +422,23 @@ def test_compaction_summary_reuse_rejects_marker_only_prompt() -> None:
             start=0,
             end=1,
         ),
+        lambda: check_comments(
+            [
+                {
+                    "paragraph_idx": 1,
+                    "comment_type": "observation",
+                    "comment": "ok",
+                    "span_start": 0,
+                }
+            ],
+            start=0,
+            end=1,
+        ),
+        lambda: check_paragraphs([{"idx": 0}, {"idx": 2}]),
+        lambda: check_paragraphs([{"idx": 1}], expected_start=0),
+        lambda: check_paragraphs([{"idx": 0}], require_text=True),
+        lambda: check_progress({"book_id": 1}, book_id=2),
+        lambda: check_window_covers(SimpleNamespace(start=2, end=3), paragraph_idx=1),
         lambda: check_chat_response(ChatResponse()),
         lambda: check_chat_usage(ChatResponse(tokens_in=1, tokens_out=1)),
         lambda: check_chat_usage(
@@ -326,6 +461,18 @@ def test_compaction_summary_reuse_rejects_marker_only_prompt() -> None:
         lambda: check_followup_session(
             ChatResponse(session_id=1, turn_id=2),
             ChatResponse(session_id=1, turn_id=1),
+        ),
+        lambda: check_chat_session_sequence([ChatResponse(session_id=1)], minimum=2),
+        lambda: check_chat_session_sequence(
+            [
+                ChatResponse(session_id=1, turn_id=1),
+                ChatResponse(session_id=1),
+            ],
+            minimum=2,
+        ),
+        lambda: check_chat_prompt_context(
+            agent_invocation("ReadingChatAgent", prompt="mode = comment"),
+            paragraph_idx=2,
         ),
         lambda: check_chat_requests_without_selection(
             [

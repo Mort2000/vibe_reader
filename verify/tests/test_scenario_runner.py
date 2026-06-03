@@ -34,7 +34,8 @@ from vibe_verify.scenario import (
     execute_scenario,
 )
 from vibe_verify.scenarios import build_registry
-from vibe_verify.scenarios.r1_full_flow import R1_A4_SCENARIO_ID, context_compacted
+from vibe_verify.scenarios.common import context_compacted
+from vibe_verify.scenarios.r1_full_flow import R1_A4_SCENARIO_ID
 
 
 class FakeClient(TargetClient):
@@ -246,6 +247,15 @@ def test_builtin_registry_exposes_s0_to_s6_core_scenarios() -> None:
         "S4_context_compaction",
         "S5_direct_chat",
         "S6_followup_chat",
+    ]
+    assert [item.script.__module__.rsplit(".", 1)[-1] for item in selected] == [
+        "s0_environment_connectivity",
+        "s1_import_book",
+        "s2_continuous_reading_comments",
+        "s3_fast_scroll",
+        "s4_context_compaction",
+        "s5_direct_chat",
+        "s6_followup_chat",
     ]
 
 

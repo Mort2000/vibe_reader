@@ -10,6 +10,7 @@ from typing import Any
 from .models import AgentInvocation, APIInteraction, SSEEvent, TokenUsage
 
 COMMENT_TYPES = {"observation", "question", "craft", "humor", "warning"}
+COMMENT_SPAN_KEYS = {"span", "span_start", "span_end"}
 CHAT_TERMINAL_EVENTS = {"chat.done", "chat.error"}
 CHAT_SELECTION_KEYS = {
     "selection",
@@ -100,10 +101,102 @@ def check_comments(
             )
         if not str(comment.get("comment", "")).strip():
             fail("comment text is empty", index=index, paragraph_idx=paragraph_idx)
+        forbidden = sorted(key for key in COMMENT_SPAN_KEYS if key in comment)
+        if forbidden:
+            fail(
+                "comment contains span fields",
+                index=index,
+                paragraph_idx=paragraph_idx,
+                keys=forbidden,
+            )
         if "id" in comment:
             if comment["id"] in ids:
                 fail("duplicate comment id", index=index, actual=comment["id"])
             ids.add(comment["id"])
+
+
+def check_paragraphs(
+    paragraphs: Iterable[dict[str, Any]],
+    *,
+    minimum: int = 1,
+    expected_start: int | None = None,
+    require_text: bool = False,
+) -> None:
+    items = list(paragraphs)
+    if len(items) < minimum:
+        fail("not enough paragraphs", expected=f">={minimum}", actual=len(items))
+
+    previous_idx: int | None = None
+    for position, paragraph in enumerate(items):
+        if not isinstance(paragraph, dict):
+            fail(
+                "paragraph must be an object",
+                position=position,
+                actual=type(paragraph).__name__,
+            )
+        idx = paragraph.get("paragraph_idx", paragraph.get("idx"))
+        if not isinstance(idx, int):
+            fail("paragraph idx must be int", position=position, actual=idx)
+        if position == 0 and expected_start is not None and idx != expected_start:
+            fail(
+                "paragraph idx does not start at expected value",
+                expected=expected_start,
+                actual=idx,
+            )
+        if previous_idx is not None and idx != previous_idx + 1:
+            fail(
+                "paragraph idx is not contiguous",
+                position=position,
+                expected=previous_idx + 1,
+                actual=idx,
+            )
+        if require_text and not str(paragraph.get("text", "")).strip():
+            fail("paragraph text is empty", position=position, paragraph_idx=idx)
+        previous_idx = idx
+
+
+def check_progress(
+    progress: dict[str, Any],
+    *,
+    book_id: int | None = None,
+    chapter_idx: int | None = None,
+    paragraph_idx: int | None = None,
+) -> None:
+    if not isinstance(progress, dict):
+        fail("progress must be an object", actual=type(progress).__name__)
+    if book_id is not None and progress.get("book_id") != book_id:
+        fail(
+            "progress book_id mismatch",
+            expected=book_id,
+            actual=progress.get("book_id"),
+        )
+    if chapter_idx is not None and progress.get("chapter_idx") != chapter_idx:
+        fail(
+            "progress chapter_idx mismatch",
+            expected=chapter_idx,
+            actual=progress.get("chapter_idx"),
+        )
+    if paragraph_idx is not None and progress.get("paragraph_idx") != paragraph_idx:
+        fail(
+            "progress paragraph_idx mismatch",
+            expected=paragraph_idx,
+            actual=progress.get("paragraph_idx"),
+        )
+
+
+def check_window_covers(window: Any, *, paragraph_idx: int) -> None:
+    start = getattr(window, "start", None)
+    end = getattr(window, "end", None)
+    if not isinstance(start, int) or not isinstance(end, int):
+        fail("window range must be observable", start=start, end=end)
+    if start > end:
+        fail("window range is inverted", start=start, end=end)
+    if not start <= paragraph_idx <= end:
+        fail(
+            "window does not cover paragraph",
+            expected=f"{start}..={end}",
+            actual=paragraph_idx,
+        )
 
 
 def check_chat_response(response: Any) -> None:
@@ -247,6 +340,88 @@ def check_followup_session(first: Any, followup: Any) -> None:
             first_turn=first_turn,
             followup_turn=followup_turn,
         )
+
+
+def check_chat_session_sequence(
+    responses: Iterable[Any],
+    *,
+    minimum: int = 2,
+) -> None:
+    items = list(responses)
+    if len(items) < minimum:
+        fail("not enough chat turns", expected=f">={minimum}", actual=len(items))
+    previous_session: int | None = None
+    previous_turn: int | None = None
+    for index, response in enumerate(items):
+        session_id = getattr(response, "session_id", None)
+        turn_id = getattr(response, "turn_id", None)
+        if not isinstance(session_id, int):
+            fail("chat session_id missing", index=index, actual=session_id)
+        if not isinstance(turn_id, int):
+            fail("chat turn_id missing", index=index, actual=turn_id)
+        if previous_session is not None and session_id != previous_session:
+            fail(
+                "followup did not reuse chat session",
+                expected=previous_session,
+                actual=session_id,
+            )
+        if previous_turn is not None and turn_id <= previous_turn:
+            fail(
+                "followup turn did not advance",
+                first_turn=previous_turn,
+                followup_turn=turn_id,
+            )
+        previous_session = session_id
+        previous_turn = turn_id
+
+
+def check_chat_prompt_context(call: Any, *, paragraph_idx: int) -> None:
+    prompt = str(getattr(call, "prompt", ""))
+    if "mode = chat" not in prompt.lower():
+        fail(
+            "chat prompt missing current-context mode",
+            invocation_id=getattr(call, "id", ""),
+        )
+    marker = f"current_reading_paragraph_idx = {paragraph_idx}"
+    if marker not in prompt:
+        fail(
+            "chat prompt missing current reading paragraph",
+            expected=marker,
+            invocation_id=getattr(call, "id", ""),
+        )
+
+
+def extract_chat_response_text(value: Any) -> str:
+    if isinstance(value, dict):
+        if str(value.get("content", "")).strip():
+            return str(value["content"])
+        if str(value.get("ai_msg", "")).strip():
+            return str(value["ai_msg"])
+        final_result = value.get("final_result")
+        if isinstance(final_result, dict):
+            for key in ("ai_msg", "answer", "content"):
+                if str(final_result.get(key, "")).strip():
+                    return str(final_result[key])
+        choices = value.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0]
+            message = choice.get("message") if isinstance(choice, dict) else {}
+            if isinstance(message, dict) and str(message.get("content", "")).strip():
+                return str(message["content"])
+            if isinstance(choice, dict) and str(choice.get("text", "")).strip():
+                return str(choice["text"])
+        rounds = value.get("llm_rounds")
+        if isinstance(rounds, list):
+            for item in reversed(rounds):
+                if not isinstance(item, dict):
+                    continue
+                for key in ("response", "message", "final_result"):
+                    text = extract_chat_response_text(item.get(key))
+                    if text:
+                        return text
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def payload_keys(value: Any) -> set[str]:

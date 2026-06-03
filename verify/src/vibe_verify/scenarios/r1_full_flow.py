@@ -9,12 +9,16 @@ from vibe_verify.assertions import (
     check_agent_coverage,
     check_available_count,
     check_chat_response,
-    check_comments,
     check_compaction_summary_reused,
     fail,
 )
-from vibe_verify.driver import BookFacade, EventSubscriber
+from vibe_verify.driver import BookFacade
 from vibe_verify.scenario import ScenarioContext, ScenarioDefinition
+from vibe_verify.scenarios.common import (
+    read_post_compaction_windows,
+    read_until_context_compacted,
+    value_or_default,
+)
 
 R1_A4_SCENARIO_ID = "R1_A4_full_flow"
 
@@ -111,104 +115,6 @@ async def check_r1_agent_evidence(context: ScenarioContext) -> None:
     check_compaction_summary_reused(calls)
 
 
-async def read_until_context_compacted(
-    context: ScenarioContext,
-    book: BookFacade,
-    policy: R1A4Policy,
-    *,
-    events: EventSubscriber,
-    target_paragraph: int,
-) -> int:
-    comment_windows = 0
-    last_seen_window_id: Any = None
-    max_paragraph = max(target_paragraph, len(book.paragraphs) - 1)
-
-    for _ in range(policy.read_batches):
-        # 每个批次代表一次用户继续阅读，随后等待当前阅读窗口和评论结果。
-        await read_next_batch(context, book, policy, max_paragraph=max_paragraph)
-
-        window = await book.wait_for_current_window_ready(
-            context.user,
-            timeout_s=policy.max_wait_comment_s,
-        )
-        comments = await book.wait_for_comments(
-            context.user,
-            window.focus_start,
-            window.focus_end,
-            timeout_s=policy.max_wait_comment_s,
-            required=False,
-        )
-        if comments:
-            check_comments(
-                comments,
-                start=window.focus_start,
-                end=window.focus_end,
-                minimum=1,
-            )
-            if window.identity != last_seen_window_id:
-                comment_windows += 1
-                last_seen_window_id = window.identity
-
-        # 压缩可能由本轮阅读触发；先查本地 LLM 证据，再查正式事件流。
-        if context_compacted(context, book, events):
-            return comment_windows
-
-    # 阅读批次耗尽后仍未观察到压缩，则按场景预算显式等待一次。
-    await wait_for_context_compaction(context, book, policy, events)
-    return comment_windows
-
-
-async def read_next_batch(
-    context: ScenarioContext,
-    book: BookFacade,
-    policy: R1A4Policy,
-    *,
-    max_paragraph: int,
-) -> None:
-    current = book.progress_paragraph_idx
-    next_paragraph = min(max_paragraph, current + policy.read_batch_size)
-    if next_paragraph <= current:
-        next_paragraph = min(max_paragraph, current + 1)
-    await context.user.read_until(book, next_paragraph)
-
-
-async def read_post_compaction_windows(
-    context: ScenarioContext,
-    book: BookFacade,
-    policy: R1A4Policy,
-) -> None:
-    for completed in range(policy.post_compaction_comment_windows):
-        # 压缩后至少推进一个未读段落，避免只复查压缩前的旧窗口。
-        if not book.paragraphs:
-            fail("post-compaction comment window expected but chapter is empty")
-        target = min(len(book.paragraphs) - 1, book.progress_paragraph_idx + 1)
-        if target <= book.progress_paragraph_idx:
-            fail(
-                "post-compaction comment window expected but "
-                "no unread paragraph remains",
-                expected=policy.post_compaction_comment_windows,
-                actual=completed,
-            )
-        await context.user.read_until(book, target)
-        window = await book.wait_for_current_window_ready(
-            context.user,
-            timeout_s=policy.max_wait_comment_s,
-        )
-        comments = await book.wait_for_comments(
-            context.user,
-            window.focus_start,
-            window.focus_end,
-            timeout_s=policy.max_wait_comment_s,
-            required=True,
-        )
-        check_comments(
-            comments,
-            start=window.focus_start,
-            end=window.focus_end,
-            minimum=1,
-        )
-
-
 async def ask_post_compaction_questions(
     context: ScenarioContext,
     book: BookFacade,
@@ -227,47 +133,6 @@ async def ask_post_compaction_questions(
         await context.user.wait_for_chat_response(response)
         check_chat_response(response)
         session_id = response.session_id or session_id
-
-
-async def wait_for_context_compaction(
-    context: ScenarioContext,
-    book: BookFacade,
-    policy: R1A4Policy,
-    events: EventSubscriber,
-) -> None:
-    await context.user.wait_until(
-        "context compaction",
-        lambda: context_compacted(context, book, events),
-        timeout_s=policy.max_wait_compaction_s,
-        correlation=book.client.correlation,
-    )
-
-
-def context_compacted(
-    context: ScenarioContext,
-    book: BookFacade,
-    events: EventSubscriber | None = None,
-) -> bool:
-    # stub 模式优先看已采集的 LLM 调用；真实 backend 则观察正式事件流。
-    scenario_id = book.client.correlation.scenario_id or R1_A4_SCENARIO_ID
-    if context.llm.calls("ContextCompactionAgent", scenario_id=scenario_id):
-        return True
-    if events is None:
-        return False
-    for event in reversed(events.events):
-        if (
-            event.correlation.book_id != book.id
-            or event.correlation.chapter_idx != book.chapter_idx
-        ):
-            continue
-        if event.event_type == "context.failed":
-            raise RuntimeError(
-                f"context compaction failed for book={book.id} "
-                f"chapter={book.chapter_idx}: {event.data.get('error', '')}"
-            )
-        if event.event_type == "context.compacted":
-            return True
-    return False
 
 
 def policy_from_params(context: ScenarioContext) -> R1A4Policy:
@@ -301,11 +166,6 @@ def validate_policy(policy: R1A4Policy) -> None:
         requested=policy.min_chat_turns,
         available=len(policy.chat_questions),
     )
-
-
-def value_or_default(probe: Any, name: str, default: Any) -> Any:
-    value = getattr(probe, name, None)
-    return default if value is None else value
 
 
 def probe_value(probe: Any, name: str, default: Any) -> Any:

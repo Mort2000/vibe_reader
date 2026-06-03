@@ -42,3 +42,9 @@ a scenario unit test pass.
 - `S5_direct_chat`
 - `S6_followup_chat`
 - `R1_A4_full_flow`
+
+## Shared Helpers
+
+S0-S6 each live in their own `sN_*.py` script. Shared policy parsing, probe
+opening, chat-turn helpers, progress checks, and compaction waiting helpers live
+in `common.py`; pure reusable assertions stay in `vibe_verify.assertions`.
