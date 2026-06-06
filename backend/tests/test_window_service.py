@@ -107,3 +107,77 @@ async def test_window_not_recreated_when_latest_focus_already_covers_frontier(
         assert window.id == latest.id
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_find_window_covering_paragraph_returns_matching_window(tmp_path) -> None:
+    db = await init_db(tmp_path / "test.db")
+    try:
+        await _seed_chapter(db, paragraph_count=120)
+        first = await window_repo.create_window(
+            db,
+            book_id=1,
+            chapter_idx=1,
+            window_seq=1,
+            start_paragraph_idx=0,
+            end_paragraph_idx=40,
+            focus_start_paragraph_idx=0,
+            focus_end_paragraph_idx=40,
+            assistant_frontier_paragraph_idx=40,
+        )
+        latest = await window_repo.create_window(
+            db,
+            book_id=1,
+            chapter_idx=1,
+            window_seq=2,
+            start_paragraph_idx=41,
+            end_paragraph_idx=90,
+            focus_start_paragraph_idx=41,
+            focus_end_paragraph_idx=90,
+            assistant_frontier_paragraph_idx=90,
+        )
+
+        found = await window_repo.find_window_covering_paragraph(db, 1, 1, 20)
+
+        assert found is not None
+        assert found.id == first.id
+        assert found.id != latest.id
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_find_window_covering_paragraph_prefers_focus_range(tmp_path) -> None:
+    db = await init_db(tmp_path / "test.db")
+    try:
+        await _seed_chapter(db, paragraph_count=120)
+        first = await window_repo.create_window(
+            db,
+            book_id=1,
+            chapter_idx=1,
+            window_seq=1,
+            start_paragraph_idx=0,
+            end_paragraph_idx=40,
+            focus_start_paragraph_idx=0,
+            focus_end_paragraph_idx=40,
+            assistant_frontier_paragraph_idx=40,
+        )
+        latest_overlap = await window_repo.create_window(
+            db,
+            book_id=1,
+            chapter_idx=1,
+            window_seq=2,
+            start_paragraph_idx=30,
+            end_paragraph_idx=90,
+            focus_start_paragraph_idx=41,
+            focus_end_paragraph_idx=90,
+            assistant_frontier_paragraph_idx=90,
+        )
+
+        found = await window_repo.find_window_covering_paragraph(db, 1, 1, 35)
+
+        assert found is not None
+        assert found.id == first.id
+        assert found.id != latest_overlap.id
+    finally:
+        await db.close()

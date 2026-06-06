@@ -83,6 +83,36 @@ async def find_latest_window(
     return ReadingWindow.from_row(dict(row)) if row else None
 
 
+async def find_window_covering_paragraph(
+    db: aiosqlite.Connection,
+    book_id: int,
+    chapter_idx: int,
+    paragraph_idx: int,
+) -> ReadingWindow | None:
+    cur = await db.execute(
+        """SELECT * FROM reading_windows
+           WHERE book_id = ? AND chapter_idx = ?
+             AND start_paragraph_idx <= ? AND end_paragraph_idx >= ?
+           ORDER BY
+             CASE
+               WHEN focus_start_paragraph_idx <= ? AND focus_end_paragraph_idx >= ?
+               THEN 0 ELSE 1
+             END,
+             window_seq DESC
+           LIMIT 1""",
+        (
+            book_id,
+            chapter_idx,
+            paragraph_idx,
+            paragraph_idx,
+            paragraph_idx,
+            paragraph_idx,
+        ),
+    )
+    row = await cur.fetchone()
+    return ReadingWindow.from_row(dict(row)) if row else None
+
+
 async def update_window_status(
     db: aiosqlite.Connection,
     window_id: int,

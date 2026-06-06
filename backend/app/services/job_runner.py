@@ -378,6 +378,22 @@ class JobRunner:
                 event_payload,
             )
 
+        if job_type == "comment_window" and telemetry is not None:
+            audit_context = getattr(telemetry, "audit_context", None)
+            for comment in getattr(audit_context, "valid_comments", []) or []:
+                await self._event_publisher.publish(
+                    "comment.created",
+                    {
+                        "book_id": book_id,
+                        "chapter_idx": chapter_idx,
+                        "paragraph_idx": comment.get("paragraph_idx"),
+                        "window_id": window_id,
+                        "job_id": job_id,
+                        "comment_id": comment.get("comment_id"),
+                        "trace_id": comment.get("trace_id") or trace_id,
+                    },
+                )
+
         logger.info(
             "job_runner.job_done",
             extra={
@@ -444,6 +460,9 @@ class JobRunner:
         await self._event_publisher.publish(
             "job.failed",
             {
+                "book_id": book_id,
+                "chapter_idx": chapter_idx,
+                "window_id": window_id,
                 "job_id": job_id,
                 "job_type": job_type,
                 "error": error_msg,

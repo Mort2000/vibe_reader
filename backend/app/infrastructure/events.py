@@ -26,12 +26,30 @@ class SSEEventPublisher:
             pass
 
     async def publish(self, event: str, data: dict[str, Any]) -> None:
+        from ..observability import (
+            get_request_id,
+            get_trace_id,
+            get_verify_run_id,
+            get_verify_scenario_id,
+            get_verify_step_id,
+        )
+
         evt = {
             "event_id": f"evt_{uuid.uuid4().hex[:12]}",
             "event": event,
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             **data,
         }
+        if not evt.get("request_id"):
+            evt["request_id"] = get_request_id() or None
+        if not evt.get("trace_id"):
+            evt["trace_id"] = get_trace_id() or None
+        if not evt.get("verify_run_id"):
+            evt["verify_run_id"] = get_verify_run_id() or None
+        if not evt.get("verify_scenario_id"):
+            evt["verify_scenario_id"] = get_verify_scenario_id() or None
+        if not evt.get("verify_step_id"):
+            evt["verify_step_id"] = get_verify_step_id() or None
         for q in list(self._subscribers):
             try:
                 q.put_nowait(evt)

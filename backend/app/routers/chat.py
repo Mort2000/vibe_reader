@@ -49,6 +49,7 @@ async def chat_stream(request: Request, body: ChatStreamRequest) -> Any:
     settings = request.app.state.settings
     token_estimator = getattr(request.app.state, "token_estimator", None)
     job_runner = getattr(request.app.state, "job_runner", None)
+    event_publisher = getattr(request.app.state, "event_publisher", None)
 
     async def generate():
         trace_id = new_trace_id()
@@ -61,6 +62,17 @@ async def chat_stream(request: Request, body: ChatStreamRequest) -> Any:
             user_msg=body.user_msg, status="streaming",
         )
         turn_id = turn["id"]
+
+        started_payload = {
+            "book_id": body.book_id,
+            "chapter_idx": body.chapter_idx,
+            "paragraph_idx": body.paragraph_idx,
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "trace_id": trace_id,
+        }
+        if event_publisher is not None:
+            await event_publisher.publish("chat.started", started_payload)
 
         yield {
             "event": "chat.started",
@@ -107,6 +119,20 @@ async def chat_stream(request: Request, body: ChatStreamRequest) -> Any:
                         "data": json.dumps(payload, ensure_ascii=False),
                     }
                 elif event_type == "chat.done":
+                    done_payload = {
+                        "book_id": body.book_id,
+                        "chapter_idx": body.chapter_idx,
+                        "paragraph_idx": body.paragraph_idx,
+                        "turn_id": payload.get("turn_id", turn_id),
+                        "session_id": session_id,
+                        "tokens_in": payload.get("tokens_in"),
+                        "tokens_out": payload.get("tokens_out"),
+                        "ttft_ms": payload.get("ttft_ms"),
+                        "total_ms": payload.get("total_ms"),
+                        "trace_id": trace_id,
+                    }
+                    if event_publisher is not None:
+                        await event_publisher.publish("chat.done", done_payload)
                     yield {
                         "event": "chat.done",
                         "data": json.dumps(
@@ -146,6 +172,18 @@ async def chat_stream(request: Request, body: ChatStreamRequest) -> Any:
             await chat_repo.update_turn(
                 db, turn_id, status="failed", trace_id=trace_id
             )
+            error_payload = {
+                "book_id": body.book_id,
+                "chapter_idx": body.chapter_idx,
+                "paragraph_idx": body.paragraph_idx,
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "code": "stream_failed",
+                "message": str(exc)[:200],
+                "trace_id": trace_id,
+            }
+            if event_publisher is not None:
+                await event_publisher.publish("chat.error", error_payload)
             yield {
                 "event": "chat.error",
                 "data": json.dumps(

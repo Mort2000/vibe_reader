@@ -310,7 +310,7 @@ async def _persist_valid_comments(
             comment_type=c["comment_type"],
             trace_id=trace_id,
         )
-        persisted.append({**c, "comment_id": created.get("id")})
+        persisted.append({**c, "comment_id": created.get("id"), "trace_id": trace_id})
     return persisted
 
 

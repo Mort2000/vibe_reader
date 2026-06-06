@@ -29,7 +29,12 @@ async def get_current_window(
 ) -> dict[str, Any]:
     db = request.app.state.db
 
-    window = await window_repo.find_latest_window(db, book_id, chapter_idx)
+    if paragraph_idx is not None:
+        window = await window_repo.find_window_covering_paragraph(
+            db, book_id, chapter_idx, paragraph_idx
+        )
+    else:
+        window = await window_repo.find_latest_window(db, book_id, chapter_idx)
     if window is None:
         raise AppError(
             "window_not_found",
@@ -39,13 +44,13 @@ async def get_current_window(
 
     focus_start = window.focus_start_paragraph_idx
     focus_end = window.focus_end_paragraph_idx
-    comments, total = await comment_repo.list_comments(
-        db, book_id, chapter_idx, start=focus_start, end=focus_end
+    comments_ready_count = await comment_repo.count_active_comments_in_range(
+        db, book_id, chapter_idx, focus_start, focus_end
     )
 
     return {
         "window": window,
-        "comments_ready_count": len(comments),
+        "comments_ready_count": comments_ready_count,
         "comments_target_count": focus_end - focus_start + 1,
     }
 
@@ -123,6 +128,8 @@ async def retry_window(
 
     job_runner = request.app.state.job_runner
 
+    await window_repo.update_window_status(db, window_id, "pending", error=None)
+
     if failed_for_window:
         job = await job_runner.retry_job(db, failed_for_window[0]["id"])
     else:
@@ -134,4 +141,5 @@ async def retry_window(
             window_id=window_id,
         )
 
-    return {"window": window, "job": job}
+    refreshed_window = await window_repo.get_window(db, window_id)
+    return {"window": refreshed_window or window, "job": job}
