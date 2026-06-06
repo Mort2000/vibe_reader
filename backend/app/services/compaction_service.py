@@ -11,7 +11,13 @@ from ..application.agent_run_result import AgentRunResult, CompactionAuditContex
 from ..application.job_handlers import JobSubmitter
 from ..config import Settings
 from ..domain.models import ChapterCompressedSummary, OriginalTextChunk
-from ..observability import ensure_trace_id
+from ..observability import (
+    ensure_trace_id,
+    mark_span_error,
+    record_agent_metric,
+    set_span_attributes,
+    start_observable_span,
+)
 from ..repos import chunks as chunk_repo
 from ..repos import context_state
 from ..repos import paragraphs as paragraph_repo
@@ -224,36 +230,87 @@ async def _run_compaction_llm(
     trace_id = ensure_trace_id()
 
     t0 = time.monotonic()
-    result = await agent.run(
-        prompt,
-        deps=deps,
-        metadata={
-            "book_id": book_id,
-            "chapter_idx": chapter_idx,
-            "job_id": job_id,
-            "trace_id": trace_id,
-        },
-    )
-    latency_ms = (time.monotonic() - t0) * 1000
+    span_attrs = {
+        "ai.agent": "ContextCompactionAgent",
+        "ai.model": settings.llm.model,
+        "book.id": book_id,
+        "chapter.idx": chapter_idx,
+        "job.id": job_id,
+        "source_chunk.id": source_chunk.id,
+        "app.trace_id": trace_id,
+    }
+    with start_observable_span("ai.ContextCompactionAgent.run", span_attrs) as span:
+        try:
+            result = await agent.run(
+                prompt,
+                deps=deps,
+                metadata={
+                    "book_id": book_id,
+                    "chapter_idx": chapter_idx,
+                    "job_id": job_id,
+                    "trace_id": trace_id,
+                },
+            )
+            if not deps.raw_output:
+                raise ValueError(
+                    "Compaction agent did not emit chapter compressed summary"
+                )
 
-    if not deps.raw_output:
-        raise ValueError("Compaction agent did not emit chapter compressed summary")
+            raw_output = dict(deps.raw_output)
+            excerpts = raw_output.get("anchor_excerpts") or []
+            normalized_excerpts = _normalize_anchor_excerpts(
+                excerpts,
+                chapter_idx=chapter_idx,
+                source_paragraphs=paragraphs,
+            )
+            normalized_excerpts = _trim_anchor_excerpts(
+                normalized_excerpts,
+                max_count=settings.context.max_anchor_excerpts,
+                max_tokens=settings.context.max_anchor_excerpt_tokens,
+            )
+            raw_output["anchor_excerpts"] = normalized_excerpts
 
-    raw_output = dict(deps.raw_output)
-    excerpts = raw_output.get("anchor_excerpts") or []
-    normalized_excerpts = _normalize_anchor_excerpts(
-        excerpts,
-        chapter_idx=chapter_idx,
-        source_paragraphs=paragraphs,
-    )
-    normalized_excerpts = _trim_anchor_excerpts(
-        normalized_excerpts,
-        max_count=settings.context.max_anchor_excerpts,
-        max_tokens=settings.context.max_anchor_excerpt_tokens,
-    )
-    raw_output["anchor_excerpts"] = normalized_excerpts
-
-    output = ChapterCompressedSummaryOutput.model_validate(raw_output)
+            output = ChapterCompressedSummaryOutput.model_validate(raw_output)
+        except Exception as exc:
+            latency_ms = (time.monotonic() - t0) * 1000
+            mark_span_error(span, exc, error_code="compaction_agent_failed")
+            record_agent_metric(
+                agent="ContextCompactionAgent",
+                model=settings.llm.model,
+                status="error",
+                duration_ms=latency_ms,
+            )
+            raise
+        latency_ms = (time.monotonic() - t0) * 1000
+        usage = result.usage()
+        usage_input = (
+            usage.request_tokens
+            if usage.request_tokens is not None
+            else usage.input_tokens
+        )
+        usage_output = (
+            usage.response_tokens
+            if usage.response_tokens is not None
+            else usage.output_tokens
+        )
+        set_span_attributes(
+            span,
+            {
+                "ai.input_tokens": usage_input,
+                "ai.output_tokens": usage_output,
+                "ai.cached_input_tokens": usage.cache_read_tokens,
+                "duration_ms": round(latency_ms, 2),
+            },
+        )
+        record_agent_metric(
+            agent="ContextCompactionAgent",
+            model=settings.llm.model,
+            status="ok",
+            duration_ms=latency_ms,
+            input_tokens=usage_input,
+            output_tokens=usage_output,
+            cached_input_tokens=usage.cache_read_tokens or None,
+        )
 
     return result, deps, prompt, latency_ms, trace_id, output
 

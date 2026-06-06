@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Protocol
+
+from ..observability import (
+    get_request_id,
+    get_trace_id,
+    get_verify_run_id,
+    get_verify_scenario_id,
+    get_verify_step_id,
+    record_sse_event_metric,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class EventPublisher(Protocol):
@@ -26,32 +38,51 @@ class SSEEventPublisher:
             pass
 
     async def publish(self, event: str, data: dict[str, Any]) -> None:
-        from ..observability import (
-            get_request_id,
-            get_trace_id,
-            get_verify_run_id,
-            get_verify_scenario_id,
-            get_verify_step_id,
+        trace_id = data.get("trace_id") or get_trace_id()
+        request_id = data.get("request_id") or get_request_id()
+        verify_run_id = data.get("verify_run_id") or get_verify_run_id()
+        verify_scenario_id = (
+            data.get("verify_scenario_id") or get_verify_scenario_id()
         )
-
+        verify_step_id = data.get("verify_step_id") or get_verify_step_id()
         evt = {
             "event_id": f"evt_{uuid.uuid4().hex[:12]}",
             "event": event,
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             **data,
         }
-        if not evt.get("request_id"):
-            evt["request_id"] = get_request_id() or None
-        if not evt.get("trace_id"):
-            evt["trace_id"] = get_trace_id() or None
-        if not evt.get("verify_run_id"):
-            evt["verify_run_id"] = get_verify_run_id() or None
-        if not evt.get("verify_scenario_id"):
-            evt["verify_scenario_id"] = get_verify_scenario_id() or None
-        if not evt.get("verify_step_id"):
-            evt["verify_step_id"] = get_verify_step_id() or None
+        for key, value in {
+            "trace_id": trace_id,
+            "request_id": request_id,
+            "verify_run_id": verify_run_id,
+            "verify_scenario_id": verify_scenario_id,
+            "verify_step_id": verify_step_id,
+        }.items():
+            if value and not evt.get(key):
+                evt[key] = value
+
+        delivered = 0
+        dropped = 0
         for q in list(self._subscribers):
             try:
                 q.put_nowait(evt)
+                delivered += 1
             except asyncio.QueueFull:
-                pass
+                dropped += 1
+        if dropped:
+            record_sse_event_metric(event=event, status="dropped", count=dropped)
+            logger.warning(
+                "sse.queue_full",
+                extra={
+                    "event": "sse.queue_full",
+                    "fields": {
+                        "sse_event": event,
+                        "subscriber_count": len(self._subscribers),
+                        "dropped_count": dropped,
+                    },
+                },
+            )
+        if delivered:
+            record_sse_event_metric(event=event, status="delivered")
+        elif not dropped:
+            record_sse_event_metric(event=event, status="no_subscribers")

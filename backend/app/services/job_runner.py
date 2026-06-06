@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -13,7 +14,14 @@ from ..domain.models import ReadingWindow
 from ..application.pending_progress import PendingProgressProcessor
 from ..infrastructure.events import EventPublisher, SSEEventPublisher
 from ..infrastructure.settings import SettingsProvider
-from ..observability import new_trace_id
+from ..observability import (
+    mark_span_error,
+    record_job_metric,
+    request_context,
+    set_span_attributes,
+    start_observable_span,
+    new_trace_id,
+)
 from ..repos import context_state
 from ..repos import jobs as job_repo
 from ..repos import windows as window_repo
@@ -124,8 +132,18 @@ class JobRunner:
         )
         for j in existing:
             if j.get("window_id") == window_id:
+                if not j.get("trace_id"):
+                    j["trace_id"] = new_trace_id()
+                    await job_repo.update_job_status(
+                        db, j["id"], j["status"], trace_id=j["trace_id"]
+                    )
                 return j
             if window_id is None and j.get("window_id") is None:
+                if not j.get("trace_id"):
+                    j["trace_id"] = new_trace_id()
+                    await job_repo.update_job_status(
+                        db, j["id"], j["status"], trace_id=j["trace_id"]
+                    )
                 return j
 
         existing_running, _ = await job_repo.list_jobs(
@@ -138,16 +156,28 @@ class JobRunner:
         )
         for j in existing_running:
             if j.get("window_id") == window_id:
+                if not j.get("trace_id"):
+                    j["trace_id"] = new_trace_id()
+                    await job_repo.update_job_status(
+                        db, j["id"], j["status"], trace_id=j["trace_id"]
+                    )
                 return j
             if window_id is None and j.get("window_id") is None:
+                if not j.get("trace_id"):
+                    j["trace_id"] = new_trace_id()
+                    await job_repo.update_job_status(
+                        db, j["id"], j["status"], trace_id=j["trace_id"]
+                    )
                 return j
 
+        trace_id = new_trace_id()
         job = await job_repo.create_job(
             db,
             job_type=job_type,
             book_id=book_id,
             chapter_idx=chapter_idx,
             window_id=window_id,
+            trace_id=trace_id,
         )
 
         event_type = (
@@ -161,8 +191,10 @@ class JobRunner:
                 "window_id": window_id,
                 "job_id": job["id"],
                 "job_type": job_type,
+                "trace_id": trace_id,
             },
         )
+        record_job_metric(job_type=job_type, status="queued")
 
         await self._enqueue_job(db, job)
         return job
@@ -177,10 +209,14 @@ class JobRunner:
             raise ValueError(f"Job {job_id} not found")
 
         await job_repo.increment_attempt(db, job_id)
-        await job_repo.update_job_status(db, job_id, "pending", error=None)
+        trace_id = job.get("trace_id") or new_trace_id()
+        await job_repo.update_job_status(
+            db, job_id, "pending", error=None, trace_id=trace_id
+        )
 
         job["status"] = "pending"
         job["attempt_count"] = job.get("attempt_count", 0) + 1
+        job["trace_id"] = trace_id
 
         retry_event = (
             "window.queued"
@@ -195,8 +231,10 @@ class JobRunner:
                 "window_id": job.get("window_id"),
                 "job_id": job_id,
                 "job_type": job.get("job_type"),
+                "trace_id": trace_id,
             },
         )
+        record_job_metric(job_type=str(job.get("job_type") or ""), status="queued")
 
         await self._enqueue_job(db, job)
         return job
@@ -245,55 +283,91 @@ class JobRunner:
             )
             return
 
-        trace_id = new_trace_id()
+        trace_id = job.get("trace_id") or new_trace_id()
+        started = time.monotonic()
 
-        await context_state.get_or_create(db, book_id)
-        await context_state.update_state(
-            db, book_id, status="running", running_job_id=job_id
-        )
+        with request_context(trace_id=trace_id):
+            with start_observable_span(
+                f"job.{job_type}",
+                {
+                    "job.id": job_id,
+                    "job.type": job_type,
+                    "book.id": book_id,
+                    "chapter.idx": chapter_idx,
+                    "window.id": window_id,
+                    "app.trace_id": trace_id,
+                },
+            ) as span:
+                await context_state.get_or_create(db, book_id)
+                await context_state.update_state(
+                    db, book_id, status="running", running_job_id=job_id
+                )
 
-        await job_repo.update_job_status(db, job_id, "running", trace_id=trace_id)
+                await job_repo.update_job_status(
+                    db, job_id, "running", trace_id=trace_id
+                )
 
-        if window_id:
-            await window_repo.update_window_status(db, window_id, "running")
+                if window_id:
+                    await window_repo.update_window_status(db, window_id, "running")
 
-        running_event = (
-            "window.running" if job_type == "comment_window" else "context.compacting"
-        )
-        await self._event_publisher.publish(
-            running_event,
-            {
-                "book_id": book_id,
-                "chapter_idx": chapter_idx,
-                "window_id": window_id,
-                "job_id": job_id,
-                "job_type": job_type,
-                "trace_id": trace_id,
-            },
-        )
+                record_job_metric(job_type=job_type, status="running")
 
-        try:
-            await self._run_handler(
-                db,
-                job_id,
-                job_type,
-                window_id,
-                book_id,
-                chapter_idx,
-                trace_id,
-                handler,
-            )
-        except Exception as exc:
-            await self._handle_failure(
-                db,
-                job_id,
-                job_type,
-                window_id,
-                book_id,
-                chapter_idx,
-                trace_id,
-                exc,
-            )
+                running_event = (
+                    "window.running"
+                    if job_type == "comment_window"
+                    else "context.compacting"
+                )
+                await self._event_publisher.publish(
+                    running_event,
+                    {
+                        "book_id": book_id,
+                        "chapter_idx": chapter_idx,
+                        "window_id": window_id,
+                        "job_id": job_id,
+                        "job_type": job_type,
+                        "trace_id": trace_id,
+                    },
+                )
+
+                status = "done"
+                try:
+                    status = await self._run_handler(
+                        db,
+                        job_id,
+                        job_type,
+                        window_id,
+                        book_id,
+                        chapter_idx,
+                        trace_id,
+                        handler,
+                    )
+                except Exception as exc:
+                    status = "failed"
+                    mark_span_error(span, exc)
+                    await self._handle_failure(
+                        db,
+                        job_id,
+                        job_type,
+                        window_id,
+                        book_id,
+                        chapter_idx,
+                        trace_id,
+                        exc,
+                    )
+                finally:
+                    duration_ms = (time.monotonic() - started) * 1000
+                    set_span_attributes(
+                        span,
+                        {
+                            "job.status": status,
+                            "duration_ms": round(duration_ms, 2),
+                        },
+                    )
+                    record_job_metric(
+                        job_type=job_type,
+                        status=status,
+                        duration_ms=duration_ms,
+                    )
 
     async def _skip_compaction_job(
         self,
@@ -339,7 +413,7 @@ class JobRunner:
 
         if result is None:
             await self._skip_compaction_job(db, job_id, book_id, chapter_idx)
-            return
+            return "skipped"
 
         telemetry = result.telemetry
 
@@ -403,6 +477,7 @@ class JobRunner:
         )
 
         await self._finalize_job(db, book_id)
+        return "done"
 
     async def _finalize_job(
         self,

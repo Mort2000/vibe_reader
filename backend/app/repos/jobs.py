@@ -17,12 +17,14 @@ async def create_job(
     book_id: int,
     chapter_idx: int,
     window_id: int | None = None,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     now = _now()
     cur = await db.execute(
-        """INSERT INTO ai_jobs (job_type, book_id, chapter_idx, window_id, status, attempt_count, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)""",
-        (job_type, book_id, chapter_idx, window_id, now, now),
+        """INSERT INTO ai_jobs
+           (job_type, book_id, chapter_idx, window_id, status, attempt_count, trace_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
+        (job_type, book_id, chapter_idx, window_id, trace_id, now, now),
     )
     await db.commit()
     return {
@@ -34,7 +36,7 @@ async def create_job(
         "status": "pending",
         "attempt_count": 0,
         "error": None,
-        "trace_id": None,
+        "trace_id": trace_id,
         "created_at": now,
         "updated_at": now,
         "started_at": None,

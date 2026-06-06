@@ -12,6 +12,15 @@ from .agent_run_result import AgentRunResult
 logger = logging.getLogger(__name__)
 
 
+def _audit_enabled(settings: Any) -> bool:
+    observability = getattr(settings, "observability", None)
+    audit = getattr(observability, "audit", None)
+    return bool(
+        getattr(settings, "verify_mode", False)
+        or getattr(audit, "enabled", False)
+    )
+
+
 class AgentRunRecorder:
     def __init__(
         self,
@@ -35,7 +44,7 @@ class AgentRunRecorder:
     ) -> None:
         await self._record_token_calibration(db, result, settings)
 
-        if settings.verify_mode and self._audit_sink is not None:
+        if _audit_enabled(settings) and self._audit_sink is not None:
             await self._audit_sink.persist_agent_run(
                 db,
                 result=result,

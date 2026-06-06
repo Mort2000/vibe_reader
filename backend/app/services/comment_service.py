@@ -10,7 +10,13 @@ from pydantic_ai.messages import ModelResponse, ToolCallPart
 from ..config import Settings
 from ..domain.models import ReadingWindow
 from ..application.agent_run_result import AgentRunResult, CommentAuditContext
-from ..observability import ensure_trace_id
+from ..observability import (
+    ensure_trace_id,
+    mark_span_error,
+    record_agent_metric,
+    set_span_attributes,
+    start_observable_span,
+)
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import chunks as chunk_repo
@@ -275,17 +281,66 @@ async def _run_comment_llm(
     trace_id = ensure_trace_id()
 
     t0 = time.monotonic()
-    result = await agent.run(
-        prompt,
-        deps=deps,
-        metadata={
-            "book_id": book_id,
-            "chapter_idx": chapter_idx,
-            "window_id": window_id,
-            "trace_id": trace_id,
-        },
-    )
-    latency_ms = (time.monotonic() - t0) * 1000
+    span_attrs = {
+        "ai.agent": "ParagraphCommentAgent",
+        "ai.model": settings.llm.model,
+        "book.id": book_id,
+        "chapter.idx": chapter_idx,
+        "window.id": window_id,
+        "app.trace_id": trace_id,
+    }
+    with start_observable_span("ai.ParagraphCommentAgent.run", span_attrs) as span:
+        try:
+            result = await agent.run(
+                prompt,
+                deps=deps,
+                metadata={
+                    "book_id": book_id,
+                    "chapter_idx": chapter_idx,
+                    "window_id": window_id,
+                    "trace_id": trace_id,
+                },
+            )
+        except Exception as exc:
+            latency_ms = (time.monotonic() - t0) * 1000
+            mark_span_error(span, exc)
+            record_agent_metric(
+                agent="ParagraphCommentAgent",
+                model=settings.llm.model,
+                status="error",
+                duration_ms=latency_ms,
+            )
+            raise
+        latency_ms = (time.monotonic() - t0) * 1000
+        usage = result.usage()
+        usage_input = (
+            usage.request_tokens
+            if usage.request_tokens is not None
+            else usage.input_tokens
+        )
+        usage_output = (
+            usage.response_tokens
+            if usage.response_tokens is not None
+            else usage.output_tokens
+        )
+        set_span_attributes(
+            span,
+            {
+                "ai.input_tokens": usage_input,
+                "ai.output_tokens": usage_output,
+                "ai.cached_input_tokens": usage.cache_read_tokens,
+                "duration_ms": round(latency_ms, 2),
+            },
+        )
+        record_agent_metric(
+            agent="ParagraphCommentAgent",
+            model=settings.llm.model,
+            status="ok",
+            duration_ms=latency_ms,
+            input_tokens=usage_input,
+            output_tokens=usage_output,
+            cached_input_tokens=usage.cache_read_tokens or None,
+        )
 
     return result, deps, latency_ms, trace_id
 

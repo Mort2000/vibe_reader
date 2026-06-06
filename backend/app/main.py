@@ -17,7 +17,13 @@ from .infrastructure.audit import DefaultAuditSink
 from .infrastructure.events import SSEEventPublisher
 from .infrastructure.settings import SettingsProvider
 from .middleware import RequestContextMiddleware
-from .observability import setup_logging
+from .observability import (
+    instrument_fastapi_app,
+    instrument_pydantic_ai,
+    setup_logging,
+    setup_otel,
+    shutdown_otel,
+)
 from .repos.chunks import backfill_missing_chunks
 from .services.job_runner import JobRunner
 from .services.token_estimator import TokenEstimator
@@ -61,6 +67,7 @@ def create_app() -> FastAPI:
     settings.books_dir.mkdir(parents=True, exist_ok=True)
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
 
+    setup_otel(settings)
     setup_logging(settings)
 
     app = FastAPI(title="vibe-reader-mini", version="0.1.0")
@@ -97,6 +104,8 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, generic_error_handler)  # type: ignore[arg-type]
 
     _register_api_routers(app)
+    instrument_fastapi_app(app, settings)
+    instrument_pydantic_ai(settings)
 
     frontend_dist = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
     if frontend_dist.is_dir():
@@ -150,6 +159,7 @@ def create_app() -> FastAPI:
         if db is not None:
             with contextlib.suppress(Exception):
                 await db.close()  # type: ignore[union-attr]
+        shutdown_otel()
 
     return app
 
