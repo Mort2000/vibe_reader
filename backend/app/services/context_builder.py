@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,6 +17,12 @@ from ..domain.budget_policy import (
 )
 from ..domain.context_plan import ContextPlan, LiveOriginalChunkSelection
 from ..domain.models import ChapterCompressedSummary, OriginalTextChunk
+from ..observability import (
+    mark_span_error,
+    record_context_build_metric,
+    set_span_attributes,
+    start_observable_span,
+)
 from ..repos import chunks as chunk_repo
 from ..repos import comments as comment_repo
 from ..repos import paragraphs as paragraph_repo
@@ -492,125 +499,169 @@ async def build_context(
     overflow_already_used: bool = False,
     token_estimator: TokenEstimator | None = None,
 ) -> ContextBuildResult:
-    ctx_cfg = settings.context
-    reader_cfg = settings.reader
-    eph_comments_cfg = settings.ephemeral_comments
-    est = _get_estimator(settings, token_estimator)
+    started = time.monotonic()
+    span_attrs = {
+        "book.id": book_id,
+        "chapter.idx": chapter_idx,
+        "paragraph.idx": reading_pidx,
+        "task.type": task_type,
+    }
+    with start_observable_span("service.context.build", span_attrs) as span:
+        try:
+            ctx_cfg = settings.context
+            reader_cfg = settings.reader
+            eph_comments_cfg = settings.ephemeral_comments
+            est = _get_estimator(settings, token_estimator)
 
-    # --- PLAN ---
-    last_pidx = await paragraph_repo.get_last_paragraph_idx(
-        db, book_id, chapter_idx
-    )
-    if last_pidx is None:
-        raise ValueError(f"No paragraphs for book={book_id} chapter={chapter_idx}")
+            # --- PLAN ---
+            last_pidx = await paragraph_repo.get_last_paragraph_idx(
+                db, book_id, chapter_idx
+            )
+            if last_pidx is None:
+                raise ValueError(
+                    f"No paragraphs for book={book_id} chapter={chapter_idx}"
+                )
 
-    frontier = min(reading_pidx + reader_cfg.lookahead_paragraphs, last_pidx)
+            frontier = min(reading_pidx + reader_cfg.lookahead_paragraphs, last_pidx)
 
-    (
-        summary_row,
-        summary_id,
-        summary_text,
-        summary_tokens,
-        compaction_epoch,
-    ) = await _build_summary_section(db, book_id, chapter_idx, frontier)
+            (
+                summary_row,
+                summary_id,
+                summary_text,
+                summary_tokens,
+                compaction_epoch,
+            ) = await _build_summary_section(db, book_id, chapter_idx, frontier)
 
-    live_start = 0
-    if summary_row is not None:
-        live_start = summary_row.covered_end_paragraph_idx + 1
+            live_start = 0
+            if summary_row is not None:
+                live_start = summary_row.covered_end_paragraph_idx + 1
 
-    (
-        original_block,
-        live_chunk_ids,
-        partial_chunk_id,
-        partial_frontier_pidx,
-        original_tokens,
-    ) = await _build_original_block(db, book_id, chapter_idx, live_start, frontier)
+            (
+                original_block,
+                live_chunk_ids,
+                partial_chunk_id,
+                partial_frontier_pidx,
+                original_tokens,
+            ) = await _build_original_block(
+                db, book_id, chapter_idx, live_start, frontier
+            )
 
-    comment_block = ""
-    ephemeral_comment_tokens = 0
-    if focus_start is not None and focus_end is not None:
-        margin = eph_comments_cfg.nearby_paragraph_margin
-        c_start = max(0, focus_start - margin)
-        c_end = focus_end + margin
-        comments, _ = await comment_repo.list_comments(
-            db, book_id, chapter_idx, start=c_start, end=c_end, limit=50
-        )
-        comment_block, ephemeral_comment_tokens = _build_comments_block(
-            comments, eph_comments_cfg.max_tokens
-        )
+            comment_block = ""
+            ephemeral_comment_tokens = 0
+            if focus_start is not None and focus_end is not None:
+                margin = eph_comments_cfg.nearby_paragraph_margin
+                c_start = max(0, focus_start - margin)
+                c_end = focus_end + margin
+                comments, _ = await comment_repo.list_comments(
+                    db, book_id, chapter_idx, start=c_start, end=c_end, limit=50
+                )
+                comment_block, ephemeral_comment_tokens = _build_comments_block(
+                    comments, eph_comments_cfg.max_tokens
+                )
 
-    if task_type == "chat":
-        task_block, task_tokens = _build_chat_task_block(reading_pidx)
-    else:
-        task_block, task_tokens = _build_task_block(
-            frontier, focus_start, focus_end, target_paragraphs, density_hint
-        )
+            if task_type == "chat":
+                task_block, task_tokens = _build_chat_task_block(reading_pidx)
+            else:
+                task_block, task_tokens = _build_task_block(
+                    frontier, focus_start, focus_end, target_paragraphs, density_hint
+                )
 
-    system_tokens = 3_000
-    metadata_tokens = 800
-    reserved_tokens = ctx_cfg.reserved_tokens
+            system_tokens = 3_000
+            metadata_tokens = 800
+            reserved_tokens = ctx_cfg.reserved_tokens
 
-    plan = ContextPlan(
-        chapter_idx=chapter_idx,
-        frontier=frontier,
-        live_start=live_start,
-        summary_text=summary_text,
-        summary_id=summary_id,
-        summary_tokens=summary_tokens,
-        compaction_epoch=compaction_epoch,
-        live_chunks=LiveOriginalChunkSelection(
-            block_text=original_block,
-            chunk_ids=live_chunk_ids,
-            partial_chunk_id=partial_chunk_id,
-            partial_frontier_paragraph_idx=partial_frontier_pidx,
-            estimated_tokens=original_tokens,
-        ),
-        comments_text=comment_block,
-        comments_tokens=ephemeral_comment_tokens,
-        task_text=task_block,
-        task_tokens=task_tokens,
-        book_title=book_title,
-        chapter_title=chapter_title,
-        system_tokens=system_tokens,
-        metadata_tokens=metadata_tokens,
-        reserved_tokens=reserved_tokens,
-    )
+            plan = ContextPlan(
+                chapter_idx=chapter_idx,
+                frontier=frontier,
+                live_start=live_start,
+                summary_text=summary_text,
+                summary_id=summary_id,
+                summary_tokens=summary_tokens,
+                compaction_epoch=compaction_epoch,
+                live_chunks=LiveOriginalChunkSelection(
+                    block_text=original_block,
+                    chunk_ids=live_chunk_ids,
+                    partial_chunk_id=partial_chunk_id,
+                    partial_frontier_paragraph_idx=partial_frontier_pidx,
+                    estimated_tokens=original_tokens,
+                ),
+                comments_text=comment_block,
+                comments_tokens=ephemeral_comment_tokens,
+                task_text=task_block,
+                task_tokens=task_tokens,
+                book_title=book_title,
+                chapter_title=chapter_title,
+                system_tokens=system_tokens,
+                metadata_tokens=metadata_tokens,
+                reserved_tokens=reserved_tokens,
+            )
 
-    # --- BUDGET ---
-    safe_estimated_tokens = (
-        est.get_safe_estimate(original_block, settings.llm.model)
-        + system_tokens
-        + metadata_tokens
-        + reserved_tokens
-        + summary_tokens
-        + ephemeral_comment_tokens
-        + task_tokens
-    )
+            # --- BUDGET ---
+            safe_estimated_tokens = (
+                est.get_safe_estimate(original_block, settings.llm.model)
+                + system_tokens
+                + metadata_tokens
+                + reserved_tokens
+                + summary_tokens
+                + ephemeral_comment_tokens
+                + task_tokens
+            )
 
-    trigger = await _fetch_trigger_inputs(
-        db, book_id, chapter_idx, frontier, safe_estimated_tokens, settings
-    )
+            trigger = await _fetch_trigger_inputs(
+                db, book_id, chapter_idx, frontier, safe_estimated_tokens, settings
+            )
 
-    plan, estimated_tokens, context_degraded, emergency_now = (
-        await _apply_overflow(
-            db,
-            book_id,
-            chapter_idx,
-            plan,
-            safe_estimated_tokens,
-            settings,
-            overflow_already_used,
-            target_paragraphs=target_paragraphs,
-        )
-    )
+            plan, estimated_tokens, context_degraded, emergency_now = (
+                await _apply_overflow(
+                    db,
+                    book_id,
+                    chapter_idx,
+                    plan,
+                    safe_estimated_tokens,
+                    settings,
+                    overflow_already_used,
+                    target_paragraphs=target_paragraphs,
+                )
+            )
 
-    # --- RENDER ---
-    return render_context(
-        plan,
-        estimated_tokens=estimated_tokens,
-        trigger=trigger,
-        context_degraded=context_degraded,
-        emergency_overflow_used=overflow_already_used or emergency_now,
-        estimator=est,
-        settings=settings,
-    )
+            # --- RENDER ---
+            result = render_context(
+                plan,
+                estimated_tokens=estimated_tokens,
+                trigger=trigger,
+                context_degraded=context_degraded,
+                emergency_overflow_used=overflow_already_used or emergency_now,
+                estimator=est,
+                settings=settings,
+            )
+            duration_ms = (time.monotonic() - started) * 1000
+            set_span_attributes(
+                span,
+                {
+                    "ai.context_hash": result.context_hash,
+                    "ai.context_tokens": result.estimated_tokens,
+                    "context.degraded": result.context_degraded,
+                    "context.preflight_triggered": result.preflight_triggered,
+                    "context.hard_triggered": result.hard_triggered,
+                    "duration_ms": round(duration_ms, 2),
+                },
+            )
+            record_context_build_metric(
+                task_type=task_type,
+                status="ok",
+                duration_ms=duration_ms,
+                estimated_tokens=result.estimated_tokens,
+                context_degraded=result.context_degraded,
+                preflight_triggered=result.preflight_triggered,
+                hard_triggered=result.hard_triggered,
+            )
+            return result
+        except Exception as exc:
+            duration_ms = (time.monotonic() - started) * 1000
+            mark_span_error(span, exc)
+            record_context_build_metric(
+                task_type=task_type,
+                status="error",
+                duration_ms=duration_ms,
+            )
+            raise

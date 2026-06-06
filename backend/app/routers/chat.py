@@ -41,7 +41,7 @@ async def _resolve_session(db: Any, body: ChatStreamRequest) -> dict[str, Any]:
 async def chat_stream(request: Request, body: ChatStreamRequest) -> Any:
     from sse_starlette.sse import EventSourceResponse
 
-    from ..observability import new_trace_id
+    from ..observability import get_trace_id, new_trace_id
     from ..repos import chat as chat_repo
     from ..services.chat_service import build_chat_context, stream_llm_response
 
@@ -51,7 +51,7 @@ async def chat_stream(request: Request, body: ChatStreamRequest) -> Any:
     job_runner = getattr(request.app.state, "job_runner", None)
 
     async def generate():
-        trace_id = new_trace_id()
+        trace_id = get_trace_id() or new_trace_id()
         session = await _resolve_session(db, body)
         session_id = session["id"]
 

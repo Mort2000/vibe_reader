@@ -12,6 +12,13 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 
 from ..application.agent_run_result import AgentRunResult, ChatAuditContext
 from ..config import Settings
+from ..observability import (
+    mark_span_error,
+    record_agent_metric,
+    record_chat_metric,
+    set_span_attributes,
+    start_observable_span,
+)
 from ..repos import books as book_repo
 from ..repos import chapters as chapter_repo
 from ..repos import chat as chat_repo
@@ -144,35 +151,113 @@ async def stream_llm_response(
     stream_result = None
     lock = job_runner.book_lock(book_id) if job_runner else nullcontext()
     async with lock:
-        async with agent.run_stream(
-            prompt, deps=deps, message_history=message_history,
-        ) as stream:
-            stream_result = stream
-            async for chunk in stream.stream_text(delta=True):
-                full_text += chunk
-                if ttft_ms is None:
-                    ttft_ms = (time.monotonic() - t0) * 1000
-                if not first_delta_emitted:
-                    first_delta_emitted = True
-                    yield "chat.first_delta", {
-                        "turn_id": turn_id,
-                        "ttft_ms": round(ttft_ms, 1),
-                    }
-                yield "chat.delta", {"turn_id": turn_id, "delta": chunk}
+        with start_observable_span(
+            "ai.ReadingChatAgent.run",
+            {
+                "ai.agent": "ReadingChatAgent",
+                "ai.model": settings.llm.model,
+                "book.id": book_id,
+                "chapter.idx": chapter_idx,
+                "paragraph.idx": paragraph_idx,
+                "chat.session_id": session_id,
+                "chat.turn_id": turn_id,
+                "app.trace_id": trace_id,
+            },
+        ) as span:
+            try:
+                async with agent.run_stream(
+                    prompt, deps=deps, message_history=message_history,
+                ) as stream:
+                    stream_result = stream
+                    async for chunk in stream.stream_text(delta=True):
+                        full_text += chunk
+                        if ttft_ms is None:
+                            ttft_ms = (time.monotonic() - t0) * 1000
+                        if not first_delta_emitted:
+                            first_delta_emitted = True
+                            yield "chat.first_delta", {
+                                "turn_id": turn_id,
+                                "ttft_ms": round(ttft_ms, 1),
+                            }
+                        yield "chat.delta", {"turn_id": turn_id, "delta": chunk}
 
-            usage = stream.usage
-            tokens_in = usage.request_tokens or usage.input_tokens
-            tokens_out = usage.response_tokens or usage.output_tokens
+                    usage = stream.usage
+                    tokens_in = usage.request_tokens or usage.input_tokens
+                    tokens_out = usage.response_tokens or usage.output_tokens
+            except Exception as exc:
+                latency_ms = (time.monotonic() - t0) * 1000
+                mark_span_error(span, exc)
+                record_agent_metric(
+                    agent="ReadingChatAgent",
+                    model=settings.llm.model,
+                    status="error",
+                    duration_ms=latency_ms,
+                )
+                record_chat_metric(
+                    status="error",
+                    total_ms=latency_ms,
+                    ttft_ms=ttft_ms,
+                )
+                raise
+
+            latency_ms = (time.monotonic() - t0) * 1000
+            set_span_attributes(
+                span,
+                {
+                    "chat.ttft_ms": round(ttft_ms, 2) if ttft_ms is not None else None,
+                    "duration_ms": round(latency_ms, 2),
+                    "ai.input_tokens": tokens_in,
+                    "ai.output_tokens": tokens_out,
+                },
+            )
+            record_agent_metric(
+                agent="ReadingChatAgent",
+                model=settings.llm.model,
+                status="ok",
+                duration_ms=latency_ms,
+                input_tokens=tokens_in,
+                output_tokens=tokens_out,
+            )
 
     latency_ms = (time.monotonic() - t0) * 1000
 
-    await chat_repo.update_turn(
-        db, turn_id,
-        ai_msg=full_text, status="done",
-        tokens_in=tokens_in, tokens_out=tokens_out,
-        trace_id=trace_id,
+    with start_observable_span(
+        "service.chat.persist",
+        {
+            "book.id": book_id,
+            "chapter.idx": chapter_idx,
+            "paragraph.idx": paragraph_idx,
+            "chat.session_id": session_id,
+            "chat.turn_id": turn_id,
+            "app.trace_id": trace_id,
+        },
+    ) as persist_span:
+        try:
+            await chat_repo.update_turn(
+                db, turn_id,
+                ai_msg=full_text, status="done",
+                tokens_in=tokens_in, tokens_out=tokens_out,
+                trace_id=trace_id,
+            )
+            await chat_repo.update_session_paragraph(db, session_id, paragraph_idx)
+        except Exception as exc:
+            mark_span_error(persist_span, exc, error_code="chat_persist_failed")
+            record_chat_metric(
+                status="error",
+                total_ms=latency_ms,
+                ttft_ms=ttft_ms,
+                input_tokens=tokens_in,
+                output_tokens=tokens_out,
+            )
+            raise
+
+    record_chat_metric(
+        status="ok",
+        total_ms=latency_ms,
+        ttft_ms=ttft_ms,
+        input_tokens=tokens_in,
+        output_tokens=tokens_out,
     )
-    await chat_repo.update_session_paragraph(db, session_id, paragraph_idx)
 
     recorder = getattr(job_runner, "recorder", None) if job_runner else None
     if recorder:

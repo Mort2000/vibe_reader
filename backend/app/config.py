@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import pathlib
 from dataclasses import dataclass, field
+from typing import Any
 
 import toml
 
@@ -13,6 +14,66 @@ def _default_data_dir() -> pathlib.Path:
 
 def _env(key: str, default: str | None = None) -> str | None:
     return os.environ.get(key, default)
+
+
+def _override_env(key: str, value: Any = None) -> Any:
+    env_value = _env(key)
+    return env_value if env_value is not None else value
+
+
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_str_list(value: Any, default: list[str]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list | tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return list(default)
+
+
+def _normalized_log_format(value: Any, *, default_json: bool = True) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"json", "text"}:
+            return normalized
+    return "json" if default_json else "text"
 
 
 @dataclass
@@ -97,15 +158,58 @@ class EphemeralChatConfig:
 
 
 @dataclass
+class ObservabilityConsoleConfig:
+    enabled: bool = True
+    stream: str = "stdout"
+
+
+@dataclass
+class ObservabilityFileConfig:
+    enabled: bool = False
+    path: str = ""
+    max_bytes: int = 10_485_760
+    backup_count: int = 5
+
+
+@dataclass
+class ObservabilityOtelConfig:
+    enabled: bool = False
+    endpoint: str = ""
+    protocol: str = "otlp_http"
+    export_traces: bool = True
+    export_metrics: bool = True
+    export_logs: bool = False
+    sample_ratio: float = 1.0
+
+
+@dataclass
+class ObservabilityAuditConfig:
+    enabled: bool = False
+    include_prompt_manifest: bool = True
+    include_full_prompt: bool = False
+    include_model_response: bool = False
+    redact_secrets: bool = True
+
+
+@dataclass
 class ObservabilityConfig:
     enabled: bool = True
     provider: str = "otel"
     log_json: bool = True
+    log_format: str = "json"
+    log_sinks: list[str] = field(default_factory=lambda: ["console"])
     log_level: str = "INFO"
+    environment: str = "local"
     include_prompt_manifest: bool = True
     include_full_prompt: bool = False
     service_name: str = "vibe-reader-backend"
     otel_endpoint: str = ""
+    console: ObservabilityConsoleConfig = field(
+        default_factory=ObservabilityConsoleConfig
+    )
+    file: ObservabilityFileConfig = field(default_factory=ObservabilityFileConfig)
+    otel: ObservabilityOtelConfig = field(default_factory=ObservabilityOtelConfig)
+    audit: ObservabilityAuditConfig = field(default_factory=ObservabilityAuditConfig)
 
 
 @dataclass
@@ -285,22 +389,128 @@ def load_settings() -> Settings:
     )
 
     obs_raw = raw.get("observability", {})
+    obs_console_raw = obs_raw.get("console", {})
+    obs_file_raw = obs_raw.get("file", {})
+    obs_otel_raw = obs_raw.get("otel", {})
+    obs_audit_raw = obs_raw.get("audit", {})
+    log_json_default = _as_bool(obs_raw.get("log_json"), True)
+    log_format = _normalized_log_format(
+        _override_env("VIBE_READER_LOG_FORMAT", obs_raw.get("log_format")),
+        default_json=log_json_default,
+    )
+    log_sinks = _as_str_list(
+        _override_env("VIBE_READER_LOG_SINKS", obs_raw.get("log_sinks")),
+        ["console"],
+    )
+    otel_endpoint = (
+        _override_env(
+            "VIBE_READER_OTEL_ENDPOINT",
+            _first_not_none(
+                obs_otel_raw.get("endpoint"),
+                obs_raw.get("endpoint"),
+                "",
+            ),
+        )
+    )
+    otel = ObservabilityOtelConfig(
+        enabled=_as_bool(
+            _override_env(
+                "VIBE_READER_OTEL_ENABLED",
+                _first_not_none(
+                    obs_otel_raw.get("enabled"),
+                    obs_raw.get("otel_enabled"),
+                ),
+            ),
+            bool(otel_endpoint),
+        ),
+        endpoint=otel_endpoint,
+        protocol=obs_otel_raw.get("protocol", "otlp_http"),
+        export_traces=_as_bool(
+            _override_env(
+                "VIBE_READER_OTEL_EXPORT_TRACES",
+                obs_otel_raw.get("export_traces"),
+            ),
+            True,
+        ),
+        export_metrics=_as_bool(
+            _override_env(
+                "VIBE_READER_OTEL_EXPORT_METRICS",
+                obs_otel_raw.get("export_metrics"),
+            ),
+            True,
+        ),
+        export_logs=_as_bool(
+            _override_env(
+                "VIBE_READER_OTEL_EXPORT_LOGS",
+                obs_otel_raw.get("export_logs"),
+            ),
+            False,
+        ),
+        sample_ratio=_as_float(
+            _override_env(
+                "VIBE_READER_OTEL_SAMPLE_RATIO",
+                obs_otel_raw.get("sample_ratio"),
+            ),
+            1.0,
+        ),
+    )
+    audit = ObservabilityAuditConfig(
+        enabled=_as_bool(obs_audit_raw.get("enabled"), False),
+        include_prompt_manifest=_as_bool(
+            obs_audit_raw.get(
+                "include_prompt_manifest",
+                obs_raw.get("include_prompt_manifest"),
+            ),
+            True,
+        ),
+        include_full_prompt=_as_bool(
+            obs_audit_raw.get("include_full_prompt", obs_raw.get("include_full_prompt")),
+            False,
+        ),
+        include_model_response=_as_bool(
+            obs_audit_raw.get("include_model_response"),
+            False,
+        ),
+        redact_secrets=_as_bool(obs_audit_raw.get("redact_secrets"), True),
+    )
     observability = ObservabilityConfig(
-        enabled=_env("VIBE_READER_OBSERVABILITY_ENABLED") not in ("0", "false", "")
-        if _env("VIBE_READER_OBSERVABILITY_ENABLED") is not None
-        else obs_raw.get("enabled", True),
+        enabled=_as_bool(
+            _override_env("VIBE_READER_OBSERVABILITY_ENABLED", obs_raw.get("enabled")),
+            True,
+        ),
         provider=obs_raw.get("provider", "otel"),
-        log_json=obs_raw.get("log_json", True),
-        log_level=_env("VIBE_READER_LOG_LEVEL") or obs_raw.get("log_level", "INFO"),
-        include_prompt_manifest=obs_raw.get("include_prompt_manifest", True),
-        include_full_prompt=obs_raw.get("include_full_prompt", False),
+        log_json=log_format == "json",
+        log_format=log_format,
+        log_sinks=log_sinks,
+        log_level=_override_env(
+            "VIBE_READER_LOG_LEVEL",
+            obs_raw.get("log_level", "INFO"),
+        ),
+        environment=_override_env(
+            "VIBE_READER_ENVIRONMENT",
+            obs_raw.get("environment", "local"),
+        ),
+        include_prompt_manifest=audit.include_prompt_manifest,
+        include_full_prompt=audit.include_full_prompt,
         service_name=obs_raw.get("service_name", "vibe-reader-backend")
         if isinstance(obs_raw.get("service_name"), str)
         else "vibe-reader-backend",
-        otel_endpoint=_env("VIBE_READER_OTEL_ENDPOINT") or obs_raw.get("endpoint", ""),
+        otel_endpoint=otel.endpoint,
+        console=ObservabilityConsoleConfig(
+            enabled=_as_bool(obs_console_raw.get("enabled"), True),
+            stream=obs_console_raw.get("stream", "stdout"),
+        ),
+        file=ObservabilityFileConfig(
+            enabled=_as_bool(obs_file_raw.get("enabled"), "file" in log_sinks),
+            path=obs_file_raw.get("path", ""),
+            max_bytes=_as_int(obs_file_raw.get("max_bytes"), 10_485_760),
+            backup_count=_as_int(obs_file_raw.get("backup_count"), 5),
+        ),
+        otel=otel,
+        audit=audit,
     )
 
-    verify_mode = _env("VIBE_READER_VERIFY_MODE") in ("1", "true")
+    verify_mode = _as_bool(_env("VIBE_READER_VERIFY_MODE"), False)
 
     return Settings(
         data_dir=data_dir,
