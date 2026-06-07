@@ -830,11 +830,16 @@ function App() {
   );
 
   const selectBook = useCallback((book: BookSummary) => {
+    if (selectedBook?.id === book.id) {
+      setMode('reader');
+      return;
+    }
+
     resetReadingState(true);
     setSelectedBook(book);
     setSelectedChapter(null);
     setMode('reader');
-  }, [resetReadingState]);
+  }, [resetReadingState, selectedBook?.id]);
 
   return (
     <div className="app-shell">
