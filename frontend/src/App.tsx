@@ -956,13 +956,9 @@ function App() {
             selectedBook={selectedBook}
             activeChapter={activeChapter}
             selectedParagraph={selectedParagraph}
-            currentWindow={currentWindow}
-            windowCounts={windowCounts}
-            jobs={jobs}
             onInputChange={setChatInput}
             onSend={sendChat}
             onAbort={abortChat}
-            onRetryWindow={() => void retryCurrentWindow()}
           />
           <StatusCenter
             request={request}
@@ -972,6 +968,10 @@ function App() {
             events={events}
             selectedBook={selectedBook}
             activeChapter={activeChapter}
+            currentWindow={currentWindow}
+            windowCounts={windowCounts}
+            jobs={jobs}
+            onRetryWindow={() => void retryCurrentWindow()}
           />
         </aside>
       </main>
@@ -995,7 +995,7 @@ function App() {
           className={mode === 'chapters' ? 'active' : ''}
           onClick={() => setMode('chapters')}
         >
-          <Library size={18} />
+          <BookOpen size={18} />
           章节
         </button>
         <button
@@ -1586,13 +1586,9 @@ function ChatCompanion({
   selectedBook,
   activeChapter,
   selectedParagraph,
-  currentWindow,
-  windowCounts,
-  jobs,
   onInputChange,
   onSend,
   onAbort,
-  onRetryWindow,
 }: {
   chatTurns: ChatTurn[];
   streamingTurn: ChatTurn | null;
@@ -1601,13 +1597,9 @@ function ChatCompanion({
   selectedBook: BookSummary | null;
   activeChapter: ChapterSummary | null;
   selectedParagraph: number;
-  currentWindow: ReadingWindow | null;
-  windowCounts: { ready: number; target: number };
-  jobs: JobSummary[];
   onInputChange: (value: string) => void;
   onSend: () => void;
   onAbort: () => void;
-  onRetryWindow: () => void;
 }) {
   const visibleTurns = useMemo(() => {
     const turns = [...chatTurns].sort(
@@ -1639,13 +1631,6 @@ function ChatCompanion({
           P{selectedParagraph + 1}
         </StatusPill>
       </div>
-
-      <WindowStatusCard
-        currentWindow={currentWindow}
-        windowCounts={windowCounts}
-        jobs={jobs}
-        onRetryWindow={onRetryWindow}
-      />
 
       <div className="chat-turns">
         {visibleTurns.length ? (
@@ -1721,6 +1706,10 @@ function StatusCenter({
   events,
   selectedBook,
   activeChapter,
+  currentWindow,
+  windowCounts,
+  jobs,
+  onRetryWindow,
 }: {
   request: RequestState;
   runtime: RuntimeInfo | null;
@@ -1729,6 +1718,10 @@ function StatusCenter({
   events: ActivityItem[];
   selectedBook: BookSummary | null;
   activeChapter: ChapterSummary | null;
+  currentWindow: ReadingWindow | null;
+  windowCounts: { ready: number; target: number };
+  jobs: JobSummary[];
+  onRetryWindow: () => void;
 }) {
   const contextLimit =
     settings?.context?.provider_context_limit_tokens ??
@@ -1789,6 +1782,13 @@ function StatusCenter({
           tone={connection === 'open' ? 'good' : connection === 'error' ? 'bad' : 'warn'}
         />
       </section>
+
+      <WindowStatusCard
+        currentWindow={currentWindow}
+        windowCounts={windowCounts}
+        jobs={jobs}
+        onRetryWindow={onRetryWindow}
+      />
 
       <section className="status-card">
         <div className="section-heading">

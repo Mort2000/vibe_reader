@@ -514,16 +514,7 @@ button {
   overflow-wrap: anywhere;
 }
 
-.reader-grid {
-  min-height: 0;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-  gap: 18px;
-}
-
 .chapter-strip,
-.reading-placeholder,
 .reading-surface {
   min-width: 0;
   min-height: 420px;
@@ -574,12 +565,6 @@ button {
   height: 100%;
   display: flex;
   flex-direction: column;
-}
-
-.reading-placeholder {
-  display: grid;
-  align-content: start;
-  gap: 18px;
 }
 
 .reading-surface {
@@ -823,42 +808,6 @@ button {
 .comment-humor {
   border-color: #6d6ab1;
   background: #e8e6f4;
-}
-
-.reading-placeholder p {
-  max-width: 620px;
-  color: #56534b;
-  font-size: 18px;
-  line-height: 1.8;
-}
-
-.preview-lines {
-  display: grid;
-  gap: 14px;
-  padding-top: 16px;
-}
-
-.preview-lines span {
-  display: block;
-  height: 16px;
-  border-radius: 999px;
-  background: #dfe3da;
-}
-
-.preview-lines span:nth-child(1) {
-  width: 92%;
-}
-
-.preview-lines span:nth-child(2) {
-  width: 76%;
-}
-
-.preview-lines span:nth-child(3) {
-  width: 88%;
-}
-
-.preview-lines span:nth-child(4) {
-  width: 62%;
 }
 
 .empty-reader {
@@ -1341,10 +1290,6 @@ code {
     padding: 20px;
   }
 
-  .reader-grid {
-    grid-template-columns: 1fr;
-  }
-
   .chapter-strip {
     min-height: unset;
   }
@@ -1368,7 +1313,7 @@ code {
   .workspace[data-mode="assistant"] .chat-panel {
     min-height: 0;
     height: 100%;
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
   .chat-turns {
@@ -1435,10 +1380,6 @@ code {
   .reader-preview,
   .empty-reader {
     min-height: calc(100vh - 150px);
-  }
-
-  .reader-grid {
-    grid-template-columns: 1fr;
   }
 
   .reading-surface {
