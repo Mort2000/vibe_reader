@@ -1,6 +1,9 @@
 export type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
 export type PaneMode = 'library' | 'chapters' | 'reader' | 'assistant' | 'status';
+export type ReaderTheme = 'light' | 'dark';
 export type WindowStatus = 'pending' | 'running' | 'done' | 'failed';
+export type JobStatus = WindowStatus | 'skipped';
+export type ChatTurnStatus = 'streaming' | 'done' | 'failed';
 
 export interface ApiErrorBody {
   code: string;
@@ -29,7 +32,7 @@ export interface SettingsSummary {
   reader: {
     font_size: number;
     line_height: number;
-    theme: 'light' | 'dark' | string;
+    theme: ReaderTheme;
   };
   llm: {
     base_url: string;
@@ -134,7 +137,7 @@ export interface JobSummary {
   book_id: number;
   chapter_idx: number;
   window_id: number | null;
-  status: WindowStatus | string;
+  status: JobStatus;
   attempt_count: number;
   error: string | null;
   trace_id: string | null;
@@ -201,7 +204,7 @@ export interface ChatTurn {
   paragraph_idx: number;
   user_msg: string;
   ai_msg: string | null;
-  status: 'streaming' | 'done' | 'failed' | string;
+  status: ChatTurnStatus;
   tokens_in: number | null;
   tokens_out: number | null;
   trace_id: string | null;

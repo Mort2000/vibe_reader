@@ -3,6 +3,14 @@ import { useEffect, useState } from 'react';
 import { createBackendEventSource } from '../lib/api';
 import type { ActivityItem, BackendEvent } from '../types';
 
+type ConnectionState = 'idle' | 'connecting' | 'open' | 'error' | 'closed';
+
+interface ConnectionSnapshot {
+  bookId: number;
+  chapterIdx: number;
+  state: Exclude<ConnectionState, 'idle'>;
+}
+
 function eventTone(event: string): ActivityItem['tone'] {
   if (event.endsWith('.failed') || event.endsWith('.error')) return 'bad';
   if (
@@ -42,19 +50,21 @@ function eventTitle(event: BackendEvent): string {
 }
 
 export function useBackendEvents(bookId: number | null, chapterIdx: number | null) {
-  const [connection, setConnection] = useState<
-    'idle' | 'connecting' | 'open' | 'error' | 'closed'
-  >('idle');
+  const [connectionSnapshot, setConnectionSnapshot] =
+    useState<ConnectionSnapshot | null>(null);
   const [events, setEvents] = useState<ActivityItem[]>([]);
   const [lastEvent, setLastEvent] = useState<BackendEvent | null>(null);
+  const connection: ConnectionState =
+    bookId === null || chapterIdx === null
+      ? 'idle'
+      : connectionSnapshot?.bookId === bookId &&
+          connectionSnapshot.chapterIdx === chapterIdx
+        ? connectionSnapshot.state
+        : 'connecting';
 
   useEffect(() => {
-    if (!bookId || chapterIdx === null) {
-      window.queueMicrotask(() => setConnection('idle'));
-      return;
-    }
+    if (bookId === null || chapterIdx === null) return undefined;
 
-    window.queueMicrotask(() => setConnection('connecting'));
     const source = createBackendEventSource(
       bookId,
       chapterIdx,
@@ -80,12 +90,11 @@ export function useBackendEvents(bookId: number | null, chapterIdx: number | nul
           return [item, ...current].slice(0, 40);
         });
       },
-      setConnection,
+      (state) => setConnectionSnapshot({ bookId, chapterIdx, state }),
     );
 
     return () => {
       source.close();
-      window.queueMicrotask(() => setConnection('closed'));
     };
   }, [bookId, chapterIdx]);
 

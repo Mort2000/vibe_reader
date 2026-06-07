@@ -16,6 +16,19 @@ import type {
   SettingsSummary,
   WindowResponse,
 } from '../types';
+import {
+  backendEventSchema,
+  chatDeltaEventSchema,
+  chatDoneEventSchema,
+  chatErrorEventSchema,
+  chatFirstDeltaEventSchema,
+  chatStartedEventSchema,
+  type ChatDeltaEvent,
+  type ChatDoneEvent,
+  type ChatErrorEvent,
+  type ChatFirstDeltaEvent,
+  type ChatStartedEvent,
+} from './apiSchemas';
 import { API_BASE_PATH, CHAT_TURN_HISTORY_LIMIT } from './constants';
 
 export class ApiError extends Error {
@@ -212,29 +225,21 @@ export const api = {
 };
 
 export interface ChatStreamCallbacks {
-  onStarted: (data: {
-    turn_id: number;
-    session_id: number;
-    trace_id: string;
-  }) => void;
-  onFirstDelta?: (data: Record<string, unknown>) => void;
-  onDelta: (data: { turn_id: number; delta: string }) => void;
-  onDone: (data: {
-    turn_id: number;
-    session_id: number;
-    ai_msg: string;
-    tokens_in: number | null;
-    tokens_out: number | null;
-    trace_id: string;
-  }) => void;
-  onError: (data: {
-    turn_id?: number;
-    session_id?: number;
-    code: string;
-    message: string;
-    trace_id?: string;
-    request_id?: string | null;
-  }) => void;
+  onStarted: (data: ChatStartedEvent) => void;
+  onFirstDelta?: (data: ChatFirstDeltaEvent) => void;
+  onDelta: (data: ChatDeltaEvent) => void;
+  onDone: (data: ChatDoneEvent) => void;
+  onError: (data: ChatErrorEvent) => void;
+}
+
+function reportInvalidStreamEvent(
+  eventName: string,
+  callbacks: ChatStreamCallbacks,
+) {
+  callbacks.onError({
+    code: 'stream_event_invalid',
+    message: `聊天流事件格式无效: ${eventName}`,
+  });
 }
 
 function consumeSseBlock(block: string, callbacks: ChatStreamCallbacks) {
@@ -252,9 +257,9 @@ function consumeSseBlock(block: string, callbacks: ChatStreamCallbacks) {
 
   if (!dataLines.length) return;
 
-  let data: Record<string, unknown>;
+  let data: unknown;
   try {
-    data = JSON.parse(dataLines.join('\n')) as Record<string, unknown>;
+    data = JSON.parse(dataLines.join('\n'));
   } catch {
     callbacks.onError({
       code: 'stream_parse_failed',
@@ -264,15 +269,40 @@ function consumeSseBlock(block: string, callbacks: ChatStreamCallbacks) {
   }
 
   if (eventName === 'chat.started') {
-    callbacks.onStarted(data as Parameters<ChatStreamCallbacks['onStarted']>[0]);
+    const parsed = chatStartedEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onStarted(parsed.data);
   } else if (eventName === 'chat.first_delta') {
-    callbacks.onFirstDelta?.(data);
+    const parsed = chatFirstDeltaEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onFirstDelta?.(parsed.data);
   } else if (eventName === 'chat.delta') {
-    callbacks.onDelta(data as Parameters<ChatStreamCallbacks['onDelta']>[0]);
+    const parsed = chatDeltaEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onDelta(parsed.data);
   } else if (eventName === 'chat.done') {
-    callbacks.onDone(data as Parameters<ChatStreamCallbacks['onDone']>[0]);
+    const parsed = chatDoneEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onDone(parsed.data);
   } else if (eventName === 'chat.error') {
-    callbacks.onError(data as Parameters<ChatStreamCallbacks['onError']>[0]);
+    const parsed = chatErrorEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onError(parsed.data);
   }
 }
 
@@ -370,8 +400,12 @@ export function createBackendEventSource(
 
   const handler = (message: MessageEvent) => {
     try {
-      const data = JSON.parse(String(message.data || '{}')) as BackendEvent;
-      onEvent({ ...data, event: data.event || message.type });
+      const data: unknown = JSON.parse(String(message.data || '{}'));
+      const parsed = backendEventSchema.safeParse(data);
+      if (!parsed.success) {
+        throw new Error('Invalid backend event payload');
+      }
+      onEvent({ ...parsed.data, event: parsed.data.event || message.type });
     } catch {
       onEvent({
         event: 'event.parse_failed',
