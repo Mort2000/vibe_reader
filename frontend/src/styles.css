@@ -42,6 +42,10 @@ button {
   grid-template-rows: 72px minmax(0, 1fr);
 }
 
+.app-shell > * {
+  min-width: 0;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -145,6 +149,7 @@ button {
 }
 
 .workspace {
+  min-width: 0;
   min-height: 0;
   height: calc(100vh - 72px);
   display: grid;
@@ -591,6 +596,8 @@ button {
 }
 
 .reader-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   justify-content: space-between;
   gap: 12px;
   padding-bottom: 10px;
@@ -617,6 +624,22 @@ button {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.reader-progress-meter {
+  grid-column: 1 / -1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #d8ded2;
+}
+
+.reader-progress-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2c5f55;
+  transition: width 180ms ease;
 }
 
 .window-card {
@@ -764,11 +787,11 @@ button {
 .paragraph-block > p {
   min-width: 0;
   margin: 0;
-  max-width: 760px;
+  max-width: min(760px, 100%);
   color: #24241f;
   font-family: Georgia, "Noto Serif SC", "Songti SC", serif;
   font-size: 19px;
-  line-height: 1.92;
+  line-height: 1.74;
   overflow-wrap: anywhere;
 }
 
@@ -1320,14 +1343,20 @@ code {
   }
 
   .reader-toolbar {
-    align-items: center;
     gap: 10px;
     padding-bottom: 8px;
   }
 
-  .reader-toolbar .eyebrow,
   .reader-toolbar small {
     display: none;
+  }
+
+  .reader-toolbar .eyebrow {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .reader-toolbar > div:first-child {
@@ -1418,10 +1447,7 @@ code {
   }
 
   .brand span {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: none;
   }
 
   .workspace {
@@ -1450,22 +1476,50 @@ code {
     height: 100%;
     min-height: 0;
     max-height: none;
-    padding: 8px 4px 30vh;
+    padding: 6px 2px 30vh;
   }
 
   .paragraph-block {
-    grid-template-columns: 1fr;
-    gap: 8px;
-    padding: 14px 6px;
+    display: block;
+    padding: 3px 2px 13px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .paragraph-block.active {
+    background: transparent;
+  }
+
+  .paragraph-block.window-covered {
+    box-shadow: inset 2px 0 0 rgba(41, 93, 118, 0.22);
+    padding-left: 10px;
+  }
+
+  .paragraph-block.window-focused {
+    box-shadow: inset 3px 0 0 #2c5f55;
+    padding-left: 10px;
+  }
+
+  .paragraph-block.window-frontier {
+    padding-left: 10px;
+    box-shadow:
+      inset 3px 0 0 #e2c572,
+      0 0 0 1px rgba(226, 197, 114, 0.34);
   }
 
   .paragraph-index {
-    position: static;
-    width: fit-content;
+    display: none;
+  }
+
+  .paragraph-block > p {
+    max-width: none;
+    font-size: 18px;
+    line-height: 1.68;
   }
 
   .comment-stack {
-    grid-column: 1;
+    margin-top: 8px;
+    max-width: none;
   }
 
   .chapter-strip {

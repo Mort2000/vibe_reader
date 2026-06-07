@@ -1272,6 +1272,14 @@ function ReaderPreview({
   onSaveProgress: () => void;
   onRestoreSettled: () => void;
 }) {
+  const progressPct =
+    paragraphs.length > 1
+      ? Math.round((selectedParagraph / Math.max(paragraphs.length - 1, 1)) * 100)
+      : paragraphs.length
+        ? 100
+        : 0;
+  const progressWidth = `${Math.max(0, Math.min(100, progressPct))}%`;
+
   return (
     <div className="reader-preview">
       <section className="reading-surface">
@@ -1280,9 +1288,13 @@ function ReaderPreview({
             <span className="eyebrow">{chapterDisplayTitle(activeChapter)}</span>
             <strong>
               P{selectedParagraph + 1}
-              {paragraphs.length ? ` / ${paragraphs.length}` : ''}
+              {paragraphs.length ? ` / ${paragraphs.length} · ${progressPct}%` : ''}
             </strong>
-            {progress?.updated_at && <small>上次保存 {formatDate(progress.updated_at)}</small>}
+            <small>
+              {progress?.updated_at
+                ? `自动保存 ${formatDate(progress.updated_at)}`
+                : '自动保存待同步'}
+            </small>
           </div>
           <div className="toolbar-actions">
             <StatusPill status={progressSync}>
@@ -1293,8 +1305,11 @@ function ReaderPreview({
             </StatusPill>
             <button className="soft-inline-button" onClick={onSaveProgress}>
               <RefreshCcw size={16} />
-              保存当前位置
+              同步进度
             </button>
+          </div>
+          <div className="reader-progress-meter" aria-label="阅读进度">
+            <span style={{ width: progressWidth }} />
           </div>
         </div>
 
