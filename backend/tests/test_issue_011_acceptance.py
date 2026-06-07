@@ -4,7 +4,6 @@ import json
 import stat
 from itertools import product
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest

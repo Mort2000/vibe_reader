@@ -25,7 +25,6 @@ from ..config import (
     WindowL1Config,
     load_settings,
     merge_model_update,
-    public_model_config,
     save_settings,
 )
 from ..errors import AppError

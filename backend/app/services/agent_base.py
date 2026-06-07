@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.openai import OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from ..config import Settings
@@ -115,6 +116,12 @@ def clear_agent_caches() -> None:
     _compaction_agents.clear()
 
 
+def _model_settings(think_effort: str) -> OpenAIChatModelSettings | None:
+    if not think_effort:
+        return None
+    return {"openai_reasoning_effort": think_effort}
+
+
 def get_llm_model(
     settings: Settings,
     agent: str = "global",
@@ -131,6 +138,7 @@ def get_llm_model(
             base_url=llm.base_url,
             api_key=llm.api_key,
         ),
+        settings=_model_settings(llm.think_effort),
     )
     _models[cache_key] = model
     return model

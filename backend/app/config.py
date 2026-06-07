@@ -440,6 +440,12 @@ def _env_override_fields() -> dict[str, str]:
     }
 
 
+def _read_raw_config(config_path: pathlib.Path) -> dict[str, Any]:
+    if config_path.exists():
+        return toml.load(config_path)
+    return {}
+
+
 def _has_legacy_llm(raw: dict[str, Any]) -> bool:
     llm_raw = raw.get("llm")
     return isinstance(llm_raw, dict) and any(
@@ -1364,22 +1370,26 @@ def build_settings_metadata(settings: Settings | None = None) -> dict[str, Any]:
     }
 
 
-def load_settings(*, write_migrations: bool = True) -> Settings:
-    data_dir = pathlib.Path(_env("VIBE_READER_DATA_DIR") or str(_default_data_dir()))
-    config_path = data_dir / "config.toml"
-
-    raw: dict = {}
-    if config_path.exists():
-        raw = toml.load(config_path)
-
-    env_overrides = _env_override_fields()
-    llm_env = _env_values(LLM_ENV_KEYS)
+def _load_model_catalog_state(
+    config_path: pathlib.Path,
+    raw: dict[str, Any],
+    llm_env: dict[str, str],
+    *,
+    write_migrations: bool,
+) -> tuple[
+    list[ModelConfig],
+    ModelDefaultsConfig,
+    ActiveModelsConfig,
+    dict[str, list[str]],
+    dict[str, list[str]],
+    list[str],
+]:
     ignored_env: dict[str, list[str]] = {}
     read_only_env: dict[str, list[str]] = {}
     migrations: list[str] = []
-
     models = _parse_model_catalog(raw.get("models", []))
     legacy_llm_present = _has_legacy_llm(raw)
+
     if models:
         defaults, active = _load_model_refs(raw, models)
         if legacy_llm_present:
@@ -1408,6 +1418,15 @@ def load_settings(*, write_migrations: bool = True) -> Settings:
         if llm_env:
             read_only_env["llm"] = sorted(llm_env)
 
+    return models, defaults, active, ignored_env, read_only_env, migrations
+
+
+def _global_llm_config(
+    models: list[ModelConfig],
+    defaults: ModelDefaultsConfig,
+    active: ActiveModelsConfig,
+    llm_env: dict[str, str],
+) -> LLMConfig:
     if models:
         selected_model_id = _model_ref(
             active.global_model_id or defaults.global_model_id,
@@ -1415,11 +1434,28 @@ def load_settings(*, write_migrations: bool = True) -> Settings:
             models[0].id,
         )
         selected_model = next(model for model in models if model.id == selected_model_id)
-        llm = selected_model.to_llm()
-    elif llm_env:
-        llm = _env_llm_config()
-    else:
-        llm = LLMConfig()
+        return selected_model.to_llm()
+    if llm_env:
+        return _env_llm_config()
+    return LLMConfig()
+
+
+def load_settings(*, write_migrations: bool = True) -> Settings:
+    data_dir = pathlib.Path(_env("VIBE_READER_DATA_DIR") or str(_default_data_dir()))
+    config_path = data_dir / "config.toml"
+    raw = _read_raw_config(config_path)
+
+    env_overrides = _env_override_fields()
+    llm_env = _env_values(LLM_ENV_KEYS)
+    models, defaults, active, ignored_env, read_only_env, migrations = (
+        _load_model_catalog_state(
+            config_path,
+            raw,
+            llm_env,
+            write_migrations=write_migrations,
+        )
+    )
+    llm = _global_llm_config(models, defaults, active, llm_env)
 
     reader_raw = raw.get("reader", {})
     reader = ReaderConfig(

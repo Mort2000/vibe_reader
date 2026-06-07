@@ -173,8 +173,29 @@ export function ConfigurationPage({
   }, [applyDocument]);
 
   useEffect(() => {
-    void loadConfig();
-  }, [loadConfig]);
+    let cancelled = false;
+    const loadInitialConfig = async () => {
+      try {
+        const nextDoc = await api.config();
+        if (cancelled) return;
+        applyDocument(nextDoc);
+        setLoadState({ status: 'success', label: '配置已加载' });
+        setActionState({ status: 'idle', label: '等待编辑' });
+      } catch (error) {
+        if (cancelled) return;
+        const described = describeError(error);
+        setLoadState({
+          status: 'error',
+          label: '配置加载失败',
+          detail: described.detail,
+        });
+      }
+    };
+    void loadInitialConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyDocument]);
 
   const draftDirty = useMemo(
     () => (draft ? configFingerprint(draft) !== baseline : false),
@@ -506,51 +527,45 @@ export function ConfigurationPage({
     [applyDocument, dirty, refreshSummaries],
   );
 
-  const pingModel = useCallback(
-    async (key: string, body: Parameters<typeof api.pingModel>[0]) => {
+  const pingModel = async (key: string, body: Parameters<typeof api.pingModel>[0]) => {
+    setPingState((current) => ({
+      ...current,
+      [key]: { status: 'loading', label: '测试连接' },
+    }));
+    try {
+      const result = await api.pingModel(body);
       setPingState((current) => ({
         ...current,
-        [key]: { status: 'loading', label: '测试连接' },
+        [key]: {
+          status: 'success',
+          label: '连接成功',
+          detail: pingSummary(result),
+          result,
+        },
       }));
-      try {
-        const result = await api.pingModel(body);
-        setPingState((current) => ({
-          ...current,
-          [key]: {
-            status: 'success',
-            label: '连接成功',
-            detail: pingSummary(result),
-            result,
-          },
-        }));
-      } catch (error) {
-        const described = describeError(error);
-        setPingState((current) => ({
-          ...current,
-          [key]: {
-            status: 'error',
-            label: '测试失败',
-            detail: described.detail,
-          },
-        }));
-      }
-    },
-    [],
-  );
+    } catch (error) {
+      const described = describeError(error);
+      setPingState((current) => ({
+        ...current,
+        [key]: {
+          status: 'error',
+          label: '测试失败',
+          detail: described.detail,
+        },
+      }));
+    }
+  };
 
-  const pingDraftModel = useCallback(
-    (model: ModelConfigSummary) => {
-      if (!doc) return;
-      void pingModel(`model:${model.id}`, pingBodyForModel(model, doc, maskedSecret));
-    },
-    [doc, maskedSecret, pingModel],
-  );
+  const pingDraftModel = (model: ModelConfigSummary) => {
+    if (!doc) return;
+    void pingModel(`model:${model.id}`, pingBodyForModel(model, doc, maskedSecret));
+  };
 
-  const pingEditorModel = useCallback(() => {
+  const pingEditorModel = () => {
     if (!editor || !doc) return;
     const body = pingBodyForEditor(editor, doc);
     void pingModel('editor', body);
-  }, [doc, editor, pingModel]);
+  };
 
   if (loadState.status === 'loading' && !doc) {
     return (
@@ -1280,15 +1295,16 @@ function renderFieldControl(
     ? field.constraints.values.map(String)
     : null;
   if (field.type === 'boolean') {
+    const checked = Boolean(value);
     return (
       <label className="config-toggle">
         <input
           type="checkbox"
-          checked={Boolean(value)}
+          checked={checked}
           disabled={disabled}
           onChange={(event) => onChange(event.target.checked)}
         />
-        <span>{Boolean(value) ? '开启' : '关闭'}</span>
+        <span>{checked ? '开启' : '关闭'}</span>
       </label>
     );
   }

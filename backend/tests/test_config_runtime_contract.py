@@ -236,6 +236,7 @@ def test_effective_models_and_agent_caches_are_keyed_by_selection() -> None:
                 url="https://comment.example/v1",
                 model_name="comment-model",
                 api_key="comment-key",
+                think_effort="medium",
             ),
         ],
         defaults=ModelDefaultsConfig(
@@ -254,6 +255,8 @@ def test_effective_models_and_agent_caches_are_keyed_by_selection() -> None:
     comment_model = get_llm_model(settings, "comment")
     assert get_llm_model(settings, "chat") is chat_model
     assert chat_model is not comment_model
+    assert chat_model.settings is None
+    assert comment_model.settings == {"openai_reasoning_effort": "medium"}
 
     chat_agent = get_chat_agent(settings)
     comment_agent = get_comment_agent(settings)
