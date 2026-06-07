@@ -1,5 +1,5 @@
 export type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
-export type PaneMode = 'library' | 'reader' | 'assistant' | 'status';
+export type PaneMode = 'library' | 'chapters' | 'reader' | 'assistant' | 'status';
 export type WindowStatus = 'pending' | 'running' | 'done' | 'failed';
 
 export interface ApiErrorBody {
