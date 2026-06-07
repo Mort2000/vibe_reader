@@ -66,6 +66,8 @@ export function useReaderProgress({
   const [restoreSettledContext, setRestoreSettledContext] =
     useState<ReaderContext | null>(null);
   const queryClient = useQueryClient();
+  // Keep this synchronized with the activeContext also passed to useChat;
+  // async callbacks rely on both refs sharing the same book/chapter source.
   const activeContextRef = useRef<ReaderContext | null>(null);
   const selectedBookId = selectedBook?.id ?? null;
   const { mutateAsync: updateProgress } = useUpdateProgressMutation();

@@ -42,6 +42,8 @@ export function useChat({
   const [streamingTurn, setStreamingTurn] = useState<ChatTurn | null>(null);
   const queryClient = useQueryClient();
   const chatAbortRef = useRef<AbortController | null>(null);
+  // Mirrors the activeContext produced by useReaderProgress; async stream
+  // callbacks rely on reader and chat refs sharing the same source.
   const activeContextRef = useRef<ReaderContext | null>(null);
   const selectedBookId = activeContext?.bookId ?? null;
   const activeChapterIdx = activeContext?.chapterIdx ?? null;
