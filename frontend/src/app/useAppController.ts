@@ -1,28 +1,53 @@
 import { useCallback, useMemo, useState } from 'react';
 
+import { useBookQuery } from '../lib/apiQueries';
 import { chapterDisplayTitle } from '../lib/formatters';
-import type { BookSummary, PaneMode } from '../types';
+import type { BookSummary } from '../types';
 import { initialRequest, requestErrorState } from './controllerShared';
-import type { RequestState } from './types';
+import type { ReaderContext, RequestState } from './types';
 import { useChat } from './useChat';
 import { useLibrary } from './useLibrary';
 import { useReaderProgress } from './useReaderProgress';
 
-export function useAppController() {
-  const [selectedBook, setSelectedBook] = useState<BookSummary | null>(null);
-  const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
+export interface AppControllerOptions {
+  routeBookId: number | null;
+  routeChapterIdx: number | null;
+  onNavigateToBook: (book: BookSummary, context?: ReaderContext | null) => void;
+  onNavigateToChapter: (chapterIdx: number) => void;
+}
+
+export function resolveBookSelectionContext(
+  selectedBookId: number | null,
+  activeContext: ReaderContext | null,
+  bookId: number,
+): ReaderContext | null {
+  return selectedBookId === bookId ? activeContext : null;
+}
+
+export function useAppController({
+  routeBookId,
+  routeChapterIdx,
+  onNavigateToBook,
+  onNavigateToChapter,
+}: AppControllerOptions) {
   const [libraryCollapsed, setLibraryCollapsed] = useState(true);
   const [chaptersCollapsed, setChaptersCollapsed] = useState(false);
-  const [mode, setMode] = useState<PaneMode>('library');
   const [request, setRequest] = useState<RequestState>(initialRequest);
+  const selectedBookId = routeBookId;
+  const bookQuery = useBookQuery(selectedBookId);
+  const selectedBook = selectedBookId !== null ? bookQuery.data ?? null : null;
+  const selectedBookTitle =
+    selectedBook?.title ??
+    (selectedBookId !== null ? `书籍 #${selectedBookId}` : null);
 
   const pushRequestError = useCallback((error: unknown, label: string) => {
     setRequest(requestErrorState(error, label));
   }, []);
 
   const reader = useReaderProgress({
+    selectedBookId,
     selectedBook,
-    selectedChapter,
+    selectedChapter: routeChapterIdx,
     setRequest,
     pushRequestError,
   });
@@ -40,32 +65,45 @@ export function useAppController() {
     resetChatState();
   }, [resetChatState, resetReaderState]);
   const library = useLibrary({
-    selectedBook,
-    setSelectedBook,
-    setSelectedChapter,
-    setMode,
+    selectedBookId,
+    activeContext: reader.activeContext,
+    onNavigateToBook,
     setRequest,
     pushRequestError,
     resetReadingState,
   });
 
+  const bookRequestState = useMemo<RequestState | null>(() => {
+    if (selectedBookId !== null && bookQuery.isFetching && !bookQuery.data) {
+      return { status: 'loading', label: `加载${selectedBookTitle}` };
+    }
+    if (selectedBookId !== null && bookQuery.isError) {
+      return requestErrorState(bookQuery.error, '书籍加载失败');
+    }
+    return null;
+  }, [
+    bookQuery.data,
+    bookQuery.error,
+    bookQuery.isError,
+    bookQuery.isFetching,
+    selectedBookId,
+    selectedBookTitle,
+  ]);
   const derivedRequest = useMemo(
-    () => reader.requestState ?? chat.requestState ?? request,
-    [chat.requestState, reader.requestState, request],
+    () => bookRequestState ?? reader.requestState ?? chat.requestState ?? request,
+    [bookRequestState, chat.requestState, reader.requestState, request],
   );
-  const brandSubtitle = selectedBook
+  const brandSubtitle = selectedBookTitle
     ? reader.activeChapter
-      ? `${chapterDisplayTitle(reader.activeChapter)} · ${selectedBook.title}`
-      : selectedBook.title
+      ? `${chapterDisplayTitle(reader.activeChapter)} · ${selectedBookTitle}`
+      : selectedBookTitle
     : '本地小说阅读器 · AI 伴读';
 
   const selectChapter = useCallback(
     (idx: number) => {
-      resetReadingState();
-      setSelectedChapter(idx);
-      setMode('reader');
+      onNavigateToChapter(idx);
     },
-    [resetReadingState],
+    [onNavigateToChapter],
   );
 
   const toggleLibraryCollapsed = useCallback(() => {
@@ -82,12 +120,12 @@ export function useAppController() {
     books: library.books,
     query: library.query,
     setQuery: library.setQuery,
+    selectedBookId,
     selectedBook,
+    activeContext: reader.activeContext,
     chapters: reader.chapters,
     libraryCollapsed,
     chaptersCollapsed,
-    mode,
-    setMode,
     request: derivedRequest,
     importResult: library.importResult,
     importProgress: library.importProgress,

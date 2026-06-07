@@ -15,26 +15,23 @@ import type {
   ImportResult,
   ListResponse,
   LoadStatus,
-  PaneMode,
 } from '../types';
-import type { RequestState } from './types';
+import type { ReaderContext, RequestState } from './types';
 import { upsertBook } from './controllerShared';
 
 interface UseLibraryOptions {
-  selectedBook: BookSummary | null;
-  setSelectedBook: Dispatch<SetStateAction<BookSummary | null>>;
-  setSelectedChapter: Dispatch<SetStateAction<number | null>>;
-  setMode: Dispatch<SetStateAction<PaneMode>>;
+  selectedBookId: number | null;
+  activeContext: ReaderContext | null;
+  onNavigateToBook: (book: BookSummary, context?: ReaderContext | null) => void;
   setRequest: Dispatch<SetStateAction<RequestState>>;
   pushRequestError: (error: unknown, label: string) => void;
   resetReadingState: () => void;
 }
 
 export function useLibrary({
-  selectedBook,
-  setSelectedBook,
-  setSelectedChapter,
-  setMode,
+  selectedBookId,
+  activeContext,
+  onNavigateToBook,
   setRequest,
   pushRequestError,
   resetReadingState,
@@ -54,7 +51,7 @@ export function useLibrary({
   });
 
   const loadBootstrap = useCallback(
-    async (bookQuery = '', autoSelect = false) => {
+    async (bookQuery = '') => {
       setSubmittedQuery(bookQuery);
       setRequest({ status: 'loading', label: '连接本地服务' });
       try {
@@ -70,19 +67,16 @@ export function useLibrary({
           status: 'success',
           label: `服务已连接 · ${bookList.total} 本书`,
         });
-        if (autoSelect && bookList.items[0]) {
-          setSelectedBook(bookList.items[0]);
-        }
       } catch (error) {
         pushRequestError(error, '本地服务连接失败');
       }
     },
-    [pushRequestError, queryClient, setRequest, setSelectedBook],
+    [pushRequestError, queryClient, setRequest],
   );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadBootstrap('', true);
+      void loadBootstrap('');
     }, BOOTSTRAP_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [loadBootstrap]);
@@ -109,13 +103,15 @@ export function useLibrary({
         const result = await importBook(file);
         setImportResult(result);
         resetReadingState();
-        setSelectedChapter(null);
-        setSelectedBook(result.book);
         queryClient.setQueryData<ListResponse<BookSummary>>(
           queryKeys.books(submittedQuery),
           (current) => upsertBook(current, result.book),
         );
-        setMode('reader');
+        queryClient.setQueryData<BookSummary>(
+          queryKeys.book(result.book.id),
+          result.book,
+        );
+        onNavigateToBook(result.book);
         setImportProgress('success');
         void queryClient.invalidateQueries({
           queryKey: queryKeys.books(submittedQuery),
@@ -137,35 +133,30 @@ export function useLibrary({
     },
     [
       importBook,
+      onNavigateToBook,
       pushRequestError,
       queryClient,
       resetReadingState,
-      setMode,
       setRequest,
-      setSelectedBook,
-      setSelectedChapter,
       submittedQuery,
     ],
   );
 
   const selectBook = useCallback(
     (book: BookSummary) => {
-      if (selectedBook?.id === book.id) {
-        setMode('reader');
-        return;
+      const context = selectedBookId === book.id ? activeContext : null;
+      if (selectedBookId !== book.id) {
+        resetReadingState();
       }
-
-      resetReadingState();
-      setSelectedBook(book);
-      setSelectedChapter(null);
-      setMode('reader');
+      queryClient.setQueryData<BookSummary>(queryKeys.book(book.id), book);
+      onNavigateToBook(book, context);
     },
     [
+      activeContext,
+      onNavigateToBook,
+      queryClient,
       resetReadingState,
-      selectedBook?.id,
-      setMode,
-      setSelectedBook,
-      setSelectedChapter,
+      selectedBookId,
     ],
   );
 

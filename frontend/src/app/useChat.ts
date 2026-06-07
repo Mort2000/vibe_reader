@@ -18,7 +18,11 @@ import {
 import { formatNumber } from '../lib/formatters';
 import type { BookSummary, ChatSession, ChatTurn, LoadStatus } from '../types';
 import type { ReaderContext, RequestState } from './types';
-import { requestErrorState, sameContext } from './controllerShared';
+import {
+  requestErrorState,
+  sameContext,
+  sameOptionalContext,
+} from './controllerShared';
 
 interface UseChatOptions {
   selectedBook: BookSummary | null;
@@ -45,6 +49,7 @@ export function useChat({
   // Mirrors the activeContext produced by useReaderProgress; async stream
   // callbacks rely on reader and chat refs sharing the same source.
   const activeContextRef = useRef<ReaderContext | null>(null);
+  const previousActiveContextRef = useRef<ReaderContext | null>(null);
   const selectedBookId = activeContext?.bookId ?? null;
   const activeChapterIdx = activeContext?.chapterIdx ?? null;
 
@@ -111,10 +116,6 @@ export function useChat({
     contextReady,
   ]);
 
-  useEffect(() => {
-    activeContextRef.current = activeContext;
-  }, [activeContext]);
-
   const resetChatState = useCallback(() => {
     activeContextRef.current = null;
     chatAbortRef.current?.abort();
@@ -125,6 +126,18 @@ export function useChat({
     setChatStatus('idle');
     setStreamingTurn(null);
   }, []);
+
+  useEffect(() => {
+    if (sameOptionalContext(previousActiveContextRef.current, activeContext)) {
+      return;
+    }
+    resetChatState();
+    previousActiveContextRef.current = activeContext;
+  }, [activeContext, resetChatState]);
+
+  useEffect(() => {
+    activeContextRef.current = activeContext;
+  }, [activeContext]);
 
   const sendChat = useCallback(() => {
     if (

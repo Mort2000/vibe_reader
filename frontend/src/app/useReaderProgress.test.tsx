@@ -208,6 +208,7 @@ describe('useReaderProgress', () => {
     const { result, rerender } = renderHook(
       ({ selectedChapter }: { selectedChapter: number | null }) =>
         useReaderProgress({
+          selectedBookId: selectedBook.id,
           selectedBook,
           selectedChapter,
           setRequest: vi.fn(),
@@ -241,6 +242,7 @@ describe('useReaderProgress', () => {
     const { result } = renderHook(
       () =>
         useReaderProgress({
+          selectedBookId: 7,
           selectedBook: bookSummary(),
           selectedChapter: 0,
           setRequest,

@@ -44,22 +44,18 @@ describe('useLibrary', () => {
     vi.useRealTimers();
   });
 
-  it('selects a different book and resets reader state', () => {
+  it('navigates to a different book and resets reader state', () => {
     const queryClient = createQueryClient();
     const resetReadingState = vi.fn();
-    const setSelectedBook = vi.fn();
-    const setSelectedChapter = vi.fn();
-    const setMode = vi.fn();
-    const selectedBook = bookSummary(1);
+    const onNavigateToBook = vi.fn();
     const nextBook = bookSummary(2);
 
     const { result } = renderHook(
       () =>
         useLibrary({
-          selectedBook,
-          setSelectedBook,
-          setSelectedChapter,
-          setMode,
+          selectedBookId: 1,
+          activeContext: { bookId: 1, chapterIdx: 3 },
+          onNavigateToBook,
           setRequest: vi.fn(),
           pushRequestError: vi.fn(),
           resetReadingState,
@@ -72,26 +68,23 @@ describe('useLibrary', () => {
     });
 
     expect(resetReadingState).toHaveBeenCalledTimes(1);
-    expect(setSelectedBook).toHaveBeenCalledWith(nextBook);
-    expect(setSelectedChapter).toHaveBeenCalledWith(null);
-    expect(setMode).toHaveBeenCalledWith('reader');
+    expect(onNavigateToBook).toHaveBeenCalledWith(nextBook, null);
+    expect(queryClient.getQueryData(['books', nextBook.id])).toEqual(nextBook);
   });
 
-  it('does not reset reader state when re-selecting the active book', () => {
+  it('keeps active context when re-selecting the routed book', () => {
     const queryClient = createQueryClient();
     const resetReadingState = vi.fn();
-    const setSelectedBook = vi.fn();
-    const setSelectedChapter = vi.fn();
-    const setMode = vi.fn();
+    const onNavigateToBook = vi.fn();
     const selectedBook = bookSummary(1);
+    const activeContext = { bookId: 1, chapterIdx: 3 };
 
     const { result } = renderHook(
       () =>
         useLibrary({
-          selectedBook,
-          setSelectedBook,
-          setSelectedChapter,
-          setMode,
+          selectedBookId: 1,
+          activeContext,
+          onNavigateToBook,
           setRequest: vi.fn(),
           pushRequestError: vi.fn(),
           resetReadingState,
@@ -104,8 +97,7 @@ describe('useLibrary', () => {
     });
 
     expect(resetReadingState).not.toHaveBeenCalled();
-    expect(setSelectedBook).not.toHaveBeenCalled();
-    expect(setSelectedChapter).not.toHaveBeenCalled();
-    expect(setMode).toHaveBeenCalledWith('reader');
+    expect(onNavigateToBook).toHaveBeenCalledWith(selectedBook, activeContext);
+    expect(queryClient.getQueryData(['books', selectedBook.id])).toEqual(selectedBook);
   });
 });

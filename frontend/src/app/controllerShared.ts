@@ -41,6 +41,14 @@ export function sameContext(
   );
 }
 
+export function sameOptionalContext(
+  left: ReaderContext | null | undefined,
+  right: ReaderContext | null | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return sameContext(left, right);
+}
+
 export function requestErrorState(error: unknown, label: string): RequestState {
   const info = describeError(error);
   return {

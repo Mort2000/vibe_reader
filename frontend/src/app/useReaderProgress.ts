@@ -41,12 +41,14 @@ import {
   emptyParagraphs,
   requestErrorState,
   sameContext,
+  sameOptionalContext,
   windowTargetCount,
   type JobSnapshot,
   type ParagraphSelection,
 } from './controllerShared';
 
 interface UseReaderProgressOptions {
+  selectedBookId: number | null;
   selectedBook: BookSummary | null;
   selectedChapter: number | null;
   setRequest: Dispatch<SetStateAction<RequestState>>;
@@ -54,6 +56,7 @@ interface UseReaderProgressOptions {
 }
 
 export function useReaderProgress({
+  selectedBookId,
   selectedBook,
   selectedChapter,
   setRequest,
@@ -69,7 +72,10 @@ export function useReaderProgress({
   // Keep this synchronized with the activeContext also passed to useChat;
   // async callbacks rely on both refs sharing the same book/chapter source.
   const activeContextRef = useRef<ReaderContext | null>(null);
-  const selectedBookId = selectedBook?.id ?? null;
+  const previousActiveContextRef = useRef<ReaderContext | null>(null);
+  const selectedBookTitle =
+    selectedBook?.title ??
+    (selectedBookId !== null ? `书籍 #${selectedBookId}` : '当前书籍');
   const { mutateAsync: updateProgress } = useUpdateProgressMutation();
   const { mutateAsync: retryWindow } = useRetryWindowMutation();
 
@@ -78,8 +84,8 @@ export function useReaderProgress({
     () => chaptersQuery.data?.items ?? emptyChapters,
     [chaptersQuery.data],
   );
-  const activeChapterIdx = selectedBook
-    ? selectedChapter ?? selectedBook.last_progress?.chapter_idx ?? chapters[0]?.idx ?? null
+  const activeChapterIdx = selectedBookId !== null
+    ? selectedChapter ?? selectedBook?.last_progress?.chapter_idx ?? chapters[0]?.idx ?? null
     : null;
   const activeContext = useMemo<ReaderContext | null>(
     () =>
@@ -114,7 +120,7 @@ export function useReaderProgress({
     contextReady,
   );
   const chapterStatus = useMemo<LoadStatus>(() => {
-    if (!selectedBook || activeChapterIdx === null) return 'idle';
+    if (selectedBookId === null || activeChapterIdx === null) return 'idle';
     if (chapterDataQuery.isError) return 'error';
     if (chapterDataQuery.data) return 'success';
     if (chapterDataQuery.isFetching) return 'loading';
@@ -124,7 +130,7 @@ export function useReaderProgress({
     chapterDataQuery.data,
     chapterDataQuery.isError,
     chapterDataQuery.isFetching,
-    selectedBook,
+    selectedBookId,
   ]);
   const paragraphs = useMemo(() => {
     if (!contextReady || !commentsQuery.data) return baseParagraphs;
@@ -156,14 +162,14 @@ export function useReaderProgress({
   );
 
   const requestState = useMemo<RequestState | null>(() => {
-    if (selectedBook && chaptersQuery.isFetching && !chaptersQuery.data) {
-      return { status: 'loading', label: `加载《${selectedBook.title}》目录` };
+    if (selectedBookId !== null && chaptersQuery.isFetching && !chaptersQuery.data) {
+      return { status: 'loading', label: `加载${selectedBookTitle}目录` };
     }
-    if (selectedBook && chaptersQuery.isError) {
+    if (selectedBookId !== null && chaptersQuery.isError) {
       return requestErrorState(chaptersQuery.error, '目录加载失败');
     }
     if (
-      selectedBook &&
+      selectedBookId !== null &&
       activeChapterIdx !== null &&
       chapterDataQuery.isFetching &&
       !chapterDataQuery.data
@@ -173,7 +179,11 @@ export function useReaderProgress({
         label: `加载第 ${activeChapterIdx + 1} 章正文`,
       };
     }
-    if (selectedBook && activeChapterIdx !== null && chapterDataQuery.isError) {
+    if (
+      selectedBookId !== null &&
+      activeChapterIdx !== null &&
+      chapterDataQuery.isError
+    ) {
       return requestErrorState(chapterDataQuery.error, '章节正文加载失败');
     }
     if (contextReady && commentsQuery.isError) {
@@ -201,7 +211,8 @@ export function useReaderProgress({
     contextReady,
     currentWindowQuery.error,
     currentWindowQuery.isError,
-    selectedBook,
+    selectedBookId,
+    selectedBookTitle,
   ]);
 
   const setActiveSelectedParagraph = useCallback(
@@ -259,6 +270,14 @@ export function useReaderProgress({
   }, []);
 
   useEffect(() => {
+    if (sameOptionalContext(previousActiveContextRef.current, activeContext)) {
+      return;
+    }
+    resetReaderState();
+    previousActiveContextRef.current = activeContext;
+  }, [activeContext, resetReaderState]);
+
+  useEffect(() => {
     activeContextRef.current = activeContext;
   }, [activeContext]);
 
@@ -306,7 +325,7 @@ export function useReaderProgress({
     async (paragraphIdx: number, force = false) => {
       if (
         !activeContext ||
-        !selectedBook ||
+        selectedBookId === null ||
         activeChapterIdx === null ||
         !paragraphs.length ||
         chapterStatus !== 'success' ||
@@ -318,7 +337,7 @@ export function useReaderProgress({
       }
       if (
         !force &&
-        progress?.book_id === selectedBook.id &&
+        progress?.book_id === selectedBookId &&
         progress?.chapter_idx === activeChapterIdx &&
         progress.paragraph_idx === paragraphIdx &&
         progress.updated_at
@@ -373,14 +392,16 @@ export function useReaderProgress({
       progress,
       pushRequestError,
       restorePending,
-      selectedBook,
+      selectedBookId,
       setRequest,
       updateProgress,
     ],
   );
 
   useEffect(() => {
-    if (!selectedBook || activeChapterIdx === null || !paragraphs.length) return;
+    if (selectedBookId === null || activeChapterIdx === null || !paragraphs.length) {
+      return;
+    }
     if (restorePending || chapterStatus !== 'success') return;
     const timer = window.setTimeout(() => {
       void saveProgress(selectedParagraph);
@@ -392,7 +413,7 @@ export function useReaderProgress({
     paragraphs.length,
     restorePending,
     saveProgress,
-    selectedBook,
+    selectedBookId,
     selectedParagraph,
   ]);
 
