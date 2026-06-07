@@ -6,6 +6,9 @@ import pathlib
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
+from starlette.types import Scope
 
 from .application.agent_run_recorder import AgentRunRecorder
 from .application.job_handlers import CommentJobHandler, CompactionJobHandler
@@ -29,6 +32,22 @@ from .services.job_runner import JobRunner
 from .services.token_estimator import TokenEstimator
 
 _settings: Settings | None = None
+
+
+class SpaStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if (
+                exc.status_code != 404
+                or scope["method"] not in ("GET", "HEAD")
+                or scope.get("path", "").startswith("/api")
+                or pathlib.PurePosixPath(path).parts[:1] == ("assets",)
+                or pathlib.PurePosixPath(path).suffix
+            ):
+                raise
+            return await super().get_response("index.html", scope)
 
 
 def get_settings() -> Settings:
@@ -110,7 +129,9 @@ def create_app() -> FastAPI:
     frontend_dist = pathlib.Path(__file__).parent.parent.parent / "frontend" / "dist"
     if frontend_dist.is_dir():
         app.mount(
-            "/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend"
+            "/",
+            SpaStaticFiles(directory=str(frontend_dist), html=True),
+            name="frontend",
         )
 
     @app.on_event("startup")

@@ -17,6 +17,7 @@ export const queryKeys = {
   runtime: () => ['runtime'] as const,
   settings: () => ['settings'] as const,
   books: (query = '') => ['books', query] as const,
+  book: (bookId: number | null) => ['books', bookId] as const,
   chapters: (bookId: number | null) => ['books', bookId, 'chapters'] as const,
   chapterData: (bookId: number | null, chapterIdx: number | null) =>
     ['books', bookId, 'chapters', chapterIdx, 'data'] as const,
@@ -52,6 +53,14 @@ export function booksQueryOptions(query = '') {
     queryFn: ({ signal }: { signal?: AbortSignal }) =>
       api.books(query || undefined, { signal }),
   };
+}
+
+export function useBookQuery(bookId: number | null) {
+  return useQuery({
+    queryKey: queryKeys.book(bookId),
+    queryFn: ({ signal }) => api.book(bookId!, { signal }),
+    enabled: bookId !== null,
+  });
 }
 
 export function useChaptersQuery(bookId: number | null) {

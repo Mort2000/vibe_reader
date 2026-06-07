@@ -9,6 +9,7 @@ import {
   queryKeys,
   runtimeQueryOptions,
   settingsQueryOptions,
+  useBookQuery,
   useChapterDataQuery,
   useChaptersQuery,
   useChatSessionQuery,
@@ -36,7 +37,6 @@ import type {
   JobSummary,
   ListResponse,
   LoadStatus,
-  PaneMode,
   Paragraph,
   ParagraphComment,
   ProgressUpdateResponse,
@@ -73,6 +73,14 @@ function sameContext(
       left.bookId === right.bookId &&
       left.chapterIdx === right.chapterIdx,
   );
+}
+
+function sameOptionalContext(
+  left: ReaderContext | null | undefined,
+  right: ReaderContext | null | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return sameContext(left, right);
 }
 
 function requestErrorState(error: unknown, label: string): RequestState {
@@ -122,14 +130,23 @@ function upsertBook(
   };
 }
 
-export function useAppController() {
+export interface AppControllerOptions {
+  routeBookId: number | null;
+  routeChapterIdx: number | null;
+  onNavigateToBook: (book: BookSummary) => void;
+  onNavigateToChapter: (chapterIdx: number) => void;
+}
+
+export function useAppController({
+  routeBookId,
+  routeChapterIdx,
+  onNavigateToBook,
+  onNavigateToChapter,
+}: AppControllerOptions) {
   const [query, setQuery] = useState('');
   const [submittedQuery, setSubmittedQuery] = useState('');
-  const [selectedBook, setSelectedBook] = useState<BookSummary | null>(null);
-  const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [libraryCollapsed, setLibraryCollapsed] = useState(true);
   const [chaptersCollapsed, setChaptersCollapsed] = useState(false);
-  const [mode, setMode] = useState<PaneMode>('library');
   const [request, setRequest] = useState<RequestState>(initialRequest);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importProgress, setImportProgress] = useState<LoadStatus>('idle');
@@ -147,7 +164,8 @@ export function useAppController() {
   const queryClient = useQueryClient();
   const chatAbortRef = useRef<AbortController | null>(null);
   const activeContextRef = useRef<ReaderContext | null>(null);
-  const selectedBookId = selectedBook?.id ?? null;
+  const previousActiveContextRef = useRef<ReaderContext | null>(null);
+  const selectedBookId = routeBookId;
 
   const runtimeQuery = useQuery({ ...runtimeQueryOptions(), enabled: false });
   const settingsQuery = useQuery({ ...settingsQueryOptions(), enabled: false });
@@ -155,13 +173,22 @@ export function useAppController() {
     ...booksQueryOptions(submittedQuery),
     enabled: false,
   });
+  const bookQuery = useBookQuery(selectedBookId);
   const chaptersQuery = useChaptersQuery(selectedBookId);
   const chapters = useMemo(
     () => chaptersQuery.data?.items ?? emptyChapters,
     [chaptersQuery.data],
   );
-  const activeChapterIdx = selectedBook
-    ? selectedChapter ?? selectedBook.last_progress?.chapter_idx ?? chapters[0]?.idx ?? null
+  const books = booksQuery.data?.items ?? [];
+  const selectedBook =
+    selectedBookId !== null
+      ? bookQuery.data ?? books.find((book) => book.id === selectedBookId) ?? null
+      : null;
+  const selectedBookTitle =
+    selectedBook?.title ??
+    (selectedBookId !== null ? `书籍 #${selectedBookId}` : null);
+  const activeChapterIdx = selectedBookId !== null
+    ? routeChapterIdx ?? selectedBook?.last_progress?.chapter_idx ?? chapters[0]?.idx ?? null
     : null;
   const activeContext = useMemo<ReaderContext | null>(
     () =>
@@ -217,9 +244,8 @@ export function useAppController() {
 
   const runtime = runtimeQuery.data ?? null;
   const settings = settingsQuery.data ?? null;
-  const books = booksQuery.data?.items ?? [];
   const chapterStatus = useMemo<LoadStatus>(() => {
-    if (!selectedBook || activeChapterIdx === null) return 'idle';
+    if (selectedBookId === null || activeChapterIdx === null) return 'idle';
     if (chapterDataQuery.isError) return 'error';
     if (chapterDataQuery.data) return 'success';
     if (chapterDataQuery.isFetching) return 'loading';
@@ -229,7 +255,7 @@ export function useAppController() {
     chapterDataQuery.data,
     chapterDataQuery.isError,
     chapterDataQuery.isFetching,
-    selectedBook,
+    selectedBookId,
   ]);
   const paragraphs = useMemo(() => {
     if (!contextReady || !commentsQuery.data) return baseParagraphs;
@@ -286,10 +312,10 @@ export function useAppController() {
     () => chapters.find((chapter) => chapter.idx === activeChapterIdx) ?? null,
     [activeChapterIdx, chapters],
   );
-  const brandSubtitle = selectedBook
+  const brandSubtitle = selectedBookTitle
     ? activeChapter
-      ? `${chapterDisplayTitle(activeChapter)} · ${selectedBook.title}`
-      : selectedBook.title
+      ? `${chapterDisplayTitle(activeChapter)} · ${selectedBookTitle}`
+      : selectedBookTitle
     : '本地小说阅读器 · AI 伴读';
 
   const { connection, events, lastEvent } = useBackendEvents(
@@ -298,14 +324,20 @@ export function useAppController() {
   );
 
   const derivedRequest = useMemo<RequestState>(() => {
-    if (selectedBook && chaptersQuery.isFetching && !chaptersQuery.data) {
-      return { status: 'loading', label: `加载《${selectedBook.title}》目录` };
+    if (selectedBookId !== null && bookQuery.isFetching && !bookQuery.data) {
+      return { status: 'loading', label: `加载${selectedBookTitle}` };
     }
-    if (selectedBook && chaptersQuery.isError) {
+    if (selectedBookId !== null && bookQuery.isError) {
+      return requestErrorState(bookQuery.error, '书籍加载失败');
+    }
+    if (selectedBookId !== null && chaptersQuery.isFetching && !chaptersQuery.data) {
+      return { status: 'loading', label: `加载${selectedBookTitle}目录` };
+    }
+    if (selectedBookId !== null && chaptersQuery.isError) {
       return requestErrorState(chaptersQuery.error, '目录加载失败');
     }
     if (
-      selectedBook &&
+      selectedBookId !== null &&
       activeChapterIdx !== null &&
       chapterDataQuery.isFetching &&
       !chapterDataQuery.data
@@ -315,7 +347,11 @@ export function useAppController() {
         label: `加载第 ${activeChapterIdx + 1} 章正文`,
       };
     }
-    if (selectedBook && activeChapterIdx !== null && chapterDataQuery.isError) {
+    if (
+      selectedBookId !== null &&
+      activeChapterIdx !== null &&
+      chapterDataQuery.isError
+    ) {
       return requestErrorState(chapterDataQuery.error, '章节正文加载失败');
     }
     if (contextReady && commentsQuery.isError) {
@@ -336,6 +372,10 @@ export function useAppController() {
     return request;
   }, [
     activeChapterIdx,
+    bookQuery.data,
+    bookQuery.error,
+    bookQuery.isError,
+    bookQuery.isFetching,
     chapterDataQuery.data,
     chapterDataQuery.error,
     chapterDataQuery.isError,
@@ -354,7 +394,8 @@ export function useAppController() {
     currentWindowQuery.error,
     currentWindowQuery.isError,
     request,
-    selectedBook,
+    selectedBookId,
+    selectedBookTitle,
   ]);
 
   const setActiveSelectedParagraph = useCallback(
@@ -424,10 +465,18 @@ export function useAppController() {
   }, []);
 
   useEffect(() => {
+    if (sameOptionalContext(previousActiveContextRef.current, activeContext)) {
+      return;
+    }
+    resetReadingState();
+    previousActiveContextRef.current = activeContext;
+  }, [activeContext, resetReadingState]);
+
+  useEffect(() => {
     activeContextRef.current = activeContext;
   }, [activeContext]);
 
-  const loadBootstrap = useCallback(async (bookQuery = '', autoSelect = false) => {
+  const loadBootstrap = useCallback(async (bookQuery = '') => {
     setSubmittedQuery(bookQuery);
     setRequest({ status: 'loading', label: '连接本地服务' });
     try {
@@ -443,9 +492,6 @@ export function useAppController() {
         status: 'success',
         label: `服务已连接 · ${bookList.total} 本书`,
       });
-      if (autoSelect && bookList.items[0]) {
-        setSelectedBook(bookList.items[0]);
-      }
     } catch (error) {
       pushRequestError(error, '本地服务连接失败');
     }
@@ -453,7 +499,7 @@ export function useAppController() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void loadBootstrap('', true);
+      void loadBootstrap('');
     }, BOOTSTRAP_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [loadBootstrap]);
@@ -502,7 +548,7 @@ export function useAppController() {
     async (paragraphIdx: number, force = false) => {
       if (
         !activeContext ||
-        !selectedBook ||
+        selectedBookId === null ||
         activeChapterIdx === null ||
         !paragraphs.length ||
         chapterStatus !== 'success' ||
@@ -514,7 +560,7 @@ export function useAppController() {
       }
       if (
         !force &&
-        progress?.book_id === selectedBook.id &&
+        progress?.book_id === activeContext.bookId &&
         progress?.chapter_idx === activeChapterIdx &&
         progress.paragraph_idx === paragraphIdx &&
         progress.updated_at
@@ -569,13 +615,15 @@ export function useAppController() {
       progress,
       pushRequestError,
       restorePending,
-      selectedBook,
+      selectedBookId,
       updateProgress,
     ],
   );
 
   useEffect(() => {
-    if (!selectedBook || activeChapterIdx === null || !paragraphs.length) return;
+    if (selectedBookId === null || activeChapterIdx === null || !paragraphs.length) {
+      return;
+    }
     if (restorePending || chapterStatus !== 'success') return;
     const timer = window.setTimeout(() => {
       void saveProgress(selectedParagraph);
@@ -587,7 +635,7 @@ export function useAppController() {
     paragraphs.length,
     restorePending,
     saveProgress,
-    selectedBook,
+    selectedBookId,
     selectedParagraph,
   ]);
 
@@ -860,13 +908,15 @@ export function useAppController() {
         const result = await importBook(file);
         setImportResult(result);
         resetReadingState();
-        setSelectedChapter(null);
-        setSelectedBook(result.book);
         queryClient.setQueryData<ListResponse<BookSummary>>(
           queryKeys.books(submittedQuery),
           (current) => upsertBook(current, result.book),
         );
-        setMode('reader');
+        queryClient.setQueryData<BookSummary>(
+          queryKeys.book(result.book.id),
+          result.book,
+        );
+        onNavigateToBook(result.book);
         setImportProgress('success');
         void queryClient.invalidateQueries({
           queryKey: queryKeys.books(submittedQuery),
@@ -888,6 +938,7 @@ export function useAppController() {
     },
     [
       importBook,
+      onNavigateToBook,
       pushRequestError,
       queryClient,
       resetReadingState,
@@ -896,24 +947,14 @@ export function useAppController() {
   );
 
   const selectBook = useCallback((book: BookSummary) => {
-    if (selectedBook?.id === book.id) {
-      setMode('reader');
-      return;
-    }
-
-    resetReadingState();
-    setSelectedBook(book);
-    setSelectedChapter(null);
-    setMode('reader');
-  }, [resetReadingState, selectedBook?.id]);
+    onNavigateToBook(book);
+  }, [onNavigateToBook]);
 
   const selectChapter = useCallback(
     (idx: number) => {
-      resetReadingState();
-      setSelectedChapter(idx);
-      setMode('reader');
+      onNavigateToChapter(idx);
     },
-    [resetReadingState],
+    [onNavigateToChapter],
   );
 
   const saveCurrentProgress = useCallback(() => {
@@ -934,12 +975,12 @@ export function useAppController() {
     books,
     query,
     setQuery,
+    selectedBookId,
     selectedBook,
+    activeContext,
     chapters,
     libraryCollapsed,
     chaptersCollapsed,
-    mode,
-    setMode,
     request: derivedRequest,
     importResult,
     importProgress,
