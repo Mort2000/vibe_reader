@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -81,32 +82,68 @@ COMPACTION_INSTRUCTIONS = """\
 - summary 和 anchor_excerpts 都以 JSON 结构化输出。"""
 
 
-_model: CompatibleOpenAIChatModel | None = None
+ModelCacheKey = tuple[str, str, str, str, str]
+AgentCacheKey = tuple[str, ModelCacheKey]
+
+_models: dict[ModelCacheKey, CompatibleOpenAIChatModel] = {}
+_comment_agents: dict[AgentCacheKey, Agent[CommentDeps, str | None]] = {}
+_chat_agents: dict[AgentCacheKey, Agent[ChatDeps, str]] = {}
+_compaction_agents: dict[AgentCacheKey, Agent[CompactionDeps, str | None]] = {}
 
 
-def get_llm_model(settings: Settings) -> CompatibleOpenAIChatModel:
-    global _model
-    if _model is not None:
-        return _model
-    _model = CompatibleOpenAIChatModel(
-        settings.llm.model,
+def _secret_fingerprint(value: str) -> str:
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _model_cache_key(settings: Settings, agent: str = "global") -> ModelCacheKey:
+    llm = settings.effective_llm(agent)
+    return (
+        llm.provider,
+        llm.base_url,
+        llm.model,
+        llm.think_effort,
+        _secret_fingerprint(llm.api_key),
+    )
+
+
+def clear_agent_caches() -> None:
+    _models.clear()
+    _comment_agents.clear()
+    _chat_agents.clear()
+    _compaction_agents.clear()
+
+
+def get_llm_model(
+    settings: Settings,
+    agent: str = "global",
+) -> CompatibleOpenAIChatModel:
+    cache_key = _model_cache_key(settings, agent)
+    cached = _models.get(cache_key)
+    if cached is not None:
+        return cached
+
+    llm = settings.effective_llm(agent)
+    model = CompatibleOpenAIChatModel(
+        llm.model,
         provider=OpenAIProvider(
-            base_url=settings.llm.base_url,
-            api_key=settings.llm.api_key,
+            base_url=llm.base_url,
+            api_key=llm.api_key,
         ),
     )
-    return _model
-
-
-_comment_agent: Agent[CommentDeps, str | None] | None = None
+    _models[cache_key] = model
+    return model
 
 
 def get_comment_agent(settings: Settings) -> Agent[CommentDeps, str | None]:
-    global _comment_agent
-    if _comment_agent is not None:
-        return _comment_agent
-    model = get_llm_model(settings)
-    _comment_agent = Agent(
+    cache_key = ("ParagraphCommentAgent", _model_cache_key(settings, "comment"))
+    cached = _comment_agents.get(cache_key)
+    if cached is not None:
+        return cached
+
+    model = get_llm_model(settings, "comment")
+    agent = Agent(
         model,
         deps_type=CommentDeps,
         output_type=str | None,
@@ -116,7 +153,7 @@ def get_comment_agent(settings: Settings) -> Agent[CommentDeps, str | None]:
         retries={"output": 2},
     )
 
-    @_comment_agent.tool
+    @agent.tool
     async def emit_comment(
         ctx: RunContext[CommentDeps],
         paragraph_idx: int,
@@ -131,7 +168,8 @@ def get_comment_agent(settings: Settings) -> Agent[CommentDeps, str | None]:
         })
         return "accepted"
 
-    return _comment_agent
+    _comment_agents[cache_key] = agent
+    return agent
 
 
 @dataclass
@@ -156,15 +194,14 @@ class ChatDeps:
     pass
 
 
-_chat_agent: Agent[ChatDeps, str] | None = None
-
-
 def get_chat_agent(settings: Settings) -> Agent[ChatDeps, str]:
-    global _chat_agent
-    if _chat_agent is not None:
-        return _chat_agent
-    model = get_llm_model(settings)
-    _chat_agent = Agent(
+    cache_key = ("ReadingChatAgent", _model_cache_key(settings, "chat"))
+    cached = _chat_agents.get(cache_key)
+    if cached is not None:
+        return cached
+
+    model = get_llm_model(settings, "chat")
+    agent = Agent(
         model,
         deps_type=ChatDeps,
         output_type=str,
@@ -173,20 +210,20 @@ def get_chat_agent(settings: Settings) -> Agent[ChatDeps, str]:
         description="围绕当前阅读位置回答用户提问",
         retries={"output": 1},
     )
-    return _chat_agent
-
-
-_compaction_agent: Agent[CompactionDeps, str | None] | None = None
+    _chat_agents[cache_key] = agent
+    return agent
 
 
 def get_compaction_agent(
     settings: Settings,
 ) -> Agent[CompactionDeps, str | None]:
-    global _compaction_agent
-    if _compaction_agent is not None:
-        return _compaction_agent
-    model = get_llm_model(settings)
-    _compaction_agent = Agent(
+    cache_key = ("ContextCompactionAgent", _model_cache_key(settings, "comment"))
+    cached = _compaction_agents.get(cache_key)
+    if cached is not None:
+        return cached
+
+    model = get_llm_model(settings, "comment")
+    agent = Agent(
         model,
         deps_type=CompactionDeps,
         output_type=str | None,
@@ -197,7 +234,7 @@ def get_compaction_agent(
         retries={"output": 2},
     )
 
-    @_compaction_agent.tool
+    @agent.tool
     async def emit_chapter_compressed_summary(
         ctx: RunContext[CompactionDeps], payload: dict[str, Any]
     ) -> str:
@@ -205,4 +242,5 @@ def get_compaction_agent(
         ctx.deps.raw_output = payload
         return "accepted"
 
-    return _compaction_agent
+    _compaction_agents[cache_key] = agent
+    return agent

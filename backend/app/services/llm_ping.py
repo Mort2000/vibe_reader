@@ -7,13 +7,18 @@ from typing import Any
 
 import httpx
 
-from ..config import LLMConfig
+from ..config import LLMConfig, ModelConfig
 from ..errors import AppError
 from ..observability import get_trace_id
 
 
-async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
+async def ping_llm(
+    llm: LLMConfig | ModelConfig,
+    timeout_s: float = 60.0,
+) -> dict[str, Any]:
     """Send a minimal chat completion request and return usage summary."""
+    if isinstance(llm, ModelConfig):
+        llm = llm.to_llm()
     if not llm.base_url:
         raise AppError(
             "llm_not_configured", "LLM base_url is not configured", status=400
