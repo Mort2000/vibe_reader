@@ -3,6 +3,8 @@ import {
   AlertCircle,
   BookOpen,
   Bot,
+  ChevronDown,
+  ChevronRight,
   CheckCircle2,
   Clock3,
   Database,
@@ -10,6 +12,7 @@ import {
   Gauge,
   Import,
   Library,
+  Layers,
   Loader2,
   MessageSquareText,
   RefreshCcw,
@@ -96,6 +99,17 @@ function statusCopy(status: LoadStatus): string {
   return '空闲';
 }
 
+function chapterDisplayTitle(chapter: ChapterSummary | null): string {
+  if (!chapter) return '未选择章节';
+  return chapter.title || `第 ${chapter.idx + 1} 章`;
+}
+
+function bookAuthorLabel(book: BookSummary): string | null {
+  const author = book.author?.trim();
+  if (!author) return '未知作者';
+  return author === book.title.trim() ? null : author;
+}
+
 function StatusPill({
   status,
   children,
@@ -122,6 +136,8 @@ function App() {
   const [selectedBook, setSelectedBook] = useState<BookSummary | null>(null);
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [chapters, setChapters] = useState<ChapterSummary[]>([]);
+  const [libraryCollapsed, setLibraryCollapsed] = useState(true);
+  const [chaptersCollapsed, setChaptersCollapsed] = useState(false);
   const [mode, setMode] = useState<PaneMode>('library');
   const [request, setRequest] = useState<RequestState>(initialRequest);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -396,6 +412,11 @@ function App() {
     () => chapters.find((chapter) => chapter.idx === selectedChapter) ?? null,
     [chapters, selectedChapter],
   );
+  const brandSubtitle = selectedBook
+    ? activeChapter
+      ? `${chapterDisplayTitle(activeChapter)} · ${selectedBook.title}`
+      : selectedBook.title
+    : '本地小说阅读器 · AI 伴读';
 
   const refreshCommentsAndWindow = useCallback(async () => {
     if (!selectedBook || selectedChapter === null || !loadedContext) return;
@@ -596,7 +617,7 @@ function App() {
       setRequest({
         status: 'success',
         label: '重试任务已提交',
-        detail: result.job.trace_id ? `trace_id: ${result.job.trace_id}` : undefined,
+        detail: `任务 #${result.job.id} 已加入队列`,
       });
     } catch (error) {
       const active = activeContextRef.current;
@@ -830,11 +851,16 @@ function App() {
   );
 
   const selectBook = useCallback((book: BookSummary) => {
+    if (selectedBook?.id === book.id) {
+      setMode('reader');
+      return;
+    }
+
     resetReadingState(true);
     setSelectedBook(book);
     setSelectedChapter(null);
     setMode('reader');
-  }, [resetReadingState]);
+  }, [resetReadingState, selectedBook?.id]);
 
   return (
     <div className="app-shell">
@@ -843,7 +869,7 @@ function App() {
           <BrandMark />
           <div>
             <strong>Vibe Reader Mini</strong>
-            <span>本地小说阅读器 · AI 伴读</span>
+            <span>{brandSubtitle}</span>
           </div>
         </div>
         <div className="topbar-actions">
@@ -860,28 +886,60 @@ function App() {
       </header>
 
       <main className="workspace" data-mode={mode}>
-        <aside className="library-panel">
-          <LibraryHeader
-            query={query}
-            setQuery={setQuery}
-            onRefresh={refreshBooks}
-            onImport={handleImport}
-            importProgress={importProgress}
+        <aside className={`library-panel nav-section ${libraryCollapsed ? 'is-collapsed' : ''}`}>
+          <NavSectionToggle
+            icon={<Library size={18} />}
+            label="书库"
+            current={selectedBook?.title || '未选择书籍'}
+            collapsed={libraryCollapsed}
+            onToggle={() => setLibraryCollapsed((value) => !value)}
           />
-          <BookList
-            books={books}
-            selectedBookId={selectedBook?.id ?? null}
-            onSelect={selectBook}
+          <div className="nav-section-body">
+            <LibraryHeader
+              query={query}
+              setQuery={setQuery}
+              onRefresh={refreshBooks}
+              onImport={handleImport}
+              importProgress={importProgress}
+            />
+            <BookList
+              books={books}
+              selectedBookId={selectedBook?.id ?? null}
+              onSelect={selectBook}
+            />
+            {importResult && <ImportReceipt result={importResult} />}
+          </div>
+        </aside>
+
+        <aside className={`chapter-panel nav-section ${chaptersCollapsed ? 'is-collapsed' : ''}`}>
+          <NavSectionToggle
+            icon={<Layers size={18} />}
+            label="章节"
+            current={selectedBook ? chapterDisplayTitle(activeChapter) : '先选择书籍'}
+            collapsed={chaptersCollapsed}
+            onToggle={() => setChaptersCollapsed((value) => !value)}
           />
-          {importResult && <ImportReceipt result={importResult} />}
+          <div className="nav-section-body">
+            {selectedBook ? (
+              <ChapterNavigator
+                activeChapter={activeChapter}
+                chapters={chapters}
+                onSelectChapter={(idx) => {
+                  resetReadingState(false);
+                  setSelectedChapter(idx);
+                  setMode('reader');
+                }}
+              />
+            ) : (
+              <EmptyChapterPanel />
+            )}
+          </div>
         </aside>
 
         <section className="reader-stage">
           {selectedBook ? (
             <ReaderPreview
-              book={selectedBook}
               activeChapter={activeChapter}
-              chapters={chapters}
               paragraphs={paragraphs}
               chapterStatus={chapterStatus}
               progress={progress}
@@ -889,16 +947,8 @@ function App() {
               selectedParagraph={selectedParagraph}
               restorePending={restorePending}
               currentWindow={currentWindow}
-              windowCounts={windowCounts}
-              jobs={jobs}
-              onSelectChapter={(idx) => {
-                resetReadingState(false);
-                setSelectedChapter(idx);
-                setMode('reader');
-              }}
               onVisibleParagraph={setSelectedParagraph}
               onSaveProgress={() => void saveProgress(selectedParagraph, true)}
-              onRetryWindow={() => void retryCurrentWindow()}
               onRestoreSettled={settleRestore}
             />
           ) : (
@@ -927,6 +977,10 @@ function App() {
             events={events}
             selectedBook={selectedBook}
             activeChapter={activeChapter}
+            currentWindow={currentWindow}
+            windowCounts={windowCounts}
+            jobs={jobs}
+            onRetryWindow={() => void retryCurrentWindow()}
           />
         </aside>
       </main>
@@ -947,6 +1001,13 @@ function App() {
           阅读
         </button>
         <button
+          className={mode === 'chapters' ? 'active' : ''}
+          onClick={() => setMode('chapters')}
+        >
+          <Layers size={18} />
+          章节
+        </button>
+        <button
           className={mode === 'assistant' ? 'active' : ''}
           onClick={() => setMode('assistant')}
         >
@@ -962,6 +1023,36 @@ function App() {
         </button>
       </nav>
     </div>
+  );
+}
+
+function NavSectionToggle({
+  icon,
+  label,
+  current,
+  collapsed,
+  onToggle,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  current: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className="nav-section-toggle"
+      type="button"
+      aria-expanded={!collapsed}
+      onClick={onToggle}
+    >
+      <span className="nav-section-title">
+        {icon}
+        <span>{label}</span>
+      </span>
+      <span className="nav-section-current">{current}</span>
+      {collapsed ? <ChevronRight size={17} /> : <ChevronDown size={17} />}
+    </button>
   );
 }
 
@@ -1053,25 +1144,28 @@ function BookList({
 
   return (
     <div className="book-list">
-      {books.map((book) => (
-        <button
-          className={`book-card ${selectedBookId === book.id ? 'active' : ''}`}
-          key={book.id}
-          onClick={() => onSelect(book)}
-        >
-          <BookCover book={book} />
-          <span className="book-meta">
-            <strong>{book.title}</strong>
-            <span>{book.author || '未知作者'}</span>
-            <small>
-              {book.total_chapters} 章
-              {book.last_progress
-                ? ` · 读到 ${book.last_progress.chapter_idx + 1}-${book.last_progress.paragraph_idx + 1}`
-                : ' · 未开始'}
-            </small>
-          </span>
-        </button>
-      ))}
+      {books.map((book) => {
+        const authorLabel = bookAuthorLabel(book);
+        return (
+          <button
+            className={`book-card ${selectedBookId === book.id ? 'active' : ''}`}
+            key={book.id}
+            onClick={() => onSelect(book)}
+          >
+            <BookCover book={book} />
+            <span className="book-meta">
+              <strong>{book.title}</strong>
+              {authorLabel && <span>{authorLabel}</span>}
+              <small>
+                {book.total_chapters} 章
+                {book.last_progress
+                  ? ` · 读到 ${book.last_progress.chapter_idx + 1}-${book.last_progress.paragraph_idx + 1}`
+                  : ' · 未开始'}
+              </small>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1104,10 +1198,57 @@ function ImportReceipt({ result }: { result: ImportResult }) {
   );
 }
 
-function ReaderPreview({
-  book,
+function ChapterNavigator({
   activeChapter,
   chapters,
+  onSelectChapter,
+}: {
+  activeChapter: ChapterSummary | null;
+  chapters: ChapterSummary[];
+  onSelectChapter: (idx: number) => void;
+}) {
+  return (
+    <section className="chapter-strip">
+      <div className="section-heading">
+        <Layers size={18} />
+        <strong>章节</strong>
+      </div>
+      <div className="chapter-list">
+        {chapters.map((chapter) => (
+          <button
+            key={chapter.idx}
+            className={activeChapter?.idx === chapter.idx ? 'active' : ''}
+            onClick={() => onSelectChapter(chapter.idx)}
+          >
+            <span>{chapterDisplayTitle(chapter)}</span>
+            <small>
+              {formatNumber(chapter.paragraph_count)} 段 ·{' '}
+              {formatNumber(chapter.token_estimate)} tokens
+            </small>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function EmptyChapterPanel() {
+  return (
+    <section className="chapter-strip empty-chapter">
+      <div className="section-heading">
+        <Layers size={18} />
+        <strong>章节</strong>
+      </div>
+      <div className="empty-feed">
+        <Layers size={18} />
+        <span>选择书籍后显示章节。</span>
+      </div>
+    </section>
+  );
+}
+
+function ReaderPreview({
+  activeChapter,
   paragraphs,
   chapterStatus,
   progress,
@@ -1115,17 +1256,11 @@ function ReaderPreview({
   selectedParagraph,
   restorePending,
   currentWindow,
-  windowCounts,
-  jobs,
-  onSelectChapter,
   onVisibleParagraph,
   onSaveProgress,
-  onRetryWindow,
   onRestoreSettled,
 }: {
-  book: BookSummary;
   activeChapter: ChapterSummary | null;
-  chapters: ChapterSummary[];
   paragraphs: Paragraph[];
   chapterStatus: LoadStatus;
   progress: ReadingProgress | null;
@@ -1133,91 +1268,61 @@ function ReaderPreview({
   selectedParagraph: number;
   restorePending: boolean;
   currentWindow: ReadingWindow | null;
-  windowCounts: { ready: number; target: number };
-  jobs: JobSummary[];
-  onSelectChapter: (idx: number) => void;
   onVisibleParagraph: (idx: number) => void;
   onSaveProgress: () => void;
-  onRetryWindow: () => void;
   onRestoreSettled: () => void;
 }) {
+  const progressPct =
+    paragraphs.length > 1
+      ? Math.round((selectedParagraph / Math.max(paragraphs.length - 1, 1)) * 100)
+      : paragraphs.length
+        ? 100
+        : 0;
+  const progressWidth = `${Math.max(0, Math.min(100, progressPct))}%`;
+
   return (
     <div className="reader-preview">
-      <div className="reader-hero">
-          <BookCover book={book} />
+      <section className="reading-surface">
+        <div className="reader-toolbar">
           <div>
-            <span className="eyebrow">阅读工作台</span>
-            <h1>{book.title}</h1>
-            <p>
-              {book.author || '未知作者'}
-              {progress?.updated_at ? ` · 上次保存 ${formatDate(progress.updated_at)}` : ''}
-            </p>
+            <span className="eyebrow">{chapterDisplayTitle(activeChapter)}</span>
+            <strong>
+              P{selectedParagraph + 1}
+              {paragraphs.length ? ` / ${paragraphs.length} · ${progressPct}%` : ''}
+            </strong>
+            <small>
+              {progress?.updated_at
+                ? `自动保存 ${formatDate(progress.updated_at)}`
+                : '自动保存待同步'}
+            </small>
+          </div>
+          <div className="toolbar-actions">
+            <StatusPill status={progressSync}>
+              {progressSync === 'loading' && <Loader2 size={14} className="spin" />}
+              {progressSync === 'success' && <CheckCircle2 size={14} />}
+              {progressSync === 'error' && <AlertCircle size={14} />}
+              {progressSync === 'idle' ? '进度待同步' : statusCopy(progressSync)}
+            </StatusPill>
+            <button className="soft-inline-button" onClick={onSaveProgress}>
+              <RefreshCcw size={16} />
+              同步进度
+            </button>
+          </div>
+          <div className="reader-progress-meter" aria-label="阅读进度">
+            <span style={{ width: progressWidth }} />
           </div>
         </div>
 
-      <div className="reader-grid">
-        <section className="chapter-strip">
-          <div className="section-heading">
-            <BookOpen size={18} />
-            <strong>章节</strong>
-          </div>
-          <div className="chapter-list">
-            {chapters.map((chapter) => (
-              <button
-                key={chapter.idx}
-                className={activeChapter?.idx === chapter.idx ? 'active' : ''}
-                onClick={() => onSelectChapter(chapter.idx)}
-              >
-                <span>{chapter.title || `第 ${chapter.idx + 1} 章`}</span>
-                <small>
-                  {formatNumber(chapter.paragraph_count)} 段 ·{' '}
-                  {formatNumber(chapter.token_estimate)} tokens
-                </small>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="reading-surface">
-          <div className="reader-toolbar">
-            <div>
-              <span className="eyebrow">{activeChapter?.title || '未选择章节'}</span>
-              <strong>
-                P{selectedParagraph + 1}
-                {paragraphs.length ? ` / ${paragraphs.length}` : ''}
-              </strong>
-            </div>
-            <div className="toolbar-actions">
-              <StatusPill status={progressSync}>
-                {progressSync === 'loading' && <Loader2 size={14} className="spin" />}
-                {progressSync === 'success' && <CheckCircle2 size={14} />}
-                {progressSync === 'error' && <AlertCircle size={14} />}
-                {progressSync === 'idle' ? '进度待同步' : statusCopy(progressSync)}
-              </StatusPill>
-              <button className="soft-inline-button" onClick={onSaveProgress}>
-                <RefreshCcw size={16} />
-                保存当前位置
-              </button>
-            </div>
-          </div>
-
-          <WindowStatusCard
-            currentWindow={currentWindow}
-            windowCounts={windowCounts}
-            jobs={jobs}
-            onRetryWindow={onRetryWindow}
-          />
-
-          <ReaderDocument
-            paragraphs={paragraphs}
-            chapterStatus={chapterStatus}
-            selectedParagraph={selectedParagraph}
-            restorePending={restorePending}
-            onVisibleParagraph={onVisibleParagraph}
-            onRestoreSettled={onRestoreSettled}
-          />
-        </section>
-      </div>
+        <ReaderDocument
+          paragraphs={paragraphs}
+          chapterStatus={chapterStatus}
+          selectedParagraph={selectedParagraph}
+          restorePending={restorePending}
+          currentWindow={currentWindow}
+          onVisibleParagraph={onVisibleParagraph}
+          onRestoreSettled={onRestoreSettled}
+        />
+      </section>
     </div>
   );
 }
@@ -1314,6 +1419,7 @@ function ReaderDocument({
   chapterStatus,
   selectedParagraph,
   restorePending,
+  currentWindow,
   onVisibleParagraph,
   onRestoreSettled,
 }: {
@@ -1321,11 +1427,21 @@ function ReaderDocument({
   chapterStatus: LoadStatus;
   selectedParagraph: number;
   restorePending: boolean;
+  currentWindow: ReadingWindow | null;
   onVisibleParagraph: (idx: number) => void;
   onRestoreSettled: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const paragraphRefs = useRef(new Map<number, HTMLElement>());
+  const manualSelectionUntilRef = useRef(0);
+
+  const selectParagraph = useCallback(
+    (idx: number) => {
+      manualSelectionUntilRef.current = Date.now() + 1200;
+      onVisibleParagraph(idx);
+    },
+    [onVisibleParagraph],
+  );
 
   useEffect(() => {
     const root = rootRef.current;
@@ -1342,6 +1458,7 @@ function ReaderDocument({
           )[0];
         if (!visible) return;
         if (restorePending) return;
+        if (Date.now() < manualSelectionUntilRef.current) return;
         const idx = Number((visible.target as HTMLElement).dataset.paragraphIdx);
         if (Number.isFinite(idx)) onVisibleParagraph(idx);
       },
@@ -1404,36 +1521,66 @@ function ReaderDocument({
 
   return (
     <div className="reader-document" ref={rootRef}>
-      {paragraphs.map((paragraph) => (
-        <article
-          className={`paragraph-block ${
-            paragraph.paragraph_idx === selectedParagraph ? 'active' : ''
-          }`}
-          data-paragraph-idx={paragraph.paragraph_idx}
-          key={paragraph.paragraph_idx}
-          ref={(node) => {
-            if (node) {
-              paragraphRefs.current.set(paragraph.paragraph_idx, node);
-            } else {
-              paragraphRefs.current.delete(paragraph.paragraph_idx);
-            }
-          }}
-        >
-          <div className="paragraph-index">P{paragraph.paragraph_idx + 1}</div>
-          <p>{paragraph.text}</p>
-          {paragraph.comments?.length ? (
-            <div className="comment-stack">
-              {paragraph.comments.map((comment) => (
-                <aside className={`comment-bubble comment-${comment.comment_type}`} key={comment.id}>
-                  <span>{comment.comment_type}</span>
-                  <p>{comment.comment}</p>
-                  {comment.trace_id && <code>trace_id: {comment.trace_id}</code>}
-                </aside>
-              ))}
-            </div>
-          ) : null}
-        </article>
-      ))}
+      {paragraphs.map((paragraph) => {
+        const idx = paragraph.paragraph_idx;
+        const isCovered = Boolean(
+          currentWindow &&
+            idx >= currentWindow.start_paragraph_idx &&
+            idx <= currentWindow.end_paragraph_idx,
+        );
+        const isFocused = Boolean(
+          currentWindow &&
+            idx >= currentWindow.focus_start_paragraph_idx &&
+            idx <= currentWindow.focus_end_paragraph_idx,
+        );
+        const isFrontier = currentWindow?.assistant_frontier_paragraph_idx === idx;
+        const paragraphClass = [
+          'paragraph-block',
+          idx === selectedParagraph ? 'active' : '',
+          isCovered ? 'window-covered' : '',
+          isFocused ? 'window-focused' : '',
+          isFrontier ? 'window-frontier' : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+
+        return (
+          <article
+            className={paragraphClass}
+            data-paragraph-idx={idx}
+            key={idx}
+            tabIndex={0}
+            aria-current={idx === selectedParagraph ? 'location' : undefined}
+            onClick={() => selectParagraph(idx)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                selectParagraph(idx);
+              }
+            }}
+            ref={(node) => {
+              if (node) {
+                paragraphRefs.current.set(idx, node);
+              } else {
+                paragraphRefs.current.delete(idx);
+              }
+            }}
+          >
+            <div className="paragraph-index">P{idx + 1}</div>
+            <p>{paragraph.text}</p>
+            {paragraph.comments?.length ? (
+              <div className="comment-stack">
+                {paragraph.comments.map((comment) => (
+                  <aside className={`comment-bubble comment-${comment.comment_type}`} key={comment.id}>
+                    <span>{comment.comment_type}</span>
+                    <p>{comment.comment}</p>
+                  </aside>
+                ))}
+              </div>
+            ) : null}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1502,7 +1649,7 @@ function ChatCompanion({
       <div className="chat-context">
         <span>
           {selectedBook ? selectedBook.title : '未选择书籍'}
-          {activeChapter ? ` · ${activeChapter.title}` : ''}
+          {activeChapter ? ` · ${chapterDisplayTitle(activeChapter)}` : ''}
         </span>
         <StatusPill status={chatStatus}>
           {chatStatus === 'loading' && <Loader2 size={14} className="spin" />}
@@ -1572,7 +1719,6 @@ function ChatTurnView({ turn }: { turn: ChatTurn }) {
           <span>P{turn.paragraph_idx + 1}</span>
           {turn.tokens_in !== null && <span>{formatNumber(turn.tokens_in)} in</span>}
           {turn.tokens_out !== null && <span>{formatNumber(turn.tokens_out)} out</span>}
-          {turn.trace_id && <code>trace_id: {turn.trace_id}</code>}
         </div>
       </div>
     </article>
@@ -1587,6 +1733,10 @@ function StatusCenter({
   events,
   selectedBook,
   activeChapter,
+  currentWindow,
+  windowCounts,
+  jobs,
+  onRetryWindow,
 }: {
   request: RequestState;
   runtime: RuntimeInfo | null;
@@ -1595,6 +1745,10 @@ function StatusCenter({
   events: ActivityItem[];
   selectedBook: BookSummary | null;
   activeChapter: ChapterSummary | null;
+  currentWindow: ReadingWindow | null;
+  windowCounts: { ready: number; target: number };
+  jobs: JobSummary[];
+  onRetryWindow: () => void;
 }) {
   const contextLimit =
     settings?.context?.provider_context_limit_tokens ??
@@ -1649,10 +1803,19 @@ function StatusCenter({
           icon={connection === 'error' ? <WifiOff size={18} /> : <Signal size={18} />}
           label="后台事件"
           value={connection === 'open' ? '已订阅' : connection}
-          detail={selectedBook && activeChapter ? activeChapter.title : '选择章节后订阅'}
+          detail={
+            selectedBook && activeChapter ? chapterDisplayTitle(activeChapter) : '选择章节后订阅'
+          }
           tone={connection === 'open' ? 'good' : connection === 'error' ? 'bad' : 'warn'}
         />
       </section>
+
+      <WindowStatusCard
+        currentWindow={currentWindow}
+        windowCounts={windowCounts}
+        jobs={jobs}
+        onRetryWindow={onRetryWindow}
+      />
 
       <section className="status-card">
         <div className="section-heading">
