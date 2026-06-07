@@ -46,6 +46,32 @@ $VIBE_READER_DATA_DIR/config.toml
 
 启动后应首先看到 `observability.logging_configured` 日志。该日志会输出已生效的观测配置摘要，但不会打印 OTEL endpoint 明文，只显示是否配置。
 
+## 配置管理页与状态中心
+
+“配置管理”页面负责编辑后端 Settings 和模型目录；状态中心只保留运行时只读摘要和跳转入口。两处展示同一组有效模型字段：
+
+- `global`：全局当前模型。
+- `chat`：ReadingChatAgent 当前模型。
+- `comment`：ParagraphCommentAgent 当前模型。
+- `compaction`：ContextCompactionAgent 当前模型，必须与 `comment` 一致。
+
+`GET /api/config` 返回完整可编辑配置、字段元数据、默认值、环境变量覆盖标记、模型目录和切换策略。`GET /api/runtime` 与 `GET /api/settings` 只用于状态摘要，不能作为编辑接口。
+
+LLM 配置迁移和环境变量语义如下：
+
+- `[[models]]` 非空时，模型目录是权威来源；旧 `[llm]` 会被清理，`VIBE_READER_LLM_*` 只作为被忽略环境变量展示。
+- `[[models]]` 为空且存在旧 `[llm]` 时，启动或读取配置会迁移为默认模型目录条目，并写回不含 `[llm]` 的配置文件。
+- `[[models]]` 为空且只有 `VIBE_READER_LLM_*` 时，后端可以用这些值作为只读运行时 LLM 配置，但不会自动持久化环境变量中的密钥。
+- 非 LLM 环境变量继续覆盖文件配置；配置页显示锁定态和环境变量名，不写入环境变量。
+
+页面内切换当前模型后，新发起的 Chat SSE、评论 job 和压缩任务使用更新后的有效模型。已经开始的 Chat 流和 running 评论 job 沿用启动时的模型快照；排查“为什么这一次请求还在用旧模型”时，先确认请求或 job 的开始时间是否早于切换时间。
+
+密钥排查约束：
+
+- `api_key` 不应在 `GET /api/config`、`GET /api/runtime`、`GET /api/settings`、状态中心、配置页持久化状态、默认日志、OTEL 或审计包中以明文出现。
+- 配置文件写入后权限应为当前用户读写（`0600`）。
+- 审计包默认不包含完整 prompt 或模型响应，并开启 `redact_secrets`。
+
 ## 日志配置
 
 后端使用 Python 标准 `logging`。上层服务记录 `event`、`message` 和 `fields`，底层根据配置路由到不同 sink。console/file/otel 可以并存。

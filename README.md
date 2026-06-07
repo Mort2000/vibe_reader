@@ -83,9 +83,9 @@ cd ../backend && uv run vibe-reader
 | 变量 | 说明 |
 |---|---|
 | `VIBE_READER_DATA_DIR` | 数据目录（默认 `~/.vibe_reader`） |
-| `VIBE_READER_LLM_BASE_URL` | LLM API base URL |
-| `VIBE_READER_LLM_API_KEY` | LLM API key |
-| `VIBE_READER_LLM_MODEL` | 模型名（默认 `deepseek-v4-flash`） |
+| `VIBE_READER_LLM_BASE_URL` | 兼容旧版的 LLM API base URL；仅在本地模型目录为空时作为只读运行时配置 |
+| `VIBE_READER_LLM_API_KEY` | 兼容旧版的 LLM API key；不会被配置页自动持久化 |
+| `VIBE_READER_LLM_MODEL` | 兼容旧版的模型名（默认 `deepseek-v4-flash`）；已有模型目录时会被忽略 |
 | `VIBE_READER_VERIFY_MODE` | 设为 `1` 启用 `/api/verify/*` 诊断接口 |
 
 完整列表见 [backend/.env.example](backend/.env.example)。
@@ -102,21 +102,42 @@ uv run pytest
 
 ## 配置说明
 
-首次运行可在数据目录创建 `config.toml`，例如：
+推荐通过浏览器里的“配置管理”页面维护后端 Settings 和模型目录。开发模式下打开 Vite 地址后进入“配置”，一体化部署时访问 `http://127.0.0.1:8000/config`。该页面支持创建多个模型、测试连接、为 Chat 与评论分别指定默认模型、切换当前生效模型、查看默认值和说明、以及单项/分组/常用重置。
+
+`config.toml` 仍是本地持久化载体。多模型配置示例：
 
 ```toml
-[llm]
-base_url = ""
+[[models]]
+id = "default"
+provider = "openai_compatible"
+url = "https://api.example.com/v1"
+model_name = "deepseek-v4-flash"
 api_key = ""
-model = "deepseek-v4-flash"
+think_effort = ""
+
+[defaults]
+global_model_id = "default"
+chat_model_id = "default"
+comment_model_id = "default"
+
+[active]
+global_model_id = ""
+chat_model_id = ""
+comment_model_id = ""
 
 [reader]
 lookahead_paragraphs = 5
 progress_debounce_ms = 800
 
-[window]
-target_window_tokens = 6000
-max_window_tokens = 12000
+[window_l1]
+focus_target_tokens = 6000
+focus_max_tokens = 12000
 ```
 
-敏感项建议通过环境变量注入，不要提交到版本库。
+旧版 `[llm]` 文件会在模型目录为空时自动迁移成 `[[models]]` 的默认条目，并清理 `[llm]`。一旦 `[[models]]` 非空，本地模型目录就是 LLM 配置的权威来源，旧 `[llm]` 和 `VIBE_READER_LLM_*` 不会混入目录或当前选择。非 LLM 的环境变量覆盖行为保持不变：配置页只读展示环境变量覆盖，不会写入环境变量。
+
+Chat Agent 与 Comment Agent 可使用不同模型；Context Compaction Agent 与 Comment Agent 共用同一默认/当前模型。页面内切换当前模型后，新发起的 Chat 流、评论 job 和压缩任务使用新模型；已经开始的 Chat 流和 running 评论 job 沿用启动时的模型快照。
+
+`api_key` 在配置 API、运行摘要、状态中心和配置页中只显示掩码。不要提交包含真实密钥的 `config.toml`。
+
+更多验收和排障说明见 [配置管理验收说明](docs/configuration_management.md) 与 [后端维测配置与观测指导](docs/backend_observability_runbook.md)。
