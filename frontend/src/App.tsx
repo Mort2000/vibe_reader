@@ -3,8 +3,8 @@ import {
   Navigate,
   Route,
   Routes,
+  useLocation,
   useNavigate,
-  useParams,
 } from 'react-router';
 import {
   Activity,
@@ -21,9 +21,11 @@ import {
 import {
   bookRoutePath,
   modeRoutePath,
-  parseRouteNumber,
+  type ParsedAppRoute,
+  parseAppRoutePath,
 } from './app/routes';
 import { useAppController } from './app/useAppController';
+import type { ReaderContext } from './app/types';
 import { BrandMark } from './components/BrandMark';
 import { NavSectionToggle } from './components/NavSectionToggle';
 import { StatusPill } from './components/StatusPill';
@@ -45,47 +47,33 @@ import type { BookSummary, PaneMode } from './types';
 function App() {
   return (
     <Routes>
-      <Route index element={<Navigate to="/library" replace />} />
-      <Route path="library" element={<AppRoute mode="library" />} />
-      <Route path="reader" element={<AppRoute mode="reader" />} />
-      <Route path="chapters" element={<AppRoute mode="chapters" />} />
-      <Route path="assistant" element={<AppRoute mode="assistant" />} />
-      <Route path="status" element={<AppRoute mode="status" />} />
-      <Route path="books/:bookId" element={<AppRoute mode="reader" />} />
-      <Route
-        path="books/:bookId/chapters"
-        element={<AppRoute mode="chapters" />}
-      />
-      <Route
-        path="books/:bookId/chapters/:chapterIdx"
-        element={<AppRoute mode="reader" />}
-      />
-      <Route
-        path="books/:bookId/chapters/:chapterIdx/chapters"
-        element={<AppRoute mode="chapters" />}
-      />
-      <Route
-        path="books/:bookId/chapters/:chapterIdx/assistant"
-        element={<AppRoute mode="assistant" />}
-      />
-      <Route
-        path="books/:bookId/chapters/:chapterIdx/status"
-        element={<AppRoute mode="status" />}
-      />
-      <Route path="*" element={<Navigate to="/library" replace />} />
+      <Route path="*" element={<AppRoute />} />
     </Routes>
   );
 }
 
-function AppRoute({ mode }: { mode: PaneMode }) {
+function AppRoute() {
+  const location = useLocation();
+  const route = parseAppRoutePath(location.pathname);
+
+  if (!route) {
+    return <Navigate to="/library" replace />;
+  }
+
+  return <AppShellRoute route={route} />;
+}
+
+function AppShellRoute({ route }: { route: ParsedAppRoute }) {
   const navigate = useNavigate();
-  const params = useParams<{ bookId?: string; chapterIdx?: string }>();
-  const routeBookId = parseRouteNumber(params.bookId);
-  const routeChapterIdx = parseRouteNumber(params.chapterIdx);
+  const { mode, routeBookId, routeChapterIdx } = route;
 
   const navigateToBook = useCallback(
-    (book: BookSummary) => {
-      void navigate(bookRoutePath(book.id));
+    (book: BookSummary, context: ReaderContext | null = null) => {
+      void navigate(
+        context?.bookId === book.id
+          ? modeRoutePath('reader', context, book.id)
+          : bookRoutePath(book.id),
+      );
     },
     [navigate],
   );

@@ -133,8 +133,16 @@ function upsertBook(
 export interface AppControllerOptions {
   routeBookId: number | null;
   routeChapterIdx: number | null;
-  onNavigateToBook: (book: BookSummary) => void;
+  onNavigateToBook: (book: BookSummary, context?: ReaderContext | null) => void;
   onNavigateToChapter: (chapterIdx: number) => void;
+}
+
+export function resolveBookSelectionContext(
+  selectedBookId: number | null,
+  activeContext: ReaderContext | null,
+  bookId: number,
+): ReaderContext | null {
+  return selectedBookId === bookId ? activeContext : null;
 }
 
 export function useAppController({
@@ -947,8 +955,11 @@ export function useAppController({
   );
 
   const selectBook = useCallback((book: BookSummary) => {
-    onNavigateToBook(book);
-  }, [onNavigateToBook]);
+    onNavigateToBook(
+      book,
+      resolveBookSelectionContext(selectedBookId, activeContext, book.id),
+    );
+  }, [activeContext, onNavigateToBook, selectedBookId]);
 
   const selectChapter = useCallback(
     (idx: number) => {

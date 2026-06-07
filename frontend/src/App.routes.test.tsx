@@ -170,4 +170,23 @@ describe('App routes', () => {
 
     expect(routerMocks.navigate).toHaveBeenCalledWith('/books/12/chapters/8');
   });
+
+  it('wires same-book selection to the reader route for the active context', () => {
+    renderRoute('/books/12/chapters/5/chapters');
+
+    capturedOptions?.onNavigateToBook(makeBook(12), {
+      bookId: 12,
+      chapterIdx: 5,
+    });
+
+    expect(routerMocks.navigate).toHaveBeenCalledWith('/books/12/chapters/5');
+  });
+
+  it('wires new-book selection to the book route', () => {
+    renderRoute('/books/12/chapters/5/chapters');
+
+    capturedOptions?.onNavigateToBook(makeBook(13), null);
+
+    expect(routerMocks.navigate).toHaveBeenCalledWith('/books/13');
+  });
 });
