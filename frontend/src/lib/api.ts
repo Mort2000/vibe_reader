@@ -16,8 +16,20 @@ import type {
   SettingsSummary,
   WindowResponse,
 } from '../types';
-
-const BASE = '/api';
+import {
+  backendEventSchema,
+  chatDeltaEventSchema,
+  chatDoneEventSchema,
+  chatErrorEventSchema,
+  chatFirstDeltaEventSchema,
+  chatStartedEventSchema,
+  type ChatDeltaEvent,
+  type ChatDoneEvent,
+  type ChatErrorEvent,
+  type ChatFirstDeltaEvent,
+  type ChatStartedEvent,
+} from './apiSchemas';
+import { API_BASE_PATH, CHAT_TURN_HISTORY_LIMIT } from './constants';
 
 export class ApiError extends Error {
   code: string;
@@ -36,7 +48,7 @@ export class ApiError extends Error {
 }
 
 function apiPath(path: string): string {
-  return `${BASE}${path}`;
+  return `${API_BASE_PATH}${path}`;
 }
 
 async function parseError(res: Response): Promise<ApiError> {
@@ -86,51 +98,69 @@ export function describeError(error: unknown): {
 }
 
 export const api = {
-  health: () => request<{ status: string; time: string }>('/health'),
-  runtime: () => request<RuntimeInfo>('/runtime'),
-  settings: () => request<SettingsSummary>('/settings'),
-  books: (q?: string) => {
+  health: (options?: RequestInit) =>
+    request<{ status: string; time: string }>('/health', options),
+  runtime: (options?: RequestInit) => request<RuntimeInfo>('/runtime', options),
+  settings: (options?: RequestInit) => request<SettingsSummary>('/settings', options),
+  books: (q?: string, options?: RequestInit) => {
     const params = new URLSearchParams();
     if (q) params.set('q', q);
     const qs = params.toString();
-    return request<ListResponse<BookSummary>>(`/books${qs ? `?${qs}` : ''}`);
+    return request<ListResponse<BookSummary>>(
+      `/books${qs ? `?${qs}` : ''}`,
+      options,
+    );
   },
-  book: (bookId: number) => request<BookSummary>(`/books/${bookId}`),
-  importBook: (file: File) => {
+  book: (bookId: number, options?: RequestInit) =>
+    request<BookSummary>(`/books/${bookId}`, options),
+  importBook: (file: File, options?: RequestInit) => {
     const form = new FormData();
     form.append('file', file);
     return request<ImportResult>('/books/import', {
       method: 'POST',
       body: form,
+      signal: options?.signal,
     });
   },
-  deleteBook: (bookId: number) =>
+  deleteBook: (bookId: number, options?: RequestInit) =>
     request<{ deleted: boolean; book_id: number }>(`/books/${bookId}`, {
       method: 'DELETE',
+      signal: options?.signal,
     }),
-  chapters: (bookId: number) =>
-    request<ListResponse<ChapterSummary>>(`/books/${bookId}/chapters`),
-  chapter: (bookId: number, chapterIdx: number) =>
-    request<ChapterSummary>(`/books/${bookId}/chapters/${chapterIdx}`),
-  paragraphs: (bookId: number, chapterIdx: number, includeComments = true) => {
+  chapters: (bookId: number, options?: RequestInit) =>
+    request<ListResponse<ChapterSummary>>(`/books/${bookId}/chapters`, options),
+  chapter: (bookId: number, chapterIdx: number, options?: RequestInit) =>
+    request<ChapterSummary>(
+      `/books/${bookId}/chapters/${chapterIdx}`,
+      options,
+    ),
+  paragraphs: (
+    bookId: number,
+    chapterIdx: number,
+    includeComments = true,
+    options?: RequestInit,
+  ) => {
     const params = new URLSearchParams();
     if (includeComments) params.set('include_comments', 'true');
     const qs = params.toString();
     return request<ParagraphsResponse>(
       `/books/${bookId}/chapters/${chapterIdx}/paragraphs${qs ? `?${qs}` : ''}`,
+      options,
     );
   },
-  progress: (bookId: number) =>
-    request<ReadingProgress>(`/books/${bookId}/progress`),
+  progress: (bookId: number, options?: RequestInit) =>
+    request<ReadingProgress>(`/books/${bookId}/progress`, options),
   updateProgress: (
     bookId: number,
     chapterIdx: number,
     paragraphIdx: number,
     scrollPct: number,
+    options?: RequestInit,
   ) =>
     request<ProgressUpdateResponse>(`/books/${bookId}/progress`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
+      signal: options?.signal,
       body: JSON.stringify({
         chapter_idx: chapterIdx,
         paragraph_idx: paragraphIdx,
@@ -141,66 +171,75 @@ export const api = {
     bookId: number,
     chapterIdx: number,
     paragraphIdx?: number,
+    options?: RequestInit,
   ) => {
     const params = new URLSearchParams();
     if (paragraphIdx !== undefined) params.set('paragraph_idx', String(paragraphIdx));
     const qs = params.toString();
     return request<WindowResponse>(
       `/books/${bookId}/chapters/${chapterIdx}/windows/current${qs ? `?${qs}` : ''}`,
+      options,
     );
   },
-  comments: (bookId: number, chapterIdx: number, start?: number, end?: number) => {
+  comments: (
+    bookId: number,
+    chapterIdx: number,
+    start?: number,
+    end?: number,
+    options?: RequestInit,
+  ) => {
     const params = new URLSearchParams();
     if (start !== undefined) params.set('start', String(start));
     if (end !== undefined) params.set('end', String(end));
     const qs = params.toString();
     return request<ListResponse<ParagraphComment>>(
       `/books/${bookId}/chapters/${chapterIdx}/comments${qs ? `?${qs}` : ''}`,
+      options,
     );
   },
-  retryWindow: (windowId: number) =>
+  retryWindow: (windowId: number, options?: RequestInit) =>
     request<{ window: WindowResponse['window']; job: JobSummary }>(
       `/windows/${windowId}/retry`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: options?.signal,
         body: JSON.stringify({ reason: 'manual_retry' }),
       },
     ),
-  chatSession: (bookId: number, chapterIdx: number) =>
+  chatSession: (bookId: number, chapterIdx: number, options?: RequestInit) =>
     request<{ session: ChatSession }>(
       `/books/${bookId}/chat/session?chapter_idx=${chapterIdx}`,
+      options,
     ),
-  chatTurns: (sessionId: number, limit = 80, offset = 0) =>
+  chatTurns: (
+    sessionId: number,
+    limit = CHAT_TURN_HISTORY_LIMIT,
+    offset = 0,
+    options?: RequestInit,
+  ) =>
     request<ListResponse<ChatTurn>>(
       `/chat/sessions/${sessionId}/turns?limit=${limit}&offset=${offset}`,
+      options,
     ),
 };
 
 export interface ChatStreamCallbacks {
-  onStarted: (data: {
-    turn_id: number;
-    session_id: number;
-    trace_id: string;
-  }) => void;
-  onFirstDelta?: (data: Record<string, unknown>) => void;
-  onDelta: (data: { turn_id: number; delta: string }) => void;
-  onDone: (data: {
-    turn_id: number;
-    session_id: number;
-    ai_msg: string;
-    tokens_in: number | null;
-    tokens_out: number | null;
-    trace_id: string;
-  }) => void;
-  onError: (data: {
-    turn_id?: number;
-    session_id?: number;
-    code: string;
-    message: string;
-    trace_id?: string;
-    request_id?: string | null;
-  }) => void;
+  onStarted: (data: ChatStartedEvent) => void;
+  onFirstDelta?: (data: ChatFirstDeltaEvent) => void;
+  onDelta: (data: ChatDeltaEvent) => void;
+  onDone: (data: ChatDoneEvent) => void;
+  onError: (data: ChatErrorEvent) => void;
+}
+
+function reportInvalidStreamEvent(
+  eventName: string,
+  callbacks: ChatStreamCallbacks,
+) {
+  callbacks.onError({
+    code: 'stream_event_invalid',
+    message: `聊天流事件格式无效: ${eventName}`,
+  });
 }
 
 function consumeSseBlock(block: string, callbacks: ChatStreamCallbacks) {
@@ -218,9 +257,9 @@ function consumeSseBlock(block: string, callbacks: ChatStreamCallbacks) {
 
   if (!dataLines.length) return;
 
-  let data: Record<string, unknown>;
+  let data: unknown;
   try {
-    data = JSON.parse(dataLines.join('\n')) as Record<string, unknown>;
+    data = JSON.parse(dataLines.join('\n'));
   } catch {
     callbacks.onError({
       code: 'stream_parse_failed',
@@ -230,15 +269,40 @@ function consumeSseBlock(block: string, callbacks: ChatStreamCallbacks) {
   }
 
   if (eventName === 'chat.started') {
-    callbacks.onStarted(data as Parameters<ChatStreamCallbacks['onStarted']>[0]);
+    const parsed = chatStartedEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onStarted(parsed.data);
   } else if (eventName === 'chat.first_delta') {
-    callbacks.onFirstDelta?.(data);
+    const parsed = chatFirstDeltaEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onFirstDelta?.(parsed.data);
   } else if (eventName === 'chat.delta') {
-    callbacks.onDelta(data as Parameters<ChatStreamCallbacks['onDelta']>[0]);
+    const parsed = chatDeltaEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onDelta(parsed.data);
   } else if (eventName === 'chat.done') {
-    callbacks.onDone(data as Parameters<ChatStreamCallbacks['onDone']>[0]);
+    const parsed = chatDoneEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onDone(parsed.data);
   } else if (eventName === 'chat.error') {
-    callbacks.onError(data as Parameters<ChatStreamCallbacks['onError']>[0]);
+    const parsed = chatErrorEventSchema.safeParse(data);
+    if (!parsed.success) {
+      reportInvalidStreamEvent(eventName, callbacks);
+      return;
+    }
+    callbacks.onError(parsed.data);
   }
 }
 
@@ -336,8 +400,12 @@ export function createBackendEventSource(
 
   const handler = (message: MessageEvent) => {
     try {
-      const data = JSON.parse(String(message.data || '{}')) as BackendEvent;
-      onEvent({ ...data, event: data.event || message.type });
+      const data: unknown = JSON.parse(String(message.data || '{}'));
+      const parsed = backendEventSchema.safeParse(data);
+      if (!parsed.success) {
+        throw new Error('Invalid backend event payload');
+      }
+      onEvent({ ...parsed.data, event: parsed.data.event || message.type });
     } catch {
       onEvent({
         event: 'event.parse_failed',
