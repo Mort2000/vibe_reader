@@ -45,6 +45,58 @@ def _coerce_bool(
     return current
 
 
+def _coerce_int(
+    value: Any,
+    current: int,
+    path: str,
+    *,
+    errors: list[dict[str, str]] | None,
+    field_error: FieldErrorFactory | None,
+) -> int:
+    if isinstance(value, bool):
+        _append_error(errors, field_error, path, "必须是整数")
+        return current
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        _append_error(errors, field_error, path, "必须是整数")
+        return current
+
+
+def _coerce_float(
+    value: Any,
+    current: float,
+    path: str,
+    *,
+    errors: list[dict[str, str]] | None,
+    field_error: FieldErrorFactory | None,
+) -> float:
+    if isinstance(value, bool):
+        _append_error(errors, field_error, path, "必须是数字")
+        return current
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        _append_error(errors, field_error, path, "必须是数字")
+        return current
+
+
+def _coerce_string_list(
+    value: Any,
+    current: list[Any],
+    path: str,
+    *,
+    errors: list[dict[str, str]] | None,
+    field_error: FieldErrorFactory | None,
+) -> list[Any]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list | tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    _append_error(errors, field_error, path, "必须是字符串列表")
+    return current
+
+
 def _coerce_scalar(
     value: Any,
     current: Any,
@@ -65,29 +117,29 @@ def _coerce_scalar(
             strict=strict,
         )
     elif isinstance(current, int) and not isinstance(current, bool):
-        try:
-            if isinstance(value, bool):
-                raise TypeError
-            coerced = int(value)
-        except (TypeError, ValueError):
-            _append_error(errors, field_error, path, "必须是整数")
-            return current
+        coerced = _coerce_int(
+            value,
+            current,
+            path,
+            errors=errors,
+            field_error=field_error,
+        )
     elif isinstance(current, float):
-        try:
-            if isinstance(value, bool):
-                raise TypeError
-            coerced = float(value)
-        except (TypeError, ValueError):
-            _append_error(errors, field_error, path, "必须是数字")
-            return current
+        coerced = _coerce_float(
+            value,
+            current,
+            path,
+            errors=errors,
+            field_error=field_error,
+        )
     elif isinstance(current, list):
-        if isinstance(value, str):
-            coerced = [item.strip() for item in value.split(",") if item.strip()]
-        elif isinstance(value, list | tuple):
-            coerced = [str(item).strip() for item in value if str(item).strip()]
-        else:
-            _append_error(errors, field_error, path, "必须是字符串列表")
-            return current
+        coerced = _coerce_string_list(
+            value,
+            current,
+            path,
+            errors=errors,
+            field_error=field_error,
+        )
     elif isinstance(current, pathlib.Path):
         coerced = pathlib.Path(str(value or current))
     else:

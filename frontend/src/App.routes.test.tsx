@@ -1,5 +1,6 @@
 import { renderToString } from 'react-dom/server';
-import { MemoryRouter } from 'react-router';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from './App';
@@ -27,7 +28,6 @@ vi.mock('react-router', async () => {
   return {
     ...actual,
     useNavigate: () => routerMocks.navigate,
-    useBlocker: () => ({ state: 'unblocked' }),
   };
 });
 
@@ -139,10 +139,18 @@ function makeControllerStub(options: AppControllerOptions) {
 }
 
 function renderRoute(path: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+  const router = createMemoryRouter([{ path: '*', element: <App /> }], {
+    initialEntries: [path],
+  });
   return renderToString(
-    <MemoryRouter initialEntries={[path]}>
-      <App />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
   );
 }
 
