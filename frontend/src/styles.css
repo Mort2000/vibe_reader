@@ -69,6 +69,7 @@ button {
 
 .brand {
   gap: 12px;
+  min-width: 0;
 }
 
 .brand > div {
@@ -114,6 +115,7 @@ button {
 
 .topbar-actions {
   gap: 10px;
+  flex: 0 0 auto;
 }
 
 .icon-button,
@@ -1173,14 +1175,19 @@ code {
 
 @media (max-width: 1180px) {
   .app-shell {
-    grid-template-rows: 72px minmax(0, 1fr) 66px;
+    height: 100dvh;
+    min-height: 100dvh;
+    grid-template-rows: 72px minmax(0, 1fr);
     padding-bottom: 66px;
+    overflow: hidden;
   }
 
   .workspace {
     display: block;
-    height: auto;
+    height: 100%;
+    min-height: 0;
     padding: 16px;
+    overflow: hidden;
   }
 
   .library-panel,
@@ -1188,7 +1195,20 @@ code {
   .reader-stage,
   .assistant-panel {
     display: block;
+    height: 100%;
+    min-height: 0;
     overflow: visible;
+  }
+
+  .workspace[data-mode="library"] .library-panel,
+  .workspace[data-mode="chapters"] .chapter-panel,
+  .workspace[data-mode="status"] .assistant-panel {
+    overflow: auto;
+    scrollbar-width: thin;
+  }
+
+  .workspace[data-mode="reader"] .reader-stage {
+    overflow: hidden;
   }
 
   .nav-section {
@@ -1263,7 +1283,7 @@ code {
   }
 
   .workspace[data-mode="assistant"] .assistant-panel {
-    height: calc(100vh - 170px);
+    height: 100%;
     overflow: hidden;
   }
 
@@ -1274,7 +1294,8 @@ code {
 
   .reader-preview,
   .empty-reader {
-    min-height: calc(100vh - 170px);
+    height: 100%;
+    min-height: 0;
   }
 
   .status-center {
@@ -1287,7 +1308,35 @@ code {
   }
 
   .reader-preview {
-    padding: 20px;
+    padding: 16px;
+    overflow: hidden;
+  }
+
+  .reading-surface {
+    height: 100%;
+    min-height: 0;
+    gap: 10px;
+    padding: 14px;
+  }
+
+  .reader-toolbar {
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 8px;
+  }
+
+  .reader-toolbar .eyebrow,
+  .reader-toolbar small {
+    display: none;
+  }
+
+  .reader-toolbar > div:first-child {
+    gap: 0;
+  }
+
+  .reader-toolbar strong {
+    font-size: 16px;
+    white-space: nowrap;
   }
 
   .chapter-strip {
@@ -1303,7 +1352,9 @@ code {
   }
 
   .reader-document {
-    max-height: calc(100vh - 282px);
+    height: 100%;
+    max-height: none;
+    padding: 10px 6px 34vh;
   }
 
   .chat-panel {
@@ -1353,16 +1404,21 @@ code {
 
 @media (max-width: 840px) {
   .app-shell {
-    grid-template-rows: 64px minmax(0, 1fr) 66px;
+    grid-template-rows: 64px minmax(0, 1fr);
     padding-bottom: 66px;
   }
 
   .topbar {
+    gap: 10px;
     padding: 10px 14px;
   }
 
+  .brand {
+    flex: 1 1 auto;
+  }
+
   .brand span {
-    max-width: 42vw;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1379,17 +1435,22 @@ code {
 
   .reader-preview,
   .empty-reader {
-    min-height: calc(100vh - 150px);
+    height: 100%;
+    min-height: 0;
   }
 
   .reading-surface {
-    min-height: calc(100vh - 190px);
+    height: 100%;
+    min-height: 0;
+    gap: 8px;
+    padding: 12px;
   }
 
   .reader-document {
-    min-height: 48vh;
-    max-height: calc(100vh - 264px);
-    padding-bottom: 28vh;
+    height: 100%;
+    min-height: 0;
+    max-height: none;
+    padding: 8px 4px 30vh;
   }
 
   .paragraph-block {
@@ -1450,7 +1511,23 @@ code {
 
   .reader-preview,
   .empty-reader {
-    padding: 16px;
+    padding: 12px;
+  }
+
+  .toolbar-actions .status-pill {
+    display: none;
+  }
+
+  .reader-toolbar .soft-inline-button {
+    min-height: 32px;
+    padding: 0 10px;
+  }
+
+  .mobile-nav button {
+    min-height: 60px;
+    gap: 2px;
+    padding: 0 2px;
+    font-size: 11px;
   }
 
   .status-grid {

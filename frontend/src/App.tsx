@@ -12,6 +12,7 @@ import {
   Gauge,
   Import,
   Library,
+  Layers,
   Loader2,
   MessageSquareText,
   RefreshCcw,
@@ -101,6 +102,12 @@ function statusCopy(status: LoadStatus): string {
 function chapterDisplayTitle(chapter: ChapterSummary | null): string {
   if (!chapter) return '未选择章节';
   return chapter.title || `第 ${chapter.idx + 1} 章`;
+}
+
+function bookAuthorLabel(book: BookSummary): string | null {
+  const author = book.author?.trim();
+  if (!author) return '未知作者';
+  return author === book.title.trim() ? null : author;
 }
 
 function StatusPill({
@@ -406,7 +413,9 @@ function App() {
     [chapters, selectedChapter],
   );
   const brandSubtitle = selectedBook
-    ? `${selectedBook.title}${activeChapter ? ` · ${chapterDisplayTitle(activeChapter)}` : ''}`
+    ? activeChapter
+      ? `${chapterDisplayTitle(activeChapter)} · ${selectedBook.title}`
+      : selectedBook.title
     : '本地小说阅读器 · AI 伴读';
 
   const refreshCommentsAndWindow = useCallback(async () => {
@@ -904,7 +913,7 @@ function App() {
 
         <aside className={`chapter-panel nav-section ${chaptersCollapsed ? 'is-collapsed' : ''}`}>
           <NavSectionToggle
-            icon={<BookOpen size={18} />}
+            icon={<Layers size={18} />}
             label="章节"
             current={selectedBook ? chapterDisplayTitle(activeChapter) : '先选择书籍'}
             collapsed={chaptersCollapsed}
@@ -995,7 +1004,7 @@ function App() {
           className={mode === 'chapters' ? 'active' : ''}
           onClick={() => setMode('chapters')}
         >
-          <BookOpen size={18} />
+          <Layers size={18} />
           章节
         </button>
         <button
@@ -1135,25 +1144,28 @@ function BookList({
 
   return (
     <div className="book-list">
-      {books.map((book) => (
-        <button
-          className={`book-card ${selectedBookId === book.id ? 'active' : ''}`}
-          key={book.id}
-          onClick={() => onSelect(book)}
-        >
-          <BookCover book={book} />
-          <span className="book-meta">
-            <strong>{book.title}</strong>
-            <span>{book.author || '未知作者'}</span>
-            <small>
-              {book.total_chapters} 章
-              {book.last_progress
-                ? ` · 读到 ${book.last_progress.chapter_idx + 1}-${book.last_progress.paragraph_idx + 1}`
-                : ' · 未开始'}
-            </small>
-          </span>
-        </button>
-      ))}
+      {books.map((book) => {
+        const authorLabel = bookAuthorLabel(book);
+        return (
+          <button
+            className={`book-card ${selectedBookId === book.id ? 'active' : ''}`}
+            key={book.id}
+            onClick={() => onSelect(book)}
+          >
+            <BookCover book={book} />
+            <span className="book-meta">
+              <strong>{book.title}</strong>
+              {authorLabel && <span>{authorLabel}</span>}
+              <small>
+                {book.total_chapters} 章
+                {book.last_progress
+                  ? ` · 读到 ${book.last_progress.chapter_idx + 1}-${book.last_progress.paragraph_idx + 1}`
+                  : ' · 未开始'}
+              </small>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1198,7 +1210,7 @@ function ChapterNavigator({
   return (
     <section className="chapter-strip">
       <div className="section-heading">
-        <BookOpen size={18} />
+        <Layers size={18} />
         <strong>章节</strong>
       </div>
       <div className="chapter-list">
@@ -1224,11 +1236,11 @@ function EmptyChapterPanel() {
   return (
     <section className="chapter-strip empty-chapter">
       <div className="section-heading">
-        <BookOpen size={18} />
+        <Layers size={18} />
         <strong>章节</strong>
       </div>
       <div className="empty-feed">
-        <BookOpen size={18} />
+        <Layers size={18} />
         <span>选择书籍后显示章节。</span>
       </div>
     </section>
