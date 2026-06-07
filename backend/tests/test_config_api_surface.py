@@ -182,6 +182,14 @@ log_format = "json"
             json={"groups": {"observability": {"log_level": "ERROR", "log_format": "text"}}},
         )
         written_after_save = toml.load(config_path)
+        save_reset_response = await client.put(
+            "/api/config",
+            json={
+                "config": {"groups": {"observability": {"log_level": "INFO"}}},
+                "reset_env_override_paths": ["observability.log_level"],
+            },
+        )
+        written_after_explicit_save_reset = toml.load(config_path)
         reset_response = await client.post(
             "/api/config/reset",
             json={"scope": "field", "path": "observability.log_level"},
@@ -193,6 +201,12 @@ log_format = "json"
     assert save_response.json()["metadata"]["env_overrides"][
         "observability.log_level"
     ] == "VIBE_READER_LOG_LEVEL"
+
+    assert save_reset_response.status_code == 200
+    assert written_after_explicit_save_reset["observability"]["log_level"] == "INFO"
+    assert save_reset_response.json()["config"]["groups"]["observability"][
+        "log_level"
+    ] == "DEBUG"
 
     assert reset_response.status_code == 200
     written_after_reset = toml.load(config_path)
@@ -363,6 +377,35 @@ async def test_model_ping_works_outside_verify_and_preserves_masked_secret(
 
 
 @pytest.mark.asyncio
+async def test_model_ping_returns_chinese_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("VIBE_READER_DATA_DIR", str(tmp_path))
+    settings = Settings(
+        data_dir=tmp_path,
+        models=[
+            ModelConfig(
+                id="main",
+                url="https://provider.example/v1",
+                model_name="saved-model",
+            )
+        ],
+        defaults=ModelDefaultsConfig(global_model_id="main"),
+    )
+    app = _app(settings)
+
+    async with await _client(app) as client:
+        response = await client.post(
+            "/api/config/models/ping",
+            json={"model_id": "main"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "LLM API Key 未配置"
+
+
+@pytest.mark.asyncio
 async def test_save_config_returns_chinese_field_errors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -383,4 +426,71 @@ async def test_save_config_returns_chinese_field_errors(
     field_errors = response.json()["error"]["details"]["fields"]
     assert field_errors == [
         {"path": "defaults.chat_model_id", "message": "引用的模型不存在"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_save_config_rejects_invalid_url_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("VIBE_READER_DATA_DIR", str(tmp_path))
+    app = _app(load_settings(write_migrations=False))
+
+    async with await _client(app) as client:
+        response = await client.put(
+            "/api/config",
+            json={
+                "models": [
+                    {
+                        "id": "main",
+                        "url": "not-a-url",
+                        "model_name": "model",
+                    }
+                ],
+                "groups": {
+                    "observability": {
+                        "otel": {"endpoint": "also-not-a-url"},
+                    }
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    field_errors = response.json()["error"]["details"]["fields"]
+    assert {
+        "path": "models[0].url",
+        "message": "必须是有效的 http(s) URL",
+    } in field_errors
+    assert {
+        "path": "observability.otel.endpoint",
+        "message": "必须为空或有效的 http(s) URL",
+    } in field_errors
+
+
+@pytest.mark.asyncio
+async def test_reset_config_rejects_invalid_field_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("VIBE_READER_DATA_DIR", str(tmp_path))
+    app = _app(load_settings(write_migrations=False))
+
+    async with await _client(app) as client:
+        defaults_response = await client.post(
+            "/api/config/reset",
+            json={"scope": "field", "path": "defaults.not_a_field"},
+        )
+        nested_response = await client.post(
+            "/api/config/reset",
+            json={"scope": "field", "path": "reader.not_a_field"},
+        )
+
+    assert defaults_response.status_code == 422
+    assert defaults_response.json()["error"]["details"]["fields"] == [
+        {"path": "path", "message": "不支持重置该配置项"}
+    ]
+    assert nested_response.status_code == 422
+    assert nested_response.json()["error"]["details"]["fields"] == [
+        {"path": "path", "message": "不支持重置 reader.not_a_field"}
     ]

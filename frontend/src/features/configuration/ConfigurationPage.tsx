@@ -24,7 +24,7 @@ import {
 
 import { StatusPill } from '../../components/StatusPill';
 import { ApiError, api, describeError } from '../../lib/api';
-import { queryKeys } from '../../lib/apiQueries';
+import { runtimeQueryOptions, settingsQueryOptions } from '../../lib/apiQueries';
 import type {
   ConfigDocument,
   ConfigFieldMetadata,
@@ -143,12 +143,14 @@ export function ConfigurationPage({
   const [editor, setEditor] = useState<ModelEditor | null>(null);
   const [pingState, setPingState] = useState<Record<string, PingState>>({});
   const [saving, setSaving] = useState(false);
+  const [resetEnvOverridePaths, setResetEnvOverridePaths] = useState<string[]>([]);
 
   const applyDocument = useCallback((nextDoc: ConfigDocument) => {
     const nextDraft = cloneConfig(nextDoc.config);
     setDoc(nextDoc);
     setDraft(nextDraft);
     setBaseline(configFingerprint(nextDraft));
+    setResetEnvOverridePaths([]);
     setFieldErrors({});
     setEditor(null);
   }, []);
@@ -174,10 +176,15 @@ export function ConfigurationPage({
     void loadConfig();
   }, [loadConfig]);
 
-  const dirty = useMemo(
+  const draftDirty = useMemo(
     () => (draft ? configFingerprint(draft) !== baseline : false),
     [baseline, draft],
   );
+  const editorDirty = useMemo(
+    () => (editor ? modelEditorDirty(editor, draft?.models ?? []) : false),
+    [draft?.models, editor],
+  );
+  const dirty = draftDirty || editorDirty;
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -194,10 +201,10 @@ export function ConfigurationPage({
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [dirty]);
 
-  const invalidateSummaries = useCallback(async () => {
+  const refreshSummaries = useCallback(async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.runtime() }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.settings() }),
+      queryClient.fetchQuery({ ...runtimeQueryOptions(), staleTime: 0 }),
+      queryClient.fetchQuery({ ...settingsQueryOptions(), staleTime: 0 }),
     ]);
   }, [queryClient]);
 
@@ -209,6 +216,18 @@ export function ConfigurationPage({
   const updateDraft = useCallback((updater: (current: ConfigFile) => ConfigFile) => {
     setDraft((current) => (current ? updater(current) : current));
   }, []);
+
+  const rememberEnvOverrideResets = useCallback(
+    (paths: string[]) => {
+      const overrides = metadata?.env_overrides ?? {};
+      const matched = paths.filter((path) => overrides[path]);
+      if (!matched.length) return;
+      setResetEnvOverridePaths((current) =>
+        Array.from(new Set([...current, ...matched])),
+      );
+    },
+    [metadata],
+  );
 
   const handleFieldChange = useCallback(
     (path: string, value: unknown) => {
@@ -226,9 +245,10 @@ export function ConfigurationPage({
     (field: ConfigFieldMetadata) => {
       if (!window.confirm(`确认将“${field.label}”恢复默认值？`)) return;
       handleFieldChange(field.path, cloneValue(field.default));
+      rememberEnvOverrideResets([field.path]);
       setActionState({ status: 'success', label: `${field.label} 已恢复默认` });
     },
-    [handleFieldChange],
+    [handleFieldChange, rememberEnvOverrideResets],
   );
 
   const resetGroup = useCallback(
@@ -236,6 +256,7 @@ export function ConfigurationPage({
       const group = metadata?.groups[groupName];
       if (!group) return;
       if (!window.confirm(`确认将“${group.label}”分组恢复默认值？`)) return;
+      const resetPaths = Object.keys(group.fields);
       updateDraft((current) => {
         let next = current;
         Object.values(group.fields).forEach((field) => {
@@ -243,9 +264,10 @@ export function ConfigurationPage({
         });
         return next;
       });
+      rememberEnvOverrideResets(resetPaths);
       setActionState({ status: 'success', label: `${group.label} 已恢复默认` });
     },
-    [metadata, updateDraft],
+    [metadata, rememberEnvOverrideResets, updateDraft],
   );
 
   const resetPreset = useCallback(
@@ -274,14 +296,31 @@ export function ConfigurationPage({
         });
         return next;
       });
+      if (preset === 'reader_window') {
+        rememberEnvOverrideResets(fieldPathsForGroups(metadata, ['reader', 'window_l1']));
+      } else if (preset === 'context_budget') {
+        rememberEnvOverrideResets(
+          fieldPathsForGroups(metadata, ['context', 'context_l2', 'context_l3']),
+        );
+      } else if (preset === 'observability_common') {
+        rememberEnvOverrideResets(OBSERVABILITY_COMMON_PATHS);
+      }
       if (preset === 'llm') setEditor(null);
       setActionState({ status: 'success', label: `${reset.label} 已重置` });
     },
-    [metadata, updateDraft],
+    [metadata, rememberEnvOverrideResets, updateDraft],
   );
 
   const validateAndSave = useCallback(async () => {
     if (!draft || !metadata) return;
+    if (editorDirty) {
+      setActionState({
+        status: 'error',
+        label: '模型编辑未写入草稿',
+        detail: '请先点击“写入草稿”，或关闭模型编辑后再保存。',
+      });
+      return;
+    }
     const errors = validateConfigDraft(draft, metadata);
     if (Object.keys(errors).length) {
       setFieldErrors(errors);
@@ -293,13 +332,13 @@ export function ConfigurationPage({
       return;
     }
 
-    setSaving(true);
-    setActionState({ status: 'loading', label: '保存配置' });
-    try {
-      const nextDoc = await api.saveConfig(draft);
-      applyDocument(nextDoc);
-      await invalidateSummaries();
-      setActionState({ status: 'success', label: '配置已保存并应用' });
+      setSaving(true);
+      setActionState({ status: 'loading', label: '保存配置' });
+      try {
+        const nextDoc = await api.saveConfig(draft, { resetEnvOverridePaths });
+        applyDocument(nextDoc);
+        await refreshSummaries();
+        setActionState({ status: 'success', label: '配置已保存并应用' });
     } catch (error) {
       setFieldErrors(fieldErrorsFromApi(error));
       const described = describeError(error);
@@ -311,7 +350,7 @@ export function ConfigurationPage({
     } finally {
       setSaving(false);
     }
-  }, [applyDocument, draft, invalidateSummaries, metadata]);
+  }, [applyDocument, draft, editorDirty, metadata, refreshSummaries, resetEnvOverridePaths]);
 
   const discardChanges = useCallback(() => {
     if (!doc) return;
@@ -453,7 +492,7 @@ export function ConfigurationPage({
       try {
         const nextDoc = await api.switchActiveModel(scope, modelId);
         applyDocument(nextDoc);
-        await invalidateSummaries();
+        await refreshSummaries();
         setActionState({ status: 'success', label: '当前模型已切换' });
       } catch (error) {
         const described = describeError(error);
@@ -464,7 +503,7 @@ export function ConfigurationPage({
         });
       }
     },
-    [applyDocument, dirty, invalidateSummaries],
+    [applyDocument, dirty, refreshSummaries],
   );
 
   const pingModel = useCallback(
@@ -490,7 +529,7 @@ export function ConfigurationPage({
           ...current,
           [key]: {
             status: 'error',
-            label: described.title || '测试失败',
+            label: '测试失败',
             detail: described.detail,
           },
         }));
@@ -833,21 +872,21 @@ function ModelManagement({
           label="切换全局当前"
           value={doc.active.global_model_id}
           fallback="沿用全局默认"
-          models={modelOptions}
+          models={doc.models}
           onChange={(value) => onSwitchActive('global', value)}
         />
         <ActiveModelSelect
           label="切换 Chat 当前"
           value={doc.active.chat_model_id}
           fallback="沿用 Chat 默认"
-          models={modelOptions}
+          models={doc.models}
           onChange={(value) => onSwitchActive('chat', value)}
         />
         <ActiveModelSelect
           label="切换评论/压缩当前"
           value={doc.active.comment_model_id}
           fallback="沿用评论默认"
-          models={modelOptions}
+          models={doc.models}
           onChange={(value) => onSwitchActive('comment', value)}
         />
       </div>
@@ -1355,6 +1394,15 @@ function resetGroupsToDefaults(
   return next;
 }
 
+function fieldPathsForGroups(
+  metadata: ConfigDocument['metadata'],
+  groupNames: string[],
+): string[] {
+  return groupNames.flatMap((groupName) =>
+    Object.keys(metadata.groups[groupName]?.fields ?? {}),
+  );
+}
+
 function valueForField(config: ConfigFile, field: ConfigFieldMetadata): unknown {
   return getConfigPath(config, field.path);
 }
@@ -1412,6 +1460,9 @@ function validateConfigDraft(
     if (!model.model_name.trim()) {
       errors[`${basePath}.model_name`] = '模型名称不能为空';
     }
+    if (model.url.trim() && !isHttpUrl(model.url)) {
+      errors[`${basePath}.url`] = '必须是有效的 http(s) URL';
+    }
     if (!THINK_EFFORT_OPTIONS.includes(model.think_effort)) {
       errors[`${basePath}.think_effort`] = '思考力度取值无效';
     }
@@ -1454,6 +1505,14 @@ function validateFieldValue(field: ConfigFieldMetadata, value: unknown): string 
     const allowed = field.constraints.values.map(String);
     if (!allowed.includes(String(value ?? ''))) return '取值不在允许范围内';
   }
+  const format = field.constraints.format;
+  const text = stringInputValue(value).trim();
+  if (format === 'url' && text && !isHttpUrl(text)) {
+    return '必须是有效的 http(s) URL';
+  }
+  if (format === 'url_or_empty' && text && !isHttpUrl(text)) {
+    return '必须为空或有效的 http(s) URL';
+  }
   return null;
 }
 
@@ -1483,10 +1542,48 @@ function validateModelForm(
     errors.id = '模型 ID 已存在';
   }
   if (!editor.form.model_name.trim()) errors.model_name = '模型名称不能为空';
+  if (editor.form.url.trim() && !isHttpUrl(editor.form.url)) {
+    errors.url = '必须是有效的 http(s) URL';
+  }
   if (!THINK_EFFORT_OPTIONS.includes(editor.form.think_effort)) {
     errors.think_effort = '思考力度取值无效';
   }
   return errors;
+}
+
+function modelEditorDirty(
+  editor: ModelEditor,
+  models: ModelConfigSummary[],
+): boolean {
+  if (editor.mode === 'new') {
+    return (
+      editor.form.id.trim() !== '' ||
+      editor.form.provider.trim() !== 'openai_compatible' ||
+      editor.form.url.trim() !== '' ||
+      editor.form.model_name.trim() !== '' ||
+      editor.form.api_key !== '' ||
+      editor.form.think_effort !== ''
+    );
+  }
+
+  const existing = models.find((model) => model.id === editor.originalId);
+  if (!existing) return true;
+  return (
+    editor.form.provider.trim() !== existing.provider ||
+    editor.form.url.trim() !== existing.url ||
+    editor.form.model_name.trim() !== existing.model_name ||
+    editor.form.think_effort !== existing.think_effort ||
+    editor.form.apiKeyTouched
+  );
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function modelFromEditor(

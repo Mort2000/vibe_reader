@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, fields, is_dataclass, replace
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Path as PathParam, Request
 
@@ -103,6 +104,26 @@ def _raise_validation(errors: list[dict[str, str]]) -> None:
             "配置校验失败",
             details={"fields": errors},
         )
+
+
+def _reset_env_override_paths_from_payload(payload: dict[str, Any]) -> set[str]:
+    raw_paths = payload.get("reset_env_override_paths", [])
+    if raw_paths is None:
+        return set()
+    if not isinstance(raw_paths, list):
+        raise AppError(
+            "validation_error",
+            "配置校验失败",
+            details={
+                "fields": [
+                    _field_error(
+                        "reset_env_override_paths",
+                        "必须是配置项路径数组",
+                    )
+                ]
+            },
+        )
+    return {str(path).strip() for path in raw_paths if str(path).strip()}
 
 
 def _normalize_scope(scope: str) -> str:
@@ -293,6 +314,11 @@ def _validate_constraints(
     allowed = constraints.get("values")
     if allowed is not None and value not in allowed:
         errors.append(_field_error(path, f"必须是以下值之一：{', '.join(allowed)}"))
+    fmt = constraints.get("format")
+    if fmt == "url" and value and not _is_http_url(str(value)):
+        errors.append(_field_error(path, "必须是有效的 http(s) URL"))
+    if fmt == "url_or_empty" and value and not _is_http_url(str(value)):
+        errors.append(_field_error(path, "必须为空或有效的 http(s) URL"))
     if isinstance(value, int | float) and not isinstance(value, bool):
         minimum = constraints.get("min")
         maximum = constraints.get("max")
@@ -300,6 +326,11 @@ def _validate_constraints(
             errors.append(_field_error(path, f"不能小于 {minimum}"))
         if maximum is not None and value > maximum:
             errors.append(_field_error(path, f"不能大于 {maximum}"))
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _coerce_dataclass_group(
@@ -357,6 +388,8 @@ def _validate_model_payload(
         errors.append(_field_error(f"{path}.id", "模型 ID 不能为空"))
     if not model.model_name.strip():
         errors.append(_field_error(f"{path}.model_name", "模型名称不能为空"))
+    if model.url.strip() and not _is_http_url(model.url):
+        errors.append(_field_error(f"{path}.url", "必须是有效的 http(s) URL"))
     raw_effort = str(
         payload.get(
             "think_effort",
@@ -525,17 +558,23 @@ def _replace_path_value(obj: Any, parts: list[str], value: Any) -> Any:
 def _reset_field(settings: Settings, path: str) -> Settings:
     if path.startswith("defaults."):
         default_refs = ModelDefaultsConfig()
-        value = getattr(default_refs, path.split(".", 1)[1])
+        field_name = path.split(".", 1)[1]
+        if field_name not in {"global_model_id", "chat_model_id", "comment_model_id"}:
+            _raise_validation([_field_error("path", "不支持重置该配置项")])
+        value = getattr(default_refs, field_name)
         return replace(
             settings,
-            defaults=replace(settings.defaults, **{path.split(".", 1)[1]: value}),
+            defaults=replace(settings.defaults, **{field_name: value}),
         )
     if path.startswith("active."):
         active_refs = ActiveModelsConfig()
-        value = getattr(active_refs, path.split(".", 1)[1])
+        field_name = path.split(".", 1)[1]
+        if field_name not in {"global_model_id", "chat_model_id", "comment_model_id"}:
+            _raise_validation([_field_error("path", "不支持重置该配置项")])
+        value = getattr(active_refs, field_name)
         return replace(
             settings,
-            active=replace(settings.active, **{path.split(".", 1)[1]: value}),
+            active=replace(settings.active, **{field_name: value}),
         )
 
     group_name, _, field_path = path.partition(".")
@@ -547,14 +586,16 @@ def _reset_field(settings: Settings, path: str) -> Settings:
         )
     group = getattr(settings, group_name)
     default_group = DATACLASS_GROUPS[group_name]()
-    value = _read_nested_attr(default_group, field_path.split("."))
+    value = _read_nested_attr(default_group, field_path.split("."), path)
     new_group = _replace_path_value(group, field_path.split("."), value)
     return replace(settings, **{group_name: new_group})
 
 
-def _read_nested_attr(obj: Any, parts: list[str]) -> Any:
+def _read_nested_attr(obj: Any, parts: list[str], path: str) -> Any:
     current = obj
     for part in parts:
+        if not hasattr(current, part):
+            _raise_validation([_field_error("path", f"不支持重置 {path}")])
         current = getattr(current, part)
     return current
 
@@ -628,7 +669,11 @@ async def read_config_schema(request: Request) -> dict[str, Any]:
 @router.put("/config")
 async def save_config(request: Request, body: dict[str, Any]) -> dict[str, Any]:
     settings = _settings_from_payload(current_settings(request), body)
-    saved = _save_and_reload(request, settings)
+    saved = _save_and_reload(
+        request,
+        settings,
+        reset_env_override_paths=_reset_env_override_paths_from_payload(body),
+    )
     return _config_document(saved)
 
 

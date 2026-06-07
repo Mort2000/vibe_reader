@@ -106,12 +106,18 @@ export const api = {
   runtime: (options?: RequestInit) => request<RuntimeInfo>('/runtime', options),
   settings: (options?: RequestInit) => request<SettingsSummary>('/settings', options),
   config: (options?: RequestInit) => request<ConfigDocument>('/config', options),
-  saveConfig: (config: ConfigDocument['config'], options?: RequestInit) =>
+  saveConfig: (
+    config: ConfigDocument['config'],
+    options?: RequestInit & { resetEnvOverridePaths?: string[] },
+  ) =>
     request<ConfigDocument>('/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       signal: options?.signal,
-      body: JSON.stringify({ config }),
+      body: JSON.stringify({
+        config,
+        reset_env_override_paths: options?.resetEnvOverridePaths ?? [],
+      }),
     }),
   resetConfig: (
     body:

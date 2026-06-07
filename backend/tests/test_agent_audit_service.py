@@ -6,13 +6,16 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.config import Settings
+from pydantic_ai.messages import ModelResponse, TextPart
+
+from app.config import ModelConfig, ModelDefaultsConfig, Settings
 from app.domain.models import ChapterCompressedSummary, OriginalTextChunk, ReadingWindow
 from app.verification.audit_packets import (
     CURRENT_WINDOW_TAG,
     _round_usage,
     _split_user_prompt_segments,
     build_comment_interaction_packet,
+    build_chat_interaction_packet,
     build_compaction_interaction_packet,
     build_tool_events,
 )
@@ -238,3 +241,130 @@ def test_build_compaction_interaction_packet_includes_report_metadata() -> None:
     } >= {"system_policy", "source_original_chunk"}
     assert packet["injected_context"]["total_input_token_estimate"] > 0
     assert packet["final_result"]["summary_id"] == 1
+
+
+def test_interaction_packets_use_agent_scoped_effective_models() -> None:
+    settings = Settings(
+        models=[
+            ModelConfig(id="global", model_name="global-model"),
+            ModelConfig(id="chat", model_name="chat-model"),
+            ModelConfig(id="comment", model_name="comment-model"),
+        ],
+        defaults=ModelDefaultsConfig(
+            global_model_id="global",
+            chat_model_id="chat",
+            comment_model_id="comment",
+        ),
+    )
+
+    class _Result:
+        @staticmethod
+        def all_messages():
+            return [ModelResponse(parts=[TextPart(content="ok")])]
+
+    window = ReadingWindow(
+        id=7,
+        book_id=1,
+        chapter_idx=1,
+        window_seq=2,
+        start_paragraph_idx=0,
+        end_paragraph_idx=5,
+        focus_start_paragraph_idx=0,
+        focus_end_paragraph_idx=5,
+        assistant_frontier_paragraph_idx=5,
+    )
+    comment_packet = build_comment_interaction_packet(
+        invocation_id="inv_comment_R1_0001",
+        trace_id="trace_x",
+        verify_run_id="run_1",
+        verify_scenario_id="R1_real_happy_path",
+        verify_step_id="advance_for_comments",
+        job_id=2,
+        book={"id": 1, "title": "Test Book"},
+        chapter_idx=1,
+        window=window,
+        window_paragraphs=[{"paragraph_idx": 0, "text": "text", "char_count": 4}],
+        target_paragraphs=[0],
+        density_hint=None,
+        prompt="comment prompt",
+        agent_result=_Result(),
+        settings=settings,
+        duration_ms=1.0,
+        input_tokens=10,
+        output_tokens=5,
+        cached_input_tokens=None,
+        raw_payloads=[],
+        valid_comments=[],
+        discarded=[],
+        validation_failed_count=0,
+        no_call=False,
+    )
+
+    compaction_packet = build_compaction_interaction_packet(
+        invocation_id="inv_compaction_R1_0001",
+        trace_id="trace_x",
+        verify_run_id="run_1",
+        verify_scenario_id="R1_real_happy_path",
+        verify_step_id="advance_for_compaction",
+        job_id=5,
+        book_id=1,
+        book={"id": 1, "title": "Test Book", "file_hash": "abc"},
+        chapter_idx=1,
+        source_chunk=OriginalTextChunk.from_row(
+            {
+                "id": 2,
+                "book_id": 1,
+                "chapter_idx": 1,
+                "chunk_seq": 0,
+                "start_paragraph_idx": 0,
+                "end_paragraph_idx": 179,
+                "token_estimate": 7106,
+                "text_hash": "deadbeef",
+            }
+        ),
+        previous_summary_row=None,
+        next_summary_row=ChapterCompressedSummary.from_row(
+            {
+                "id": 1,
+                "book_id": 1,
+                "chapter_idx": 1,
+                "covered_start_paragraph_idx": 0,
+                "covered_end_paragraph_idx": 179,
+                "token_estimate": 331,
+                "compaction_epoch": 1,
+            }
+        ),
+        prompt="compaction prompt",
+        agent_result=_Result(),
+        settings=settings,
+        duration_ms=100.0,
+        input_tokens=8235,
+        output_tokens=446,
+        cached_input_tokens=3840,
+        transaction_committed=True,
+    )
+
+    chat_packet = build_chat_interaction_packet(
+        invocation_id="inv_chat_R1_0001",
+        trace_id="trace_x",
+        verify_run_id="run_1",
+        verify_scenario_id="R1_real_happy_path",
+        verify_step_id="chat",
+        book={"id": 1, "title": "Test Book"},
+        chapter_idx=1,
+        paragraph_idx=0,
+        prompt="chat prompt",
+        agent_result=_Result(),
+        settings=settings,
+        duration_ms=10.0,
+        input_tokens=12,
+        output_tokens=3,
+        recent_chat_turns=[],
+        user_msg="hello",
+    )
+
+    assert comment_packet["model"] == "comment-model"
+    assert comment_packet["llm_rounds"][0]["request"]["model"] == "comment-model"
+    assert compaction_packet["model"] == "comment-model"
+    assert compaction_packet["llm_rounds"][0]["request"]["model"] == "comment-model"
+    assert chat_packet["llm_rounds"][0]["request"]["model"] == "chat-model"
