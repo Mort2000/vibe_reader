@@ -44,6 +44,7 @@ export function StatusCenter({
   windowCounts,
   jobs,
   onRetryWindow,
+  onOpenConfig,
 }: {
   request: RequestState;
   runtime: RuntimeInfo | null;
@@ -56,6 +57,7 @@ export function StatusCenter({
   windowCounts: WindowCounts;
   jobs: JobSummary[];
   onRetryWindow: () => void;
+  onOpenConfig: () => void;
 }) {
   const contextLimit =
     settings?.context?.provider_context_limit_tokens ??
@@ -66,6 +68,19 @@ export function StatusCenter({
     settings?.window_l1?.focus_target_tokens ??
     settings?.window?.target_window_tokens ??
     0;
+  const effective = runtime?.models?.effective ?? settings?.effective;
+  const globalModel =
+    effective?.global?.model_name || runtime?.llm.model || settings?.llm.model;
+  const chatModel = effective?.chat?.model_name || globalModel;
+  const commentModel = effective?.comment?.model_name || globalModel;
+  const keyConfigured =
+    effective?.global?.api_key_configured ?? runtime?.llm.api_key_configured;
+  const readerSummary =
+    settings?.reader.font_size !== undefined && settings?.reader.line_height !== undefined
+      ? `${settings.reader.font_size}px / ${settings.reader.line_height}`
+      : settings?.reader.lookahead_paragraphs !== undefined
+        ? `前瞻 ${settings.reader.lookahead_paragraphs} 段`
+        : '等待加载';
 
   return (
     <div className="status-center observability-section">
@@ -94,10 +109,10 @@ export function StatusCenter({
         <MetricCard
           icon={<Bot size={18} />}
           label="模型"
-          value={compactModelName(runtime?.llm.model || settings?.llm.model)}
-          title={runtime?.llm.model || settings?.llm.model || '未知'}
-          detail={runtime?.llm.api_key_configured ? 'Key 已配置' : 'Key 未配置'}
-          tone={runtime?.llm.api_key_configured ? 'good' : 'warn'}
+          value={compactModelName(globalModel)}
+          title={globalModel || '未知'}
+          detail={keyConfigured ? 'Key 已配置' : 'Key 未配置'}
+          tone={keyConfigured ? 'good' : 'warn'}
         />
         <MetricCard
           icon={<Gauge size={18} />}
@@ -136,6 +151,10 @@ export function StatusCenter({
         <div className="section-heading">
           <Settings size={18} />
           <strong>运行摘要</strong>
+          <button className="soft-inline-button" onClick={onOpenConfig}>
+            <Settings size={15} />
+            打开配置
+          </button>
         </div>
         <dl className="runtime-list">
           <div>
@@ -152,11 +171,15 @@ export function StatusCenter({
           </div>
           <div>
             <dt>阅读设置</dt>
-            <dd>
-              {settings
-                ? `${settings.reader.font_size}px / ${settings.reader.line_height}`
-                : '等待加载'}
-            </dd>
+            <dd>{readerSummary}</dd>
+          </div>
+          <div>
+            <dt>Chat 模型</dt>
+            <dd>{compactModelName(chatModel)}</dd>
+          </div>
+          <div>
+            <dt>评论/压缩模型</dt>
+            <dd>{compactModelName(commentModel)}</dd>
           </div>
         </dl>
       </section>

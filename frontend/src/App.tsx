@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Navigate,
   Route,
@@ -16,6 +16,7 @@ import {
   Library,
   Loader2,
   RefreshCcw,
+  Settings as SettingsIcon,
 } from 'lucide-react';
 
 import {
@@ -30,6 +31,7 @@ import { BrandMark } from './components/BrandMark';
 import { NavSectionToggle } from './components/NavSectionToggle';
 import { StatusPill } from './components/StatusPill';
 import { ChatCompanion } from './features/assistant/ChatCompanion';
+import { ConfigurationPage } from './features/configuration/ConfigurationPage';
 import {
   BookList,
   ImportReceipt,
@@ -66,25 +68,33 @@ function AppRoute() {
 function AppShellRoute({ route }: { route: ParsedAppRoute }) {
   const navigate = useNavigate();
   const { mode, routeBookId, routeChapterIdx } = route;
+  const [configDirty, setConfigDirty] = useState(false);
+
+  const confirmLeaveConfig = useCallback(() => {
+    if (mode !== 'config' || !configDirty) return true;
+    return window.confirm('配置页存在未保存修改，确认离开？');
+  }, [configDirty, mode]);
 
   const navigateToBook = useCallback(
     (book: BookSummary, context: ReaderContext | null = null) => {
+      if (!confirmLeaveConfig()) return;
       void navigate(
         context?.bookId === book.id
           ? modeRoutePath('reader', context, book.id)
           : bookRoutePath(book.id),
       );
     },
-    [navigate],
+    [confirmLeaveConfig, navigate],
   );
   const navigateToChapter = useCallback(
     (chapterIdx: number) => {
       if (routeBookId === null) return;
+      if (!confirmLeaveConfig()) return;
       void navigate(
         modeRoutePath('reader', { bookId: routeBookId, chapterIdx }, routeBookId),
       );
     },
-    [navigate, routeBookId],
+    [confirmLeaveConfig, navigate, routeBookId],
   );
 
   const app = useAppController({
@@ -113,11 +123,12 @@ function AppShellRoute({ route }: { route: ParsedAppRoute }) {
 
   const navigateToMode = useCallback(
     (targetMode: PaneMode) => {
+      if (targetMode !== 'config' && !confirmLeaveConfig()) return;
       void navigate(
         modeRoutePath(targetMode, app.activeContext, app.selectedBookId),
       );
     },
-    [app.activeContext, app.selectedBookId, navigate],
+    [app.activeContext, app.selectedBookId, confirmLeaveConfig, navigate],
   );
 
   const selectedBookLabel =
@@ -147,6 +158,14 @@ function AppShellRoute({ route }: { route: ParsedAppRoute }) {
             title="刷新运行状态"
           >
             <RefreshCcw size={18} />
+          </button>
+          <button
+            className={`topbar-nav-button ${mode === 'config' ? 'active' : ''}`}
+            onClick={() => navigateToMode('config')}
+            title="配置管理"
+          >
+            <SettingsIcon size={17} />
+            <span>配置</span>
           </button>
         </div>
       </header>
@@ -211,7 +230,9 @@ function AppShellRoute({ route }: { route: ParsedAppRoute }) {
         </aside>
 
         <section className="reader-stage">
-          {app.selectedBookId !== null ? (
+          {mode === 'config' ? (
+            <ConfigurationPage onDirtyChange={setConfigDirty} />
+          ) : app.selectedBookId !== null ? (
             <ReaderPreview
               activeChapter={app.activeChapter}
               paragraphs={app.paragraphs}
@@ -234,18 +255,20 @@ function AppShellRoute({ route }: { route: ParsedAppRoute }) {
         </section>
 
         <aside className="assistant-panel">
-          <ChatCompanion
-            chatTurns={app.chatTurns}
-            streamingTurn={app.streamingTurn}
-            chatInput={app.chatInput}
-            chatStatus={app.chatStatus}
-            selectedBook={app.selectedBook}
-            activeChapter={app.activeChapter}
-            selectedParagraph={app.selectedParagraph}
-            onInputChange={app.setChatInput}
-            onSend={app.sendChat}
-            onAbort={app.abortChat}
-          />
+          {mode !== 'config' && (
+            <ChatCompanion
+              chatTurns={app.chatTurns}
+              streamingTurn={app.streamingTurn}
+              chatInput={app.chatInput}
+              chatStatus={app.chatStatus}
+              selectedBook={app.selectedBook}
+              activeChapter={app.activeChapter}
+              selectedParagraph={app.selectedParagraph}
+              onInputChange={app.setChatInput}
+              onSend={app.sendChat}
+              onAbort={app.abortChat}
+            />
+          )}
           <StatusCenter
             request={app.request}
             runtime={app.runtime}
@@ -258,6 +281,7 @@ function AppShellRoute({ route }: { route: ParsedAppRoute }) {
             windowCounts={app.windowCounts}
             jobs={app.jobs}
             onRetryWindow={app.retryCurrentWindow}
+            onOpenConfig={() => navigateToMode('config')}
           />
         </aside>
       </main>
@@ -297,6 +321,13 @@ function AppShellRoute({ route }: { route: ParsedAppRoute }) {
         >
           <Activity size={18} />
           状态
+        </button>
+        <button
+          className={mode === 'config' ? 'active' : ''}
+          onClick={() => navigateToMode('config')}
+        >
+          <SettingsIcon size={18} />
+          配置
         </button>
       </nav>
     </div>
