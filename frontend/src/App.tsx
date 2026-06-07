@@ -3,6 +3,8 @@ import {
   AlertCircle,
   BookOpen,
   Bot,
+  ChevronDown,
+  ChevronRight,
   CheckCircle2,
   Clock3,
   Database,
@@ -127,6 +129,8 @@ function App() {
   const [selectedBook, setSelectedBook] = useState<BookSummary | null>(null);
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [chapters, setChapters] = useState<ChapterSummary[]>([]);
+  const [libraryCollapsed, setLibraryCollapsed] = useState(true);
+  const [chaptersCollapsed, setChaptersCollapsed] = useState(false);
   const [mode, setMode] = useState<PaneMode>('library');
   const [request, setRequest] = useState<RequestState>(initialRequest);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -873,36 +877,54 @@ function App() {
       </header>
 
       <main className="workspace" data-mode={mode}>
-        <aside className="library-panel">
-          <LibraryHeader
-            query={query}
-            setQuery={setQuery}
-            onRefresh={refreshBooks}
-            onImport={handleImport}
-            importProgress={importProgress}
+        <aside className={`library-panel nav-section ${libraryCollapsed ? 'is-collapsed' : ''}`}>
+          <NavSectionToggle
+            icon={<Library size={18} />}
+            label="书库"
+            current={selectedBook?.title || '未选择书籍'}
+            collapsed={libraryCollapsed}
+            onToggle={() => setLibraryCollapsed((value) => !value)}
           />
-          <BookList
-            books={books}
-            selectedBookId={selectedBook?.id ?? null}
-            onSelect={selectBook}
-          />
-          {importResult && <ImportReceipt result={importResult} />}
+          <div className="nav-section-body">
+            <LibraryHeader
+              query={query}
+              setQuery={setQuery}
+              onRefresh={refreshBooks}
+              onImport={handleImport}
+              importProgress={importProgress}
+            />
+            <BookList
+              books={books}
+              selectedBookId={selectedBook?.id ?? null}
+              onSelect={selectBook}
+            />
+            {importResult && <ImportReceipt result={importResult} />}
+          </div>
         </aside>
 
-        <aside className="chapter-panel">
-          {selectedBook ? (
-            <ChapterNavigator
-              activeChapter={activeChapter}
-              chapters={chapters}
-              onSelectChapter={(idx) => {
-                resetReadingState(false);
-                setSelectedChapter(idx);
-                setMode('reader');
-              }}
-            />
-          ) : (
-            <EmptyChapterPanel />
-          )}
+        <aside className={`chapter-panel nav-section ${chaptersCollapsed ? 'is-collapsed' : ''}`}>
+          <NavSectionToggle
+            icon={<BookOpen size={18} />}
+            label="章节"
+            current={selectedBook ? chapterDisplayTitle(activeChapter) : '先选择书籍'}
+            collapsed={chaptersCollapsed}
+            onToggle={() => setChaptersCollapsed((value) => !value)}
+          />
+          <div className="nav-section-body">
+            {selectedBook ? (
+              <ChapterNavigator
+                activeChapter={activeChapter}
+                chapters={chapters}
+                onSelectChapter={(idx) => {
+                  resetReadingState(false);
+                  setSelectedChapter(idx);
+                  setMode('reader');
+                }}
+              />
+            ) : (
+              <EmptyChapterPanel />
+            )}
+          </div>
         </aside>
 
         <section className="reader-stage">
@@ -992,6 +1014,36 @@ function App() {
         </button>
       </nav>
     </div>
+  );
+}
+
+function NavSectionToggle({
+  icon,
+  label,
+  current,
+  collapsed,
+  onToggle,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  current: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      className="nav-section-toggle"
+      type="button"
+      aria-expanded={!collapsed}
+      onClick={onToggle}
+    >
+      <span className="nav-section-title">
+        {icon}
+        <span>{label}</span>
+      </span>
+      <span className="nav-section-current">{current}</span>
+      {collapsed ? <ChevronRight size={17} /> : <ChevronDown size={17} />}
+    </button>
   );
 }
 

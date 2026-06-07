@@ -119,6 +119,7 @@ button {
 .icon-button,
 .soft-button,
 .import-button,
+.nav-section-toggle,
 .book-card,
 .chapter-list button,
 .mobile-nav button {
@@ -143,10 +144,12 @@ button {
 
 .workspace {
   min-height: 0;
+  height: calc(100vh - 72px);
   display: grid;
   grid-template-columns:
-    minmax(240px, 290px) minmax(190px, 250px) minmax(0, 1fr)
+    minmax(280px, 340px) minmax(0, 1fr)
     minmax(320px, 390px);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 18px;
   padding: 18px;
 }
@@ -159,14 +162,126 @@ button {
   min-width: 0;
 }
 
+.library-panel {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.chapter-panel {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.reader-stage {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.assistant-panel {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
 .library-panel,
 .chapter-panel,
 .assistant-panel {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  scrollbar-width: thin;
+}
+
+.library-panel,
+.chapter-panel {
+  overflow: hidden;
+}
+
+.assistant-panel {
+  overflow: auto;
+}
+
+.nav-section {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(43, 45, 39, 0.1);
+  border-radius: 8px;
+  background: rgba(251, 251, 247, 0.8);
+  box-shadow: 0 20px 70px rgba(61, 51, 35, 0.08);
+}
+
+.nav-section-toggle {
+  width: 100%;
+  min-height: 50px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  color: #20211d;
+  background: rgba(255, 255, 250, 0.62);
+  text-align: left;
+}
+
+.nav-section-toggle:hover {
+  background: #eef1e8;
+}
+
+.nav-section-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+}
+
+.nav-section-current {
+  min-width: 0;
+  overflow: hidden;
+  color: #62665d;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-section-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.nav-section.is-collapsed .nav-section-body {
+  display: none;
+}
+
+.nav-section.is-collapsed {
+  align-self: start;
+}
+
+.library-panel .nav-section-body {
+  max-height: min(42vh, 460px);
   overflow: auto;
   scrollbar-width: thin;
+}
+
+.chapter-panel .nav-section-body {
+  flex: 1 1 auto;
+}
+
+.library-panel .library-header,
+.chapter-panel .chapter-strip {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.library-panel .library-header .panel-title,
+.chapter-panel .chapter-strip > .section-heading {
+  display: none;
 }
 
 .library-header,
@@ -429,9 +544,12 @@ button {
 }
 
 .chapter-list {
-  max-height: calc(100vh - 190px);
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   display: grid;
+  align-content: start;
   gap: 8px;
   scrollbar-width: thin;
 }
@@ -452,7 +570,10 @@ button {
 }
 
 .chapter-panel .chapter-strip {
-  min-height: calc(100vh - 108px);
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .reading-placeholder {
@@ -1096,7 +1217,7 @@ code {
 @media (min-width: 1181px) and (max-width: 1600px) {
   .workspace {
     grid-template-columns:
-      minmax(210px, 240px) minmax(170px, 210px) minmax(0, 1fr)
+      minmax(250px, 300px) minmax(0, 1fr)
       minmax(280px, 320px);
   }
 }
@@ -1109,6 +1230,7 @@ code {
 
   .workspace {
     display: block;
+    height: auto;
     padding: 16px;
   }
 
@@ -1118,6 +1240,53 @@ code {
   .assistant-panel {
     display: block;
     overflow: visible;
+  }
+
+  .nav-section {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .nav-section-toggle {
+    display: none;
+  }
+
+  .nav-section.is-collapsed .nav-section-body,
+  .nav-section-body {
+    display: block;
+    max-height: none;
+    padding: 0;
+    overflow: visible;
+  }
+
+  .library-panel .nav-section-body {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .library-panel .library-header {
+    border: 1px solid rgba(43, 45, 39, 0.1);
+    border-radius: 8px;
+    padding: 14px;
+    background: rgba(251, 251, 247, 0.8);
+    box-shadow: 0 20px 70px rgba(61, 51, 35, 0.08);
+  }
+
+  .chapter-panel .chapter-strip {
+    height: auto;
+    border: 1px solid rgba(43, 45, 39, 0.1);
+    border-radius: 8px;
+    padding: 16px;
+    background: rgba(251, 251, 247, 0.8);
+    box-shadow: 0 20px 70px rgba(61, 51, 35, 0.08);
+  }
+
+  .library-panel .library-header .panel-title,
+  .chapter-panel .chapter-strip > .section-heading {
+    display: flex;
   }
 
   .workspace[data-mode="library"] .reader-stage,
