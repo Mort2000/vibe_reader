@@ -21,6 +21,9 @@ class TokenEstimator:
         self._config = config
         self._ratios: dict[tuple[str, str, str], deque[float]] = {}
 
+    def replace_config(self, config: TokenEstimationConfig) -> None:
+        self._config = config
+
     def estimate(self, text: str) -> int:
         return _local_estimate(text)
 

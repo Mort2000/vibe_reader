@@ -15,6 +15,17 @@ DEFAULT_MODEL_ID = "default"
 MASKED_SECRET = "********"
 SECRET_UNCHANGED_SENTINEL = "__vibe_reader_secret_unchanged__"
 THINK_EFFORT_VALUES = frozenset(("", "minimal", "low", "medium", "high"))
+PERSISTED_SETTINGS_GROUPS = (
+    "reader",
+    "context",
+    "context_l2",
+    "window_l1",
+    "context_l3",
+    "ephemeral_comments",
+    "ephemeral_chat",
+    "token_estimation",
+    "observability",
+)
 
 LLM_ENV_KEYS = {
     "VIBE_READER_LLM_BASE_URL": "llm.base_url",
@@ -34,6 +45,7 @@ NON_LLM_ENV_FIELD_PATHS = {
     "VIBE_READER_OTEL_EXPORT_METRICS": "observability.otel.export_metrics",
     "VIBE_READER_OTEL_EXPORT_LOGS": "observability.otel.export_logs",
     "VIBE_READER_OTEL_SAMPLE_RATIO": "observability.otel.sample_ratio",
+    "VIBE_READER_ENVIRONMENT": "observability.environment",
     "VIBE_READER_VERIFY_MODE": "verify_mode",
 }
 
@@ -619,23 +631,27 @@ def _clean_and_write_model_config(
 
 def _settings_to_toml(settings: Settings) -> dict[str, Any]:
     data = _model_sections(settings.models, settings.defaults, settings.active)
-    for group_name in (
-        "reader",
-        "context",
-        "context_l2",
-        "window_l1",
-        "context_l3",
-        "ephemeral_comments",
-        "ephemeral_chat",
-        "token_estimation",
-        "observability",
-    ):
+    for group_name in PERSISTED_SETTINGS_GROUPS:
         data[group_name] = asdict(getattr(settings, group_name))
     return data
 
 
-def save_settings(settings: Settings, path: pathlib.Path | None = None) -> None:
-    _write_toml_user_only(path or settings.config_path, _settings_to_toml(settings))
+def save_settings(
+    settings: Settings,
+    path: pathlib.Path | None = None,
+    *,
+    reset_env_override_paths: set[str] | None = None,
+) -> None:
+    target_path = path or settings.config_path
+    data = _settings_to_toml(settings)
+    raw = toml.load(target_path) if target_path.exists() else {}
+    _preserve_env_override_paths(
+        data,
+        settings=settings,
+        raw=raw,
+        reset_env_override_paths=reset_env_override_paths or set(),
+    )
+    _write_toml_user_only(target_path, data)
 
 
 def mask_secret(value: str) -> str:
@@ -1175,6 +1191,53 @@ def _read_path(obj: Any, path: str) -> Any:
         else:
             current = getattr(current, part, None)
     return current
+
+
+_MISSING_PATH = object()
+
+
+def _read_mapping_path(data: dict[str, Any], path: str) -> Any:
+    current: Any = data
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return _MISSING_PATH
+        current = current[part]
+    return current
+
+
+def _write_mapping_path(data: dict[str, Any], path: str, value: Any) -> None:
+    current: dict[str, Any] = data
+    parts = path.split(".")
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = value
+
+
+def _persisted_default_for_path(path: str) -> Any:
+    return _read_path(Settings(), path)
+
+
+def _preserve_env_override_paths(
+    data: dict[str, Any],
+    *,
+    settings: Settings,
+    raw: dict[str, Any],
+    reset_env_override_paths: set[str],
+) -> None:
+    for path in settings.env_overrides:
+        if path.split(".", 1)[0] not in data:
+            continue
+        if path in reset_env_override_paths:
+            value = _persisted_default_for_path(path)
+        else:
+            value = _read_mapping_path(raw, path)
+            if value is _MISSING_PATH:
+                value = _persisted_default_for_path(path)
+        _write_mapping_path(data, path, value)
 
 
 def _dataclass_default(cls: type[Any], field_name: str) -> Any:

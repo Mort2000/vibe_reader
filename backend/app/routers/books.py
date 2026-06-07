@@ -40,7 +40,9 @@ async def import_book(request: Request, file: UploadFile = File(...)) -> dict[st
     if not file.filename or not file.filename.endswith(".epub"):
         raise AppError("invalid_epub", "Only .epub files are accepted")
 
-    settings = request.app.state.settings
+    from .config import current_settings
+
+    settings = current_settings(request)
     db = request.app.state.db
 
     with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
@@ -54,7 +56,9 @@ async def import_book(request: Request, file: UploadFile = File(...)) -> dict[st
         estimator = getattr(request.app.state, "token_estimator", None)
         estimator_info = None
         if estimator is not None:
-            estimator_info = estimator.get_calibration_info(settings.llm.model)
+            estimator_info = estimator.get_calibration_info(
+                settings.effective_model_identity("global")
+            )
 
         result = await import_epub(
             db,

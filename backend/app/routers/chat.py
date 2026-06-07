@@ -44,9 +44,10 @@ async def chat_stream(request: Request, body: ChatStreamRequest) -> Any:
     from ..observability import get_trace_id, new_trace_id
     from ..repos import chat as chat_repo
     from ..services.chat_service import build_chat_context, stream_llm_response
+    from .config import current_settings
 
     db = request.app.state.db
-    settings = request.app.state.settings
+    settings = current_settings(request)
     token_estimator = getattr(request.app.state, "token_estimator", None)
     job_runner = getattr(request.app.state, "job_runner", None)
     event_publisher = getattr(request.app.state, "event_publisher", None)

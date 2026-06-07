@@ -7,9 +7,17 @@ from typing import Any
 
 import httpx
 
-from ..config import LLMConfig, ModelConfig
+from ..config import MASKED_SECRET, LLMConfig, ModelConfig
 from ..errors import AppError
 from ..observability import get_trace_id
+
+
+def _redact(text: str, *secrets: str) -> str:
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, MASKED_SECRET)
+    return redacted
 
 
 async def ping_llm(
@@ -52,7 +60,9 @@ async def ping_llm(
         ) from exc
     except httpx.HTTPError as exc:
         raise AppError(
-            "llm_provider_error", f"LLM ping request failed: {exc}", status=502
+            "llm_provider_error",
+            f"LLM ping request failed: {_redact(str(exc), llm.api_key)}",
+            status=502,
         ) from exc
 
     elapsed_ms = (time.monotonic() - start) * 1000
@@ -65,7 +75,7 @@ async def ping_llm(
             status=502,
             details={
                 "provider_status": resp.status_code,
-                "provider_body_excerpt": detail,
+                "provider_body_excerpt": _redact(detail, llm.api_key),
             },
         )
 

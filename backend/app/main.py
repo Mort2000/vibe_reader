@@ -61,6 +61,7 @@ def _register_api_routers(app: FastAPI) -> None:
     from .routers.books import router as books_router
     from .routers.chapters import router as chapters_router
     from .routers.chat import router as chat_router
+    from .routers.config import router as config_router
     from .routers.events import router as events_router
     from .routers.health import router as health_router
     from .routers.progress import router as progress_router
@@ -72,6 +73,7 @@ def _register_api_routers(app: FastAPI) -> None:
         books_router,
         chapters_router,
         chat_router,
+        config_router,
         progress_router,
         events_router,
         verify_router,
@@ -144,7 +146,9 @@ def create_app() -> FastAPI:
         await estimator.load_calibrations(db)
         app.state.token_estimator = estimator
 
-        est_info = estimator.get_calibration_info(settings.llm.model)
+        est_info = estimator.get_calibration_info(
+            settings.effective_model_identity("global")
+        )
         backfilled = await backfill_missing_chunks(
             db,
             target_tokens=l2.target_chunk_tokens,

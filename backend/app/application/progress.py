@@ -276,7 +276,10 @@ class UpdateProgressUseCase:
         estimator = self._token_estimator
         if estimator is None:
             estimator = TokenEstimator(settings.token_estimation)
-        jump_token_est = estimator.get_safe_estimate(jump_text, settings.llm.model)
+        jump_token_est = estimator.get_safe_estimate(
+            jump_text,
+            settings.effective_model_identity("global"),
+        )
         return jump_token_est > settings.context.max_context_jump_tokens_estimate
 
     # --- window & job resolution ---

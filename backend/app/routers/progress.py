@@ -32,8 +32,10 @@ async def update_progress(
     book_id: int = PathParam(...),
     body: ProgressRequest = ...,
 ) -> dict[str, Any]:
+    from .config import current_settings
+
     db = request.app.state.db
-    settings = request.app.state.settings
+    settings = current_settings(request)
     job_runner = request.app.state.job_runner
     token_estimator = getattr(request.app.state, "token_estimator", None)
 

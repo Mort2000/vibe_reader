@@ -11,7 +11,8 @@ router = APIRouter(tags=["verify"])
 
 
 def _require_verify(request: Request) -> None:
-    settings = request.app.state.settings
+    provider = getattr(request.app.state, "settings_provider", None)
+    settings = provider.current() if provider is not None else request.app.state.settings
     if not settings.verify_mode:
         raise AppError(
             "verify_mode_required",
@@ -31,7 +32,8 @@ async def verify_agent_runs(
     from ..services.verify_telemetry import list_agent_run_records
 
     db = request.app.state.db
-    settings = request.app.state.settings
+    provider = getattr(request.app.state, "settings_provider", None)
+    settings = provider.current() if provider is not None else request.app.state.settings
     items = await list_agent_run_records(
         db,
         run_id=run_id,
@@ -46,7 +48,8 @@ async def verify_agent_runs(
 async def verify_llm_ping(request: Request) -> dict[str, Any]:
     """Minimal LLM connectivity probe for system verification (S0)."""
     _require_verify(request)
-    settings = request.app.state.settings
+    provider = getattr(request.app.state, "settings_provider", None)
+    settings = provider.current() if provider is not None else request.app.state.settings
     from ..services.llm_ping import ping_llm
 
-    return await ping_llm(settings.llm, timeout_s=60.0)
+    return await ping_llm(settings.effective_llm("global"), timeout_s=60.0)
