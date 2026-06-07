@@ -12,6 +12,10 @@ import { useCallback, useEffect, useRef } from 'react';
 import { StatusPill } from '../../components/StatusPill';
 import { ImportButton } from '../library/LibraryPanel';
 import {
+  MANUAL_PARAGRAPH_SELECTION_GRACE_MS,
+  RESTORE_SETTLE_DELAY_MS,
+} from '../../lib/constants';
+import {
   chapterDisplayTitle,
   formatDate,
   statusCopy,
@@ -23,6 +27,7 @@ import type {
   ReadingProgress,
   ReadingWindow,
 } from '../../types';
+import { readingProgressPercent } from './readingPosition';
 
 export function ReaderPreview({
   activeChapter,
@@ -49,12 +54,10 @@ export function ReaderPreview({
   onSaveProgress: () => void;
   onRestoreSettled: () => void;
 }) {
-  const progressPct =
-    paragraphs.length > 1
-      ? Math.round((selectedParagraph / Math.max(paragraphs.length - 1, 1)) * 100)
-      : paragraphs.length
-        ? 100
-        : 0;
+  const progressPct = readingProgressPercent(
+    paragraphs.length,
+    selectedParagraph,
+  );
   const progressWidth = `${Math.max(0, Math.min(100, progressPct))}%`;
 
   return (
@@ -127,7 +130,8 @@ function ReaderDocument({
 
   const selectParagraph = useCallback(
     (idx: number) => {
-      manualSelectionUntilRef.current = Date.now() + 1200;
+      manualSelectionUntilRef.current =
+        Date.now() + MANUAL_PARAGRAPH_SELECTION_GRACE_MS;
       onVisibleParagraph(idx);
     },
     [onVisibleParagraph],
@@ -173,7 +177,7 @@ function ReaderDocument({
       if (root && target) {
         target.scrollIntoView({ block: 'start' });
       }
-      settleTimer = window.setTimeout(onRestoreSettled, 260);
+      settleTimer = window.setTimeout(onRestoreSettled, RESTORE_SETTLE_DELAY_MS);
     }, 0);
 
     return () => {

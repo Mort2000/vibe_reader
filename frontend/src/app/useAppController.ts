@@ -1,7 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { useBackendEvents } from '../hooks/useBackendEvents';
-import { api, describeError, streamChat } from '../lib/api';
+import { describeError, streamChat } from '../lib/api';
+import {
+  booksQueryOptions,
+  queryKeys,
+  runtimeQueryOptions,
+  settingsQueryOptions,
+  useChapterDataQuery,
+  useChaptersQuery,
+  useChatSessionQuery,
+  useChatTurnsQuery,
+  useCommentsQuery,
+  useCurrentWindowQuery,
+  useImportBookMutation,
+  useRetryWindowMutation,
+  useUpdateProgressMutation,
+} from '../lib/apiQueries';
+import {
+  BACKEND_EVENT_REFRESH_DELAY_MS,
+  BOOTSTRAP_DELAY_MS,
+  PROGRESS_AUTOSAVE_DELAY_MS,
+  WINDOW_NOT_FOUND_CODE,
+} from '../lib/constants';
+import { resolveProgressParagraph } from '../features/reader/readingPosition';
 import { chapterDisplayTitle, formatNumber } from '../lib/formatters';
 import type {
   BookSummary,
@@ -28,6 +51,16 @@ const initialRequest: RequestState = {
 };
 
 const emptyParagraphs: Paragraph[] = [];
+
+function deferEffectStateUpdate(callback: () => void) {
+  let cancelled = false;
+  window.queueMicrotask(() => {
+    if (!cancelled) callback();
+  });
+  return () => {
+    cancelled = true;
+  };
+}
 
 export function useAppController() {
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
@@ -56,13 +89,42 @@ export function useAppController() {
   const [chatInput, setChatInput] = useState('');
   const [chatStatus, setChatStatus] = useState<LoadStatus>('idle');
   const [streamingTurn, setStreamingTurn] = useState<ChatTurn | null>(null);
+  const [submittedQuery, setSubmittedQuery] = useState('');
+  const [windowParagraph, setWindowParagraph] = useState<number | null>(null);
+  const queryClient = useQueryClient();
   const chatAbortRef = useRef<AbortController | null>(null);
-  const chapterLoadSeqRef = useRef(0);
-  const chatStreamSeqRef = useRef(0);
-  const progressSaveSeqRef = useRef(0);
   const activeContextRef = useRef<ReaderContext | null>(null);
   const [loadedContext, setLoadedContext] = useState<ReaderContext | null>(null);
   const [restorePending, setRestorePending] = useState(false);
+  const selectedBookId = selectedBook?.id ?? null;
+  const contextReady = Boolean(
+    selectedBookId !== null &&
+      selectedChapter !== null &&
+      loadedContext?.bookId === selectedBookId &&
+      loadedContext.chapterIdx === selectedChapter,
+  );
+  const chaptersQuery = useChaptersQuery(selectedBookId);
+  const chapterDataQuery = useChapterDataQuery(selectedBookId, selectedChapter);
+  const commentsQuery = useCommentsQuery(
+    selectedBookId,
+    selectedChapter,
+    contextReady,
+  );
+  const currentWindowQuery = useCurrentWindowQuery(
+    selectedBookId,
+    selectedChapter,
+    windowParagraph,
+    contextReady,
+  );
+  const chatSessionQuery = useChatSessionQuery(
+    selectedBookId,
+    selectedChapter,
+    contextReady,
+  );
+  const chatTurnsQuery = useChatTurnsQuery(chatSessionQuery.data?.session.id ?? null);
+  const { mutateAsync: importBook } = useImportBookMutation();
+  const { mutateAsync: updateProgress } = useUpdateProgressMutation();
+  const { mutateAsync: retryWindow } = useRetryWindowMutation();
 
   const { connection, events, lastEvent } = useBackendEvents(
     selectedBook?.id ?? null,
@@ -110,9 +172,6 @@ export function useAppController() {
   }, []);
 
   const resetReadingState = useCallback((clearChapters = false) => {
-    chapterLoadSeqRef.current += 1;
-    chatStreamSeqRef.current += 1;
-    progressSaveSeqRef.current += 1;
     activeContextRef.current = null;
     chatAbortRef.current?.abort();
     chatAbortRef.current = null;
@@ -120,6 +179,7 @@ export function useAppController() {
     if (clearChapters) setChapters([]);
     setLoadedContext(null);
     setRestorePending(false);
+    setWindowParagraph(null);
     setParagraphs(emptyParagraphs);
     setChapterStatus('idle');
     setProgressSync('idle');
@@ -142,12 +202,16 @@ export function useAppController() {
   }, [selectedBook, selectedChapter]);
 
   const loadBootstrap = useCallback(async (bookQuery = '', autoSelect = false) => {
+    setSubmittedQuery(bookQuery);
     setRequest({ status: 'loading', label: '连接本地服务' });
     try {
       const [runtimeInfo, settingsInfo, bookList] = await Promise.all([
-        api.runtime(),
-        api.settings(),
-        api.books(bookQuery || undefined),
+        queryClient.fetchQuery({ ...runtimeQueryOptions(), staleTime: 0 }),
+        queryClient.fetchQuery({ ...settingsQueryOptions(), staleTime: 0 }),
+        queryClient.fetchQuery({
+          ...booksQueryOptions(bookQuery),
+          staleTime: 0,
+        }),
       ]);
       setRuntime(runtimeInfo);
       setSettings(settingsInfo);
@@ -162,12 +226,12 @@ export function useAppController() {
     } catch (error) {
       pushRequestError(error, '本地服务连接失败');
     }
-  }, [pushRequestError]);
+  }, [pushRequestError, queryClient]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadBootstrap('', true);
-    }, 0);
+    }, BOOTSTRAP_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [loadBootstrap]);
 
@@ -175,139 +239,113 @@ export function useAppController() {
     if (!selectedBook) {
       return;
     }
-    let cancelled = false;
-    window.queueMicrotask(() => {
-      setRequest({ status: 'loading', label: `加载《${selectedBook.title}》目录` });
-    });
-    api
-      .chapters(selectedBook.id)
-      .then((res) => {
-        if (cancelled) return;
-        setChapters(res.items);
+    if (chaptersQuery.isFetching && !chaptersQuery.data) {
+      return deferEffectStateUpdate(() => {
+        setRequest({ status: 'loading', label: `加载《${selectedBook.title}》目录` });
+      });
+    }
+    return undefined;
+  }, [chaptersQuery.data, chaptersQuery.isFetching, selectedBook]);
+
+  useEffect(() => {
+    if (!selectedBook || !chaptersQuery.data) {
+      return;
+    }
+    return deferEffectStateUpdate(() => {
+      setChapters(chaptersQuery.data.items);
+      if (selectedChapter === null) {
         const progressChapter = selectedBook.last_progress?.chapter_idx;
-        const nextChapter = progressChapter ?? res.items[0]?.idx ?? 0;
+        const nextChapter = progressChapter ?? chaptersQuery.data.items[0]?.idx ?? 0;
         setSelectedChapter(nextChapter);
-        setRequest({
-          status: 'success',
-          label: `目录已就绪 · ${res.total} 章`,
-        });
-      })
-      .catch((error) => {
-        if (!cancelled) pushRequestError(error, '目录加载失败');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [pushRequestError, selectedBook]);
-
-  const loadChapterData = useCallback(
-    async (book: BookSummary, chapterIdx: number) => {
-      const loadSeq = ++chapterLoadSeqRef.current;
-      const isStale = () => {
-        const active = activeContextRef.current;
-        return (
-          chapterLoadSeqRef.current !== loadSeq ||
-          !active ||
-          active.bookId !== book.id ||
-          active.chapterIdx !== chapterIdx
-        );
-      };
-
-      setLoadedContext(null);
-      setRestorePending(false);
-      setParagraphs(emptyParagraphs);
-      setCurrentWindow(null);
-      setWindowCounts({ ready: 0, target: 0 });
-      setJobs([]);
-      setChatSession(null);
-      setChatTurns([]);
-      setStreamingTurn(null);
-      setChatStatus('idle');
-      setProgressSync('idle');
-      setChapterStatus('loading');
-      setRequest({
-        status: 'loading',
-        label: `加载第 ${chapterIdx + 1} 章正文`,
-      });
-
-      try {
-        const [paragraphResult, progressResult] = await Promise.all([
-          api.paragraphs(book.id, chapterIdx, true),
-          api.progress(book.id),
-        ]);
-        if (isStale()) return;
-
-        const progressParagraph =
-          progressResult.chapter_idx === chapterIdx
-            ? progressResult.paragraph_idx
-            : 0;
-
-        setParagraphs(paragraphResult.items);
-        setProgress(progressResult);
-        setSelectedParagraph(progressParagraph);
-        setLoadedContext({ bookId: book.id, chapterIdx });
-        setRestorePending(true);
-        setChapterStatus('success');
-        setRequest({
-          status: 'success',
-          label: `正文已就绪 · ${formatNumber(paragraphResult.total)} 段`,
-        });
-
-        api
-          .currentWindow(book.id, chapterIdx, progressParagraph)
-          .then((windowResult) => {
-            if (isStale()) return;
-            setCurrentWindow(windowResult.window);
-            setWindowCounts({
-              ready: windowResult.comments_ready_count,
-              target: windowResult.comments_target_count,
-            });
-          })
-          .catch((error) => {
-            if (isStale()) return;
-            const info = describeError(error);
-            if (info.title !== 'window_not_found') {
-              pushRequestError(error, '窗口状态加载失败');
-            } else {
-              setCurrentWindow(null);
-              setWindowCounts({ ready: 0, target: 0 });
-            }
-          });
-
-        api
-          .chatSession(book.id, chapterIdx)
-          .then(async ({ session }) => {
-            if (isStale()) return;
-            setChatSession(session);
-            const turnList = await api.chatTurns(session.id);
-            if (isStale()) return;
-            setChatTurns(turnList.items);
-            setChatStatus('success');
-          })
-          .catch((error) => {
-            if (isStale()) return;
-            setChatSession(null);
-            setChatTurns([]);
-            setChatStatus('error');
-            pushRequestError(error, '聊天历史加载失败');
-          });
-      } catch (error) {
-        if (isStale()) return;
-        setChapterStatus('error');
-        setParagraphs(emptyParagraphs);
-        pushRequestError(error, '章节正文加载失败');
       }
-    },
-    [pushRequestError],
-  );
+      setRequest({
+        status: 'success',
+        label: `目录已就绪 · ${chaptersQuery.data.total} 章`,
+      });
+    });
+  }, [chaptersQuery.data, selectedBook, selectedChapter]);
+
+  useEffect(() => {
+    if (selectedBook && chaptersQuery.isError) {
+      return deferEffectStateUpdate(() => {
+        pushRequestError(chaptersQuery.error, '目录加载失败');
+      });
+    }
+    return undefined;
+  }, [chaptersQuery.error, chaptersQuery.isError, pushRequestError, selectedBook]);
 
   useEffect(() => {
     if (!selectedBook || selectedChapter === null) return;
-    const timer = window.setTimeout(() => {
-      void loadChapterData(selectedBook, selectedChapter);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadChapterData, selectedBook, selectedChapter]);
+    if (chapterDataQuery.isFetching && !chapterDataQuery.data) {
+      return deferEffectStateUpdate(() => {
+        setLoadedContext(null);
+        setRestorePending(false);
+        setWindowParagraph(null);
+        setParagraphs(emptyParagraphs);
+        setCurrentWindow(null);
+        setWindowCounts({ ready: 0, target: 0 });
+        setJobs([]);
+        setChatSession(null);
+        setChatTurns([]);
+        setStreamingTurn(null);
+        setChatStatus('idle');
+        setProgressSync('idle');
+        setChapterStatus('loading');
+        setRequest({
+          status: 'loading',
+          label: `加载第 ${selectedChapter + 1} 章正文`,
+        });
+      });
+    }
+    return undefined;
+  }, [
+    chapterDataQuery.data,
+    chapterDataQuery.isFetching,
+    selectedBook,
+    selectedChapter,
+  ]);
+
+  useEffect(() => {
+    if (!selectedBook || selectedChapter === null || !chapterDataQuery.data) return;
+    const { paragraphs: paragraphResult, progress: progressResult } =
+      chapterDataQuery.data;
+    const progressParagraph = resolveProgressParagraph(
+      progressResult,
+      selectedChapter,
+      paragraphResult.items.length,
+    );
+
+    return deferEffectStateUpdate(() => {
+      setParagraphs(paragraphResult.items);
+      setProgress(progressResult);
+      setSelectedParagraph(progressParagraph);
+      setLoadedContext({ bookId: selectedBook.id, chapterIdx: selectedChapter });
+      setWindowParagraph(progressParagraph);
+      setRestorePending(true);
+      setChapterStatus('success');
+      setRequest({
+        status: 'success',
+        label: `正文已就绪 · ${formatNumber(paragraphResult.total)} 段`,
+      });
+    });
+  }, [chapterDataQuery.data, selectedBook, selectedChapter]);
+
+  useEffect(() => {
+    if (selectedBook && selectedChapter !== null && chapterDataQuery.isError) {
+      return deferEffectStateUpdate(() => {
+        setChapterStatus('error');
+        setParagraphs(emptyParagraphs);
+        pushRequestError(chapterDataQuery.error, '章节正文加载失败');
+      });
+    }
+    return undefined;
+  }, [
+    chapterDataQuery.error,
+    chapterDataQuery.isError,
+    pushRequestError,
+    selectedBook,
+    selectedChapter,
+  ]);
 
   const activeChapter = useMemo(
     () => chapters.find((chapter) => chapter.idx === selectedChapter) ?? null,
@@ -319,59 +357,92 @@ export function useAppController() {
       : selectedBook.title
     : '本地小说阅读器 · AI 伴读';
 
-  const refreshCommentsAndWindow = useCallback(async () => {
-    if (!selectedBook || selectedChapter === null || !loadedContext) return;
-    const context = { bookId: selectedBook.id, chapterIdx: selectedChapter };
-    if (
-      loadedContext.bookId !== context.bookId ||
-      loadedContext.chapterIdx !== context.chapterIdx
-    ) {
-      return;
+  useEffect(() => {
+    if (contextReady && commentsQuery.data) {
+      return deferEffectStateUpdate(() => {
+        mergeComments(commentsQuery.data.items);
+      });
     }
+    return undefined;
+  }, [commentsQuery.data, contextReady, mergeComments]);
 
-    const isStale = () => {
-      const active = activeContextRef.current;
-      return (
-        !active ||
-        active.bookId !== context.bookId ||
-        active.chapterIdx !== context.chapterIdx
-      );
-    };
+  useEffect(() => {
+    if (contextReady && commentsQuery.isError) {
+      return deferEffectStateUpdate(() => {
+        pushRequestError(commentsQuery.error, '评论刷新失败');
+      });
+    }
+    return undefined;
+  }, [commentsQuery.error, commentsQuery.isError, contextReady, pushRequestError]);
 
-    try {
-      const commentsResult = await api.comments(context.bookId, context.chapterIdx);
-      if (isStale()) return;
-      mergeComments(commentsResult.items);
-      try {
-        const windowResult = await api.currentWindow(
-          context.bookId,
-          context.chapterIdx,
-          selectedParagraph,
-        );
-        if (isStale()) return;
-        setCurrentWindow(windowResult.window);
+  useEffect(() => {
+    if (contextReady && currentWindowQuery.data) {
+      return deferEffectStateUpdate(() => {
+        setCurrentWindow(currentWindowQuery.data.window);
         setWindowCounts({
-          ready: windowResult.comments_ready_count,
-          target: windowResult.comments_target_count,
+          ready: currentWindowQuery.data.comments_ready_count,
+          target: currentWindowQuery.data.comments_target_count,
         });
-      } catch (error) {
-        if (isStale()) return;
-        const info = describeError(error);
-        if (info.title !== 'window_not_found') {
-          pushRequestError(error, '窗口刷新失败');
-        }
-      }
-    } catch (error) {
-      if (isStale()) return;
-      pushRequestError(error, '评论刷新失败');
+      });
     }
+    return undefined;
+  }, [contextReady, currentWindowQuery.data]);
+
+  useEffect(() => {
+    if (!contextReady || !currentWindowQuery.isError) return;
+    return deferEffectStateUpdate(() => {
+      const info = describeError(currentWindowQuery.error);
+      if (info.title !== WINDOW_NOT_FOUND_CODE) {
+        pushRequestError(currentWindowQuery.error, '窗口状态加载失败');
+        return;
+      }
+      setCurrentWindow(null);
+      setWindowCounts({ ready: 0, target: 0 });
+    });
   }, [
-    loadedContext,
-    mergeComments,
+    contextReady,
+    currentWindowQuery.error,
+    currentWindowQuery.isError,
     pushRequestError,
-    selectedBook,
-    selectedChapter,
-    selectedParagraph,
+  ]);
+
+  useEffect(() => {
+    if (contextReady && chatSessionQuery.data) {
+      return deferEffectStateUpdate(() => {
+        setChatSession(chatSessionQuery.data.session);
+      });
+    }
+    return undefined;
+  }, [chatSessionQuery.data, contextReady]);
+
+  useEffect(() => {
+    if (contextReady && chatTurnsQuery.data) {
+      return deferEffectStateUpdate(() => {
+        setChatTurns(chatTurnsQuery.data.items);
+        setChatStatus('success');
+      });
+    }
+    return undefined;
+  }, [chatTurnsQuery.data, contextReady]);
+
+  useEffect(() => {
+    if (contextReady && (chatSessionQuery.isError || chatTurnsQuery.isError)) {
+      const error = chatSessionQuery.error || chatTurnsQuery.error;
+      return deferEffectStateUpdate(() => {
+        setChatSession(null);
+        setChatTurns([]);
+        setChatStatus('error');
+        pushRequestError(error, '聊天历史加载失败');
+      });
+    }
+    return undefined;
+  }, [
+    chatSessionQuery.error,
+    chatSessionQuery.isError,
+    chatTurnsQuery.error,
+    chatTurnsQuery.isError,
+    contextReady,
+    pushRequestError,
   ]);
 
   useEffect(() => {
@@ -391,12 +462,30 @@ export function useAppController() {
       ].includes(lastEvent.event)
     ) {
       const timer = window.setTimeout(() => {
-        void refreshCommentsAndWindow();
-      }, 120);
+        if (!selectedBook || selectedChapter === null || !contextReady) return;
+        setWindowParagraph(selectedParagraph);
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.comments(selectedBook.id, selectedChapter),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.currentWindow(
+            selectedBook.id,
+            selectedChapter,
+            selectedParagraph,
+          ),
+        });
+      }, BACKEND_EVENT_REFRESH_DELAY_MS);
       return () => window.clearTimeout(timer);
     }
     return undefined;
-  }, [lastEvent, refreshCommentsAndWindow]);
+  }, [
+    contextReady,
+    lastEvent,
+    queryClient,
+    selectedBook,
+    selectedChapter,
+    selectedParagraph,
+  ]);
 
   const saveProgress = useCallback(
     async (paragraphIdx: number, force = false) => {
@@ -428,25 +517,24 @@ export function useAppController() {
         paragraphs.length <= 1 ? 0 : paragraphIdx / Math.max(paragraphs.length - 1, 1);
 
       setProgressSync('loading');
-      const saveSeq = ++progressSaveSeqRef.current;
       try {
         const context = { bookId: selectedBook.id, chapterIdx: selectedChapter };
-        const isCurrent = () => {
-          const active = activeContextRef.current;
-          return (
-            progressSaveSeqRef.current === saveSeq &&
-            active?.bookId === context.bookId &&
-            active.chapterIdx === context.chapterIdx
-          );
-        };
-        const result = await api.updateProgress(
-          context.bookId,
-          context.chapterIdx,
+        const result = await updateProgress({
+          bookId: context.bookId,
+          chapterIdx: context.chapterIdx,
           paragraphIdx,
-          Math.max(0, Math.min(1, scrollPct)),
-        );
-        if (!isCurrent()) return;
+          scrollPct: Math.max(0, Math.min(1, scrollPct)),
+        });
+        const active = activeContextRef.current;
+        if (
+          !active ||
+          active.bookId !== context.bookId ||
+          active.chapterIdx !== context.chapterIdx
+        ) {
+          return;
+        }
         applyProgressUpdate(result);
+        setWindowParagraph(paragraphIdx);
         setProgressSync('success');
         setRequest({
           status: 'success',
@@ -458,7 +546,6 @@ export function useAppController() {
       } catch (error) {
         const active = activeContextRef.current;
         if (
-          progressSaveSeqRef.current !== saveSeq ||
           !active ||
           active.bookId !== selectedBook.id ||
           active.chapterIdx !== selectedChapter
@@ -479,6 +566,7 @@ export function useAppController() {
       restorePending,
       selectedBook,
       selectedChapter,
+      updateProgress,
     ],
   );
 
@@ -487,7 +575,7 @@ export function useAppController() {
     if (restorePending || chapterStatus !== 'success') return;
     const timer = window.setTimeout(() => {
       void saveProgress(selectedParagraph);
-    }, 850);
+    }, PROGRESS_AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [
     chapterStatus,
@@ -504,7 +592,7 @@ export function useAppController() {
     const context = { bookId: selectedBook.id, chapterIdx: selectedChapter };
     setRequest({ status: 'loading', label: `重试窗口 ${currentWindow.id}` });
     try {
-      const result = await api.retryWindow(currentWindow.id);
+      const result = await retryWindow(currentWindow.id);
       const active = activeContextRef.current;
       if (
         !active ||
@@ -515,6 +603,16 @@ export function useAppController() {
       }
       setCurrentWindow(result.window);
       setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)]);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.currentWindow(
+          context.bookId,
+          context.chapterIdx,
+          selectedParagraph,
+        ),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.comments(context.bookId, context.chapterIdx),
+      });
       setRequest({
         status: 'success',
         label: '重试任务已提交',
@@ -531,7 +629,15 @@ export function useAppController() {
       }
       pushRequestError(error, '窗口重试失败');
     }
-  }, [currentWindow, pushRequestError, selectedBook, selectedChapter]);
+  }, [
+    currentWindow,
+    pushRequestError,
+    queryClient,
+    retryWindow,
+    selectedBook,
+    selectedChapter,
+    selectedParagraph,
+  ]);
 
   const sendChat = useCallback(() => {
     if (
@@ -545,12 +651,12 @@ export function useAppController() {
 
     const userMsg = chatInput.trim();
     const paragraphIdx = selectedParagraph;
-    const streamSeq = ++chatStreamSeqRef.current;
     const context = { bookId: selectedBook.id, chapterIdx: selectedChapter };
+    let streamController: AbortController | null = null;
     const isCurrentStream = () => {
       const active = activeContextRef.current;
       return (
-        chatStreamSeqRef.current === streamSeq &&
+        chatAbortRef.current === streamController &&
         active?.bookId === context.bookId &&
         active.chapterIdx === context.chapterIdx
       );
@@ -580,7 +686,7 @@ export function useAppController() {
     });
 
     chatAbortRef.current?.abort();
-    chatAbortRef.current = streamChat(
+    streamController = streamChat(
       {
         bookId: selectedBook.id,
         chapterIdx: selectedChapter,
@@ -652,6 +758,12 @@ export function useAppController() {
           setStreamingTurn(null);
           setChatStatus('success');
           chatAbortRef.current = null;
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.chatSession(context.bookId, context.chapterIdx),
+          });
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.chatTurns(data.session_id),
+          });
           setRequest({
             status: 'success',
             label: 'AI 回答完成',
@@ -687,17 +799,18 @@ export function useAppController() {
         },
       },
     );
+    chatAbortRef.current = streamController;
   }, [
     chatInput,
     chatSession,
     chatStatus,
+    queryClient,
     selectedBook,
     selectedChapter,
     selectedParagraph,
   ]);
 
   const abortChat = useCallback(() => {
-    chatStreamSeqRef.current += 1;
     chatAbortRef.current?.abort();
     chatAbortRef.current = null;
     setChatStatus('idle');
@@ -710,22 +823,26 @@ export function useAppController() {
   }, []);
 
   const refreshBooks = useCallback(async () => {
+    setSubmittedQuery(query);
     setRequest({ status: 'loading', label: '刷新书库' });
     try {
-      const bookList = await api.books(query || undefined);
+      const bookList = await queryClient.fetchQuery({
+        ...booksQueryOptions(query),
+        staleTime: 0,
+      });
       setBooks(bookList.items);
       setRequest({ status: 'success', label: `书库已更新 · ${bookList.total} 本书` });
     } catch (error) {
       pushRequestError(error, '书库刷新失败');
     }
-  }, [pushRequestError, query]);
+  }, [pushRequestError, query, queryClient]);
 
   const handleImport = useCallback(
     async (file: File) => {
       setImportProgress('loading');
       setRequest({ status: 'loading', label: `导入 ${file.name}` });
       try {
-        const result = await api.importBook(file);
+        const result = await importBook(file);
         setImportResult(result);
         resetReadingState(true);
         setSelectedChapter(null);
@@ -736,6 +853,12 @@ export function useAppController() {
         ]);
         setMode('reader');
         setImportProgress('success');
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.books(submittedQuery),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.chapters(result.book.id),
+        });
         setRequest({
           status: 'success',
           label: '导入完成',
@@ -748,7 +871,13 @@ export function useAppController() {
         pushRequestError(error, '导入失败');
       }
     },
-    [pushRequestError, resetReadingState],
+    [
+      importBook,
+      pushRequestError,
+      queryClient,
+      resetReadingState,
+      submittedQuery,
+    ],
   );
 
   const selectBook = useCallback((book: BookSummary) => {
