@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import stat
+from pathlib import Path
 
 import pytest
 import toml
@@ -23,7 +24,11 @@ from app.services.agent_base import (
     get_comment_agent,
     get_compaction_agent,
     get_llm_model,
+    prune_agent_caches,
 )
+
+
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 
 
 ENV_KEYS = [
@@ -194,6 +199,26 @@ def test_settings_metadata_includes_defaults_descriptions_and_env_markers(
     assert metadata["groups"]["models"]["secret_policy"]["masked_value"] == MASKED_SECRET
 
 
+def test_config_module_is_facade_over_split_settings_modules() -> None:
+    config_source = (APP_DIR / "config.py").read_text(encoding="utf-8")
+    loader_source = (APP_DIR / "config_loader.py").read_text(encoding="utf-8")
+
+    assert "GROUP_INFO = {" not in config_source
+    assert "FIELD_INFO: dict" not in config_source
+    assert "def load_settings" not in config_source
+    assert "lookahead_paragraphs" not in loader_source
+    assert "provider_context_limit_tokens" not in loader_source
+    assert "coerce_dataclass_group" in loader_source
+
+
+def test_non_config_routes_use_settings_service_instead_of_config_router() -> None:
+    for route_name in ("books.py", "chat.py", "health.py", "progress.py", "verify.py"):
+        route_source = (APP_DIR / "routers" / route_name).read_text(encoding="utf-8")
+        assert "from .config import current_settings" not in route_source
+        assert "from .config import current_settings, runtime_summary" not in route_source
+        assert "from .config import current_settings, settings_summary" not in route_source
+
+
 def test_secret_readback_and_unchanged_update_do_not_leak_plaintext() -> None:
     model = ModelConfig(
         id="main",
@@ -273,6 +298,36 @@ def test_effective_models_and_agent_caches_are_keyed_by_selection() -> None:
     assert switched.effective_llm("chat").model == "comment-model"
     assert get_chat_agent(switched) is not chat_agent
     assert get_comment_agent(switched) is comment_agent
+
+
+def test_agent_cache_prune_keeps_current_identities_and_drops_stale_entries() -> None:
+    settings = Settings(
+        models=[
+            ModelConfig(id="chat", model_name="chat-model", api_key="chat-key"),
+            ModelConfig(id="comment", model_name="comment-model", api_key="comment-key"),
+        ],
+        defaults=ModelDefaultsConfig(
+            global_model_id="chat",
+            chat_model_id="chat",
+            comment_model_id="comment",
+        ),
+    )
+    clear_agent_caches()
+
+    old_chat_agent = get_chat_agent(settings)
+    comment_agent = get_comment_agent(settings)
+    compaction_agent = get_compaction_agent(settings)
+
+    switched = Settings(
+        models=settings.models,
+        defaults=settings.defaults,
+        active=ActiveModelsConfig(chat_model_id="comment"),
+    )
+    prune_agent_caches(switched)
+
+    assert get_chat_agent(switched) is not old_chat_agent
+    assert get_comment_agent(switched) is comment_agent
+    assert get_compaction_agent(switched) is compaction_agent
 
 
 def test_settings_provider_replaces_current_settings() -> None:

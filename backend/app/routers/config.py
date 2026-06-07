@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, fields, is_dataclass, replace
+from dataclasses import asdict, replace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -8,45 +8,25 @@ from fastapi import APIRouter, Path as PathParam, Request
 
 from ..config import (
     FIELD_INFO,
+    PERSISTED_SETTINGS_GROUP_TYPES,
     PERSISTED_SETTINGS_GROUPS,
     THINK_EFFORT_VALUES,
     ActiveModelsConfig,
-    ContextConfig,
-    ContextL2Config,
-    ContextL3Config,
-    EphemeralChatConfig,
-    EphemeralCommentsConfig,
     ModelConfig,
     ModelDefaultsConfig,
-    ObservabilityConfig,
-    ReaderConfig,
     Settings,
-    TokenEstimationConfig,
-    WindowL1Config,
-    load_settings,
     merge_model_update,
     save_settings,
 )
+from ..config_dataclasses import coerce_dataclass_group, replace_path_value
+from ..config_summary import config_document
 from ..errors import AppError
+from ..infrastructure.settings import current_settings, load_latest_settings
 from ..services.llm_ping import ping_llm
 
 router = APIRouter(tags=["config"])
 
-DATACLASS_GROUPS: dict[str, type[Any]] = {
-    "reader": ReaderConfig,
-    "context": ContextConfig,
-    "context_l2": ContextL2Config,
-    "window_l1": WindowL1Config,
-    "context_l3": ContextL3Config,
-    "ephemeral_comments": EphemeralCommentsConfig,
-    "ephemeral_chat": EphemeralChatConfig,
-    "token_estimation": TokenEstimationConfig,
-    "observability": ObservabilityConfig,
-}
-REF_GROUPS = {
-    "defaults": ModelDefaultsConfig,
-    "active": ActiveModelsConfig,
-}
+DATACLASS_GROUPS: dict[str, type[Any]] = PERSISTED_SETTINGS_GROUP_TYPES
 AGENT_ACTIVE_FIELDS = {
     "global": "global_model_id",
     "chat": "chat_model_id",
@@ -67,28 +47,6 @@ OBSERVABILITY_COMMON_PATHS = (
     "observability.otel.export_metrics",
     "observability.otel.export_logs",
 )
-
-
-def current_settings(request: Request) -> Settings:
-    provider = getattr(request.app.state, "settings_provider", None)
-    if provider is not None:
-        return provider.current()
-    return request.app.state.settings
-
-
-def apply_runtime_settings(request: Request, settings: Settings) -> Settings:
-    request.app.state.settings = settings
-    provider = getattr(request.app.state, "settings_provider", None)
-    if provider is not None:
-        provider.replace(settings)
-    estimator = getattr(request.app.state, "token_estimator", None)
-    if estimator is not None and hasattr(estimator, "replace_config"):
-        estimator.replace_config(settings.token_estimation)
-    return settings
-
-
-def _load_latest_settings(request: Request) -> Settings:
-    return apply_runtime_settings(request, load_settings())
 
 
 def _field_error(path: str, message: str) -> dict[str, str]:
@@ -140,170 +98,6 @@ def _normalize_scope(scope: str) -> str:
     return normalized
 
 
-def _effective_model_summary(settings: Settings, agent: str) -> dict[str, Any]:
-    llm = settings.effective_llm(agent)
-    model = settings.effective_model(agent)
-    return {
-        "agent": agent,
-        "model_id": model.id if model is not None else llm.model_id,
-        "provider": llm.provider,
-        "model_name": llm.model,
-        "think_effort": llm.think_effort,
-        "source": llm.source,
-        "base_url_configured": bool(llm.base_url),
-        "api_key_configured": bool(llm.api_key),
-    }
-
-
-def effective_models_summary(settings: Settings) -> dict[str, Any]:
-    return {
-        "global": _effective_model_summary(settings, "global"),
-        "chat": _effective_model_summary(settings, "chat"),
-        "comment": _effective_model_summary(settings, "comment"),
-        "compaction": _effective_model_summary(settings, "compaction"),
-    }
-
-
-def runtime_summary(settings: Settings) -> dict[str, Any]:
-    global_llm = settings.effective_llm("global")
-    return {
-        "app": "vibe-reader-mini",
-        "version": "0.1.0",
-        "data_dir": str(settings.data_dir),
-        "verify_mode": settings.verify_mode,
-        "llm": {
-            "base_url_configured": bool(global_llm.base_url),
-            "api_key_configured": bool(global_llm.api_key),
-            "model": global_llm.model,
-            "model_name": global_llm.model,
-            "provider": global_llm.provider,
-            "source": global_llm.source,
-        },
-        "models": {
-            "catalog_count": len(settings.models),
-            "effective": effective_models_summary(settings),
-        },
-        "observability": {
-            "enabled": settings.observability.enabled,
-            "provider": settings.observability.provider,
-        },
-    }
-
-
-def settings_summary(settings: Settings) -> dict[str, Any]:
-    global_llm = settings.effective_llm("global")
-    return {
-        "models": settings.public_models(),
-        "defaults": asdict(settings.defaults),
-        "active": asdict(settings.active),
-        "effective": effective_models_summary(settings),
-        "llm": {
-            "base_url_configured": bool(global_llm.base_url),
-            "api_key_configured": bool(global_llm.api_key),
-            "model": global_llm.model,
-            "model_name": global_llm.model,
-            "provider": global_llm.provider,
-            "source": global_llm.source,
-        },
-        "reader": asdict(settings.reader),
-        "context": {
-            **asdict(settings.context),
-            "effective_input_budget": settings.context.normal_target_input_tokens,
-            "hard_input_cap": settings.context.emergency_input_cap_tokens,
-        },
-        "window_l1": {
-            "lookahead_paragraphs": settings.reader.lookahead_paragraphs,
-            **asdict(settings.window_l1),
-        },
-        "env": {
-            "overrides": settings.env_overrides,
-            "ignored": settings.ignored_env,
-            "read_only": settings.read_only_env,
-        },
-    }
-
-
-def _config_groups(settings: Settings) -> dict[str, Any]:
-    return {
-        group_name: asdict(getattr(settings, group_name))
-        for group_name in PERSISTED_SETTINGS_GROUPS
-    }
-
-
-def _config_document(settings: Settings) -> dict[str, Any]:
-    return {
-        "config": {
-            "models": settings.public_models(),
-            "defaults": asdict(settings.defaults),
-            "active": asdict(settings.active),
-            "groups": _config_groups(settings),
-        },
-        "models": settings.public_models(),
-        "defaults": asdict(settings.defaults),
-        "active": asdict(settings.active),
-        "effective": effective_models_summary(settings),
-        "metadata": settings.ui_metadata(),
-        "runtime": runtime_summary(settings),
-        "policy": {
-            "in_flight_model_switch": (
-                "进行中的 Chat 流和 running 评论任务沿用启动时模型；新请求和新任务使用更新后的当前配置。"
-            ),
-            "compaction_model": "Context Compaction Agent 与 Comment Agent 共用模型。",
-        },
-    }
-
-
-def _coerce_bool(value: Any, path: str, errors: list[dict[str, str]]) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    errors.append(_field_error(path, "必须是布尔值"))
-    return False
-
-
-def _coerce_scalar(
-    value: Any,
-    current: Any,
-    path: str,
-    errors: list[dict[str, str]],
-) -> Any:
-    if isinstance(current, bool):
-        coerced = _coerce_bool(value, path, errors)
-    elif isinstance(current, int) and not isinstance(current, bool):
-        try:
-            if isinstance(value, bool):
-                raise TypeError
-            coerced = int(value)
-        except (TypeError, ValueError):
-            errors.append(_field_error(path, "必须是整数"))
-            return current
-    elif isinstance(current, float):
-        try:
-            if isinstance(value, bool):
-                raise TypeError
-            coerced = float(value)
-        except (TypeError, ValueError):
-            errors.append(_field_error(path, "必须是数字"))
-            return current
-    elif isinstance(current, list):
-        if isinstance(value, str):
-            coerced = [item.strip() for item in value.split(",") if item.strip()]
-        elif isinstance(value, list | tuple):
-            coerced = [str(item).strip() for item in value if str(item).strip()]
-        else:
-            errors.append(_field_error(path, "必须是字符串列表"))
-            return current
-    else:
-        coerced = "" if value is None else str(value)
-    _validate_constraints(path, coerced, errors)
-    return coerced
-
-
 def _validate_constraints(
     path: str,
     value: Any,
@@ -330,46 +124,6 @@ def _validate_constraints(
 def _is_http_url(value: str) -> bool:
     parsed = urlparse(value.strip())
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
-def _coerce_dataclass_group(
-    group_name: str,
-    base: Any,
-    payload: Any,
-    errors: list[dict[str, str]],
-    prefix: str = "",
-) -> Any:
-    if not isinstance(payload, dict):
-        errors.append(_field_error(group_name, "配置分组必须是对象"))
-        return base
-
-    valid_names = {item.name for item in fields(base)}
-    for key in payload:
-        if key not in valid_names:
-            errors.append(_field_error(f"{group_name}.{prefix}{key}", "未知配置项"))
-
-    updates: dict[str, Any] = {}
-    for item in fields(base):
-        if item.name not in payload:
-            continue
-        current = getattr(base, item.name)
-        path = f"{group_name}.{prefix}{item.name}"
-        if is_dataclass(current):
-            updates[item.name] = _coerce_dataclass_group(
-                group_name,
-                current,
-                payload[item.name],
-                errors,
-                prefix=f"{prefix}{item.name}.",
-            )
-        else:
-            updates[item.name] = _coerce_scalar(
-                payload[item.name],
-                current,
-                path,
-                errors,
-            )
-    return replace(base, **updates)
 
 
 def _validate_model_payload(
@@ -515,11 +269,15 @@ def _settings_from_payload(
         incoming = data.get(group_name, group_payloads.get(group_name))
         if incoming is None:
             continue
-        updates[group_name] = _coerce_dataclass_group(
+        updates[group_name] = coerce_dataclass_group(
             group_name,
             getattr(current, group_name),
             incoming,
-            errors,
+            errors=errors,
+            field_error=_field_error,
+            validate_constraints=_validate_constraints,
+            reject_unknown=True,
+            strict=True,
         )
 
     _raise_validation(errors)
@@ -533,7 +291,7 @@ def _save_and_reload(
     reset_env_override_paths: set[str] | None = None,
 ) -> Settings:
     save_settings(settings, reset_env_override_paths=reset_env_override_paths)
-    return _load_latest_settings(request)
+    return load_latest_settings(request)
 
 
 def _referencing_paths(settings: Settings, model_id: str) -> list[str]:
@@ -544,14 +302,6 @@ def _referencing_paths(settings: Settings, model_id: str) -> list[str]:
             if getattr(refs, field_name) == model_id:
                 paths.append(f"{group_name}.{field_name}")
     return paths
-
-
-def _replace_path_value(obj: Any, parts: list[str], value: Any) -> Any:
-    if not parts:
-        return value
-    head, *tail = parts
-    child = getattr(obj, head)
-    return replace(obj, **{head: _replace_path_value(child, tail, value)})
 
 
 def _reset_field(settings: Settings, path: str) -> Settings:
@@ -586,7 +336,7 @@ def _reset_field(settings: Settings, path: str) -> Settings:
     group = getattr(settings, group_name)
     default_group = DATACLASS_GROUPS[group_name]()
     value = _read_nested_attr(default_group, field_path.split("."), path)
-    new_group = _replace_path_value(group, field_path.split("."), value)
+    new_group = replace_path_value(group, field_path.split("."), value)
     return replace(settings, **{group_name: new_group})
 
 
@@ -657,7 +407,7 @@ def _reset_preset(
 
 @router.get("/config")
 async def read_config(request: Request) -> dict[str, Any]:
-    return _config_document(_load_latest_settings(request))
+    return config_document(load_latest_settings(request))
 
 
 @router.get("/config/schema")
@@ -673,7 +423,7 @@ async def save_config(request: Request, body: dict[str, Any]) -> dict[str, Any]:
         settings,
         reset_env_override_paths=_reset_env_override_paths_from_payload(body),
     )
-    return _config_document(saved)
+    return config_document(saved)
 
 
 @router.post("/config/reset")
@@ -713,7 +463,7 @@ async def reset_config(request: Request, body: dict[str, Any]) -> dict[str, Any]
         settings,
         reset_env_override_paths=reset_paths & set(settings.env_overrides),
     )
-    return _config_document(saved)
+    return config_document(saved)
 
 
 @router.post("/config/models")
@@ -736,7 +486,7 @@ async def create_model(request: Request, body: dict[str, Any]) -> dict[str, Any]
         request,
         replace(settings, models=models, defaults=defaults, active=active),
     )
-    return _config_document(saved)
+    return config_document(saved)
 
 
 @router.put("/config/models/{model_id}")
@@ -766,7 +516,7 @@ async def update_model(
     _raise_validation(errors)
     models = [model if item.id == model_id else item for item in settings.models]
     saved = _save_and_reload(request, replace(settings, models=models))
-    return _config_document(saved)
+    return config_document(saved)
 
 
 @router.delete("/config/models/{model_id}")
@@ -800,7 +550,7 @@ async def delete_model(
         request,
         replace(settings, models=models, defaults=defaults, active=active),
     )
-    return _config_document(saved)
+    return config_document(saved)
 
 
 @router.post("/config/models/ping")
@@ -851,4 +601,4 @@ async def switch_active_model(request: Request, body: dict[str, Any]) -> dict[st
     field_name = AGENT_ACTIVE_FIELDS[scope]
     active = replace(settings.active, **{field_name: model_id})
     saved = _save_and_reload(request, replace(settings, active=active))
-    return _config_document(saved)
+    return config_document(saved)

@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, Path as PathParam, Request, UploadFile
 
 from ..errors import AppError
+from ..infrastructure.settings import current_settings
 from ..repos import books as book_repo
 from ..repos import progress as progress_repo
 
@@ -39,8 +40,6 @@ def _book_summary(
 async def import_book(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     if not file.filename or not file.filename.endswith(".epub"):
         raise AppError("invalid_epub", "Only .epub files are accepted")
-
-    from .config import current_settings
 
     settings = current_settings(request)
     db = request.app.state.db

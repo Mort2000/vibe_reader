@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 
+from ..config_summary import runtime_summary, settings_summary
+from ..infrastructure.settings import current_settings
+
 router = APIRouter()
 
 
@@ -17,13 +20,9 @@ async def health() -> dict:
 
 @router.get("/runtime")
 async def runtime(request: Request) -> dict:
-    from .config import current_settings, runtime_summary
-
     return runtime_summary(current_settings(request))
 
 
 @router.get("/settings")
 async def get_settings(request: Request) -> dict:
-    from .config import current_settings, settings_summary
-
     return settings_summary(current_settings(request))

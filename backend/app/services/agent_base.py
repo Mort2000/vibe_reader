@@ -116,6 +116,34 @@ def clear_agent_caches() -> None:
     _compaction_agents.clear()
 
 
+def prune_agent_caches(settings: Settings) -> None:
+    model_keys = {
+        _model_cache_key(settings, agent)
+        for agent in ("global", "chat", "comment", "compaction")
+    }
+    for key in list(_models):
+        if key not in model_keys:
+            _models.pop(key, None)
+
+    active_chat_key = ("ReadingChatAgent", _model_cache_key(settings, "chat"))
+    for key in list(_chat_agents):
+        if key != active_chat_key:
+            _chat_agents.pop(key, None)
+
+    active_comment_key = ("ParagraphCommentAgent", _model_cache_key(settings, "comment"))
+    for key in list(_comment_agents):
+        if key != active_comment_key:
+            _comment_agents.pop(key, None)
+
+    active_compaction_key = (
+        "ContextCompactionAgent",
+        _model_cache_key(settings, "comment"),
+    )
+    for key in list(_compaction_agents):
+        if key != active_compaction_key:
+            _compaction_agents.pop(key, None)
+
+
 def _model_settings(think_effort: str) -> OpenAIChatModelSettings | None:
     if not think_effort:
         return None

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Path as PathParam, Request
 from pydantic import BaseModel, Field
 
 from ..application.progress import UpdateProgressCommand, UpdateProgressUseCase
+from ..infrastructure.settings import current_settings
 from ..repos import progress as progress_repo
 
 router = APIRouter(tags=["progress"])
@@ -32,8 +33,6 @@ async def update_progress(
     book_id: int = PathParam(...),
     body: ProgressRequest = ...,
 ) -> dict[str, Any]:
-    from .config import current_settings
-
     db = request.app.state.db
     settings = current_settings(request)
     job_runner = request.app.state.job_runner

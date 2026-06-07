@@ -7,6 +7,8 @@ from typing import Any
 from fastapi import APIRouter, Path as PathParam, Query, Request
 from pydantic import BaseModel, Field
 
+from ..infrastructure.settings import current_settings
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
@@ -44,7 +46,6 @@ async def chat_stream(request: Request, body: ChatStreamRequest) -> Any:
     from ..observability import get_trace_id, new_trace_id
     from ..repos import chat as chat_repo
     from ..services.chat_service import build_chat_context, stream_llm_response
-    from .config import current_settings
 
     db = request.app.state.db
     settings = current_settings(request)

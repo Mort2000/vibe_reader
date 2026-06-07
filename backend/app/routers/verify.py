@@ -5,15 +5,14 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from ..errors import AppError
+from ..infrastructure.settings import current_settings
 
 
 router = APIRouter(tags=["verify"])
 
 
 def _require_verify(request: Request) -> None:
-    provider = getattr(request.app.state, "settings_provider", None)
-    settings = provider.current() if provider is not None else request.app.state.settings
-    if not settings.verify_mode:
+    if not current_settings(request).verify_mode:
         raise AppError(
             "verify_mode_required",
             "Verify endpoints require VIBE_READER_VERIFY_MODE=1",
@@ -32,8 +31,7 @@ async def verify_agent_runs(
     from ..services.verify_telemetry import list_agent_run_records
 
     db = request.app.state.db
-    provider = getattr(request.app.state, "settings_provider", None)
-    settings = provider.current() if provider is not None else request.app.state.settings
+    settings = current_settings(request)
     items = await list_agent_run_records(
         db,
         run_id=run_id,
@@ -48,8 +46,7 @@ async def verify_agent_runs(
 async def verify_llm_ping(request: Request) -> dict[str, Any]:
     """Minimal LLM connectivity probe for system verification (S0)."""
     _require_verify(request)
-    provider = getattr(request.app.state, "settings_provider", None)
-    settings = provider.current() if provider is not None else request.app.state.settings
+    settings = current_settings(request)
     from ..services.llm_ping import ping_llm
 
     return await ping_llm(settings.effective_llm("global"), timeout_s=60.0)
