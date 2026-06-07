@@ -2,6 +2,7 @@ import { Layers } from 'lucide-react';
 
 import { chapterDisplayTitle, formatNumber } from '../../lib/formatters';
 import type { ChapterSummary } from '../../types';
+import styles from './ChapterNavigator.module.css';
 
 export function ChapterNavigator({
   activeChapter,
@@ -13,16 +14,16 @@ export function ChapterNavigator({
   onSelectChapter: (idx: number) => void;
 }) {
   return (
-    <section className="chapter-strip">
-      <div className="section-heading">
+    <section className={styles.chapterStrip}>
+      <div className={styles.sectionHeading}>
         <Layers size={18} />
         <strong>章节</strong>
       </div>
-      <div className="chapter-list">
+      <div className={styles.chapterList}>
         {chapters.map((chapter) => (
           <button
             key={chapter.idx}
-            className={activeChapter?.idx === chapter.idx ? 'active' : ''}
+            className={activeChapter?.idx === chapter.idx ? styles.active : ''}
             onClick={() => onSelectChapter(chapter.idx)}
           >
             <span>{chapterDisplayTitle(chapter)}</span>
@@ -39,12 +40,12 @@ export function ChapterNavigator({
 
 export function EmptyChapterPanel() {
   return (
-    <section className="chapter-strip empty-chapter">
-      <div className="section-heading">
+    <section className={styles.chapterStrip}>
+      <div className={styles.sectionHeading}>
         <Layers size={18} />
         <strong>章节</strong>
       </div>
-      <div className="empty-feed">
+      <div className={styles.emptyFeed}>
         <Layers size={18} />
         <span>选择书籍后显示章节。</span>
       </div>
