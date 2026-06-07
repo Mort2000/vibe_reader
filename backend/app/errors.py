@@ -32,6 +32,7 @@ ERROR_MAP = {
     "llm_timeout": 504,
     "llm_not_configured": 400,
     "verify_mode_required": 404,
+    "config_reference_conflict": 409,
 }
 
 

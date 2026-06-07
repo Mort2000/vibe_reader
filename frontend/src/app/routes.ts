@@ -7,6 +7,7 @@ const topLevelRouteModes: Record<string, PaneMode> = {
   chapters: 'chapters',
   assistant: 'assistant',
   status: 'status',
+  config: 'config',
 };
 
 const chapterRouteModes: Record<string, PaneMode> = {
@@ -14,6 +15,7 @@ const chapterRouteModes: Record<string, PaneMode> = {
   chapters: 'chapters',
   assistant: 'assistant',
   status: 'status',
+  config: 'config',
 };
 
 export interface ParsedAppRoute {
@@ -92,5 +94,8 @@ export function modeRoutePath(
   if (mode === 'assistant') {
     return context ? `${readerRoutePath(context)}/assistant` : '/assistant';
   }
-  return context ? `${readerRoutePath(context)}/status` : '/status';
+  if (mode === 'status') {
+    return context ? `${readerRoutePath(context)}/status` : '/status';
+  }
+  return context ? `${readerRoutePath(context)}/config` : '/config';
 }

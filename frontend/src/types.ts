@@ -1,5 +1,11 @@
 export type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
-export type PaneMode = 'library' | 'chapters' | 'reader' | 'assistant' | 'status';
+export type PaneMode =
+  | 'library'
+  | 'chapters'
+  | 'reader'
+  | 'assistant'
+  | 'status'
+  | 'config';
 export type ReaderTheme = 'light' | 'dark';
 export type WindowStatus = 'pending' | 'running' | 'done' | 'failed';
 export type JobStatus = WindowStatus | 'skipped';
@@ -21,6 +27,13 @@ export interface RuntimeInfo {
     base_url_configured: boolean;
     api_key_configured: boolean;
     model: string;
+    model_name?: string;
+    provider?: string;
+    source?: string;
+  };
+  models?: {
+    catalog_count: number;
+    effective: EffectiveModels;
   };
   observability: {
     enabled: boolean;
@@ -28,16 +41,60 @@ export interface RuntimeInfo {
   };
 }
 
+export interface ModelConfigSummary {
+  id: string;
+  provider: string;
+  url: string;
+  model_name: string;
+  api_key_configured: boolean;
+  api_key: string;
+  think_effort: string;
+}
+
+export interface ModelRefs {
+  global_model_id: string;
+  chat_model_id: string;
+  comment_model_id: string;
+}
+
+export interface EffectiveModelSummary {
+  agent: string;
+  model_id: string;
+  provider: string;
+  model_name: string;
+  think_effort: string;
+  source: string;
+  base_url_configured: boolean;
+  api_key_configured: boolean;
+}
+
+export interface EffectiveModels {
+  global: EffectiveModelSummary;
+  chat: EffectiveModelSummary;
+  comment: EffectiveModelSummary;
+  compaction: EffectiveModelSummary;
+}
+
 export interface SettingsSummary {
+  models?: ModelConfigSummary[];
+  defaults?: ModelRefs;
+  active?: ModelRefs;
+  effective?: EffectiveModels;
   reader: {
-    font_size: number;
-    line_height: number;
-    theme: ReaderTheme;
+    font_size?: number;
+    line_height?: number;
+    theme?: ReaderTheme;
+    lookahead_paragraphs?: number;
+    progress_debounce_ms?: number;
   };
   llm: {
-    base_url: string;
+    base_url?: string;
+    base_url_configured?: boolean;
     api_key_configured: boolean;
     model: string;
+    model_name?: string;
+    provider?: string;
+    source?: string;
   };
   context?: {
     provider_context_limit_tokens?: number;
@@ -56,6 +113,90 @@ export interface SettingsSummary {
     focus_target_tokens?: number;
     focus_max_tokens?: number;
   };
+  env?: {
+    overrides: Record<string, string>;
+    ignored: Record<string, string[]>;
+    read_only: Record<string, string[]>;
+  };
+}
+
+export type ConfigScalar = string | number | boolean | string[] | null;
+export type ConfigGroupValue =
+  | ConfigScalar
+  | Record<string, ConfigScalar | Record<string, ConfigScalar>>;
+export type ConfigGroup = Record<string, ConfigGroupValue>;
+
+export interface ConfigFile {
+  models: ModelConfigSummary[];
+  defaults: ModelRefs;
+  active: ModelRefs;
+  groups: Record<string, ConfigGroup>;
+}
+
+export interface EnvOverrideMetadata {
+  env_var: string;
+  effective_value: ConfigGroupValue;
+}
+
+export interface ConfigFieldMetadata {
+  path: string;
+  label: string;
+  description: string;
+  type: string;
+  default: ConfigGroupValue;
+  constraints: Record<string, unknown>;
+  env_override?: EnvOverrideMetadata;
+  read_only?: boolean;
+}
+
+export interface ConfigGroupMetadata {
+  label: string;
+  description: string;
+  fields: Record<string, ConfigFieldMetadata>;
+  secret_policy?: {
+    masked_value: string;
+    unchanged_sentinel: string;
+    readback: string;
+  };
+  ignored_env?: string[];
+  read_only_env?: string[];
+}
+
+export interface ConfigMetadata {
+  groups: Record<string, ConfigGroupMetadata>;
+  env_overrides: Record<string, string>;
+  ignored_env: Record<string, string[]>;
+  read_only_env: Record<string, string[]>;
+  migrations: string[];
+}
+
+export interface ConfigDocument {
+  config: ConfigFile;
+  models: ModelConfigSummary[];
+  defaults: ModelRefs;
+  active: ModelRefs;
+  effective: EffectiveModels;
+  metadata: ConfigMetadata;
+  runtime: RuntimeInfo;
+  policy: {
+    in_flight_model_switch: string;
+    compaction_model: string;
+  };
+}
+
+export interface ModelPingResult {
+  ok: boolean;
+  model: string;
+  model_id: string;
+  trace_id?: string;
+  latency_ms?: number;
+  reply_excerpt?: string;
+  tokens?: {
+    input?: number | null;
+    output?: number | null;
+    cached_input?: number | null;
+  };
+  usage_estimate?: boolean;
 }
 
 export interface ReadingProgress {

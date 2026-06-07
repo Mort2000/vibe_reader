@@ -21,6 +21,12 @@ def _audit_enabled(settings: Any) -> bool:
     )
 
 
+def _calibration_model_identity(settings: Any, agent_name: str) -> str:
+    if hasattr(settings, "effective_model_identity"):
+        return settings.effective_model_identity(agent_name)
+    return getattr(getattr(settings, "llm", None), "model", "")
+
+
 class AgentRunRecorder:
     def __init__(
         self,
@@ -88,7 +94,7 @@ class AgentRunRecorder:
             estimator = TokenEstimator(settings.token_estimation)
         await estimator.record_observation(
             db,
-            model=settings.llm.model,
+            model=_calibration_model_identity(settings, result.agent_name),
             prompt_version=result.prompt_version,
             language_profile="cjk_mixed",
             raw_estimate=result.context_estimated_tokens

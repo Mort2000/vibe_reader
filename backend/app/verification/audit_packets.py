@@ -80,6 +80,12 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 3)
 
 
+def _effective_model_name(settings: Any, agent: str) -> str:
+    if hasattr(settings, "effective_llm"):
+        return settings.effective_llm(agent).model
+    return getattr(getattr(settings, "llm", None), "model", "")
+
+
 def _component_tokens(component: dict[str, Any]) -> int:
     return int(component.get("token_estimate") or component.get("tokens") or 0)
 
@@ -812,9 +818,10 @@ def build_comment_interaction_packet(
         )
 
     messages = agent_result.all_messages() if agent_result is not None else []
+    model_name = _effective_model_name(settings, "comment")
     llm_rounds = extract_llm_rounds(
         messages,
-        model=settings.llm.model,
+        model=model_name,
         duration_ms=duration_ms,
         usage_source=usage_source,
         input_tokens=input_tokens,
@@ -860,7 +867,7 @@ def build_comment_interaction_packet(
         "agent": "ParagraphCommentAgent",
         "llm_mode": None,
         "stub_profile": None,
-        "model": settings.llm.model,
+        "model": model_name,
         "book": {
             "id": book.get("id"),
             "title": book.get("title"),
@@ -936,10 +943,11 @@ def build_compaction_interaction_packet(
     prompt_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     usage_source = "provider" if input_tokens is not None else "estimate"
+    model_name = _effective_model_name(settings, "compaction")
 
     llm_rounds = extract_llm_rounds(
         agent_result.all_messages(),
-        model=settings.llm.model,
+        model=model_name,
         duration_ms=duration_ms,
         usage_source=usage_source,
         input_tokens=input_tokens,
@@ -1079,7 +1087,7 @@ def build_compaction_interaction_packet(
         "agent": "ContextCompactionAgent",
         "llm_mode": None,
         "stub_profile": None,
-        "model": settings.llm.model,
+        "model": model_name,
         "book": book_payload,
         "chapter_idx": chapter_idx,
         "prompt_version": COMPACTION_PROMPT_VERSION,
@@ -1173,9 +1181,10 @@ def build_chat_interaction_packet(
     prompt_messages = [{"role": "user", "content": prompt}]
     messages = agent_result.all_messages()
     usage_source = "provider" if input_tokens is not None else "estimate"
+    model_name = _effective_model_name(settings, "chat")
     llm_rounds = extract_llm_rounds(
         messages,
-        model=settings.llm.model,
+        model=model_name,
         duration_ms=duration_ms,
         usage_source=usage_source,
         input_tokens=input_tokens,

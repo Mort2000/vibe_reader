@@ -278,12 +278,13 @@ async def _run_comment_llm(
     )
 
     agent = get_comment_agent(settings)
+    llm = settings.effective_llm("comment")
     trace_id = ensure_trace_id()
 
     t0 = time.monotonic()
     span_attrs = {
         "ai.agent": "ParagraphCommentAgent",
-        "ai.model": settings.llm.model,
+        "ai.model": llm.model,
         "book.id": book_id,
         "chapter.idx": chapter_idx,
         "window.id": window_id,
@@ -306,7 +307,7 @@ async def _run_comment_llm(
             mark_span_error(span, exc)
             record_agent_metric(
                 agent="ParagraphCommentAgent",
-                model=settings.llm.model,
+                model=llm.model,
                 status="error",
                 duration_ms=latency_ms,
             )
@@ -334,7 +335,7 @@ async def _run_comment_llm(
         )
         record_agent_metric(
             agent="ParagraphCommentAgent",
-            model=settings.llm.model,
+            model=llm.model,
             status="ok",
             duration_ms=latency_ms,
             input_tokens=usage_input,

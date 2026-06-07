@@ -5,9 +5,12 @@ import type {
   ChapterSummary,
   ChatSession,
   ChatTurn,
+  ConfigDocument,
   ImportResult,
   JobSummary,
   ListResponse,
+  ModelConfigSummary,
+  ModelPingResult,
   ParagraphComment,
   ParagraphsResponse,
   ProgressUpdateResponse,
@@ -102,6 +105,79 @@ export const api = {
     request<{ status: string; time: string }>('/health', options),
   runtime: (options?: RequestInit) => request<RuntimeInfo>('/runtime', options),
   settings: (options?: RequestInit) => request<SettingsSummary>('/settings', options),
+  config: (options?: RequestInit) => request<ConfigDocument>('/config', options),
+  saveConfig: (
+    config: ConfigDocument['config'],
+    options?: RequestInit & { resetEnvOverridePaths?: string[] },
+  ) =>
+    request<ConfigDocument>('/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      signal: options?.signal,
+      body: JSON.stringify({
+        config,
+        reset_env_override_paths: options?.resetEnvOverridePaths ?? [],
+      }),
+    }),
+  resetConfig: (
+    body:
+      | { scope: 'field'; path: string }
+      | { scope: 'group'; group: string }
+      | { scope: 'preset' | 'common'; preset: string },
+    options?: RequestInit,
+  ) =>
+    request<ConfigDocument>('/config/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: options?.signal,
+      body: JSON.stringify(body),
+    }),
+  createModel: (model: Partial<ModelConfigSummary>, options?: RequestInit) =>
+    request<ConfigDocument>('/config/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: options?.signal,
+      body: JSON.stringify(model),
+    }),
+  updateModel: (
+    modelId: string,
+    model: Partial<ModelConfigSummary>,
+    options?: RequestInit,
+  ) =>
+    request<ConfigDocument>(`/config/models/${encodeURIComponent(modelId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      signal: options?.signal,
+      body: JSON.stringify(model),
+    }),
+  deleteModel: (modelId: string, options?: RequestInit) =>
+    request<ConfigDocument>(`/config/models/${encodeURIComponent(modelId)}`, {
+      method: 'DELETE',
+      signal: options?.signal,
+    }),
+  pingModel: (
+    body:
+      | { model_id: string; model?: Partial<ModelConfigSummary> }
+      | { model: Partial<ModelConfigSummary> },
+    options?: RequestInit,
+  ) =>
+    request<ModelPingResult>('/config/models/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: options?.signal,
+      body: JSON.stringify(body),
+    }),
+  switchActiveModel: (
+    scope: 'global' | 'chat' | 'comment' | 'compaction',
+    modelId: string,
+    options?: RequestInit,
+  ) =>
+    request<ConfigDocument>('/config/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: options?.signal,
+      body: JSON.stringify({ scope, model_id: modelId }),
+    }),
   books: (q?: string, options?: RequestInit) => {
     const params = new URLSearchParams();
     if (q) params.set('q', q);

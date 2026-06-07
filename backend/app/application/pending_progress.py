@@ -106,7 +106,7 @@ class PendingProgressProcessor:
                     estimator = TokenEstimator(settings.token_estimation)
                 jump_token_est = estimator.get_safe_estimate(
                     jump_text,
-                    settings.llm.model,
+                    settings.effective_model_identity("global"),
                 )
                 max_jump_tokens = settings.context.max_context_jump_tokens_estimate
                 if jump_token_est > max_jump_tokens:

@@ -4,7 +4,7 @@ import pytest
 
 from app.application.agent_run_recorder import AgentRunRecorder
 from app.application.agent_run_result import AgentRunResult
-from app.config import Settings
+from app.config import ModelConfig, ModelDefaultsConfig, Settings
 
 
 class FakeEstimator:
@@ -97,6 +97,38 @@ async def test_recorder_records_non_tool_token_calibration() -> None:
     assert len(estimator.calls) == 1
     assert estimator.calls[0]["raw_estimate"] == 1000
     assert estimator.calls[0]["actual_tokens"] == 1100
+
+
+@pytest.mark.asyncio
+async def test_recorder_uses_effective_agent_model_identity_for_calibration() -> None:
+    estimator = FakeEstimator()
+    recorder = AgentRunRecorder(token_estimator=estimator)
+    settings = Settings(
+        models=[
+            ModelConfig(id="chat", model_name="chat-model"),
+            ModelConfig(id="comment", model_name="comment-model"),
+        ],
+        defaults=ModelDefaultsConfig(
+            global_model_id="chat",
+            chat_model_id="chat",
+            comment_model_id="comment",
+        ),
+    )
+
+    await recorder._record_token_calibration(
+        object(),
+        AgentRunResult(
+            agent_name="ContextCompactionAgent",
+            duration_ms=1.0,
+            input_tokens=1300,
+            context_estimated_tokens=1000,
+            prompt_version="compaction_v1",
+            prompt_manifest=_manifest(),
+        ),
+        settings,
+    )
+
+    assert estimator.calls[0]["model"] == "openai_compatible:comment:comment-model"
 
 
 @pytest.mark.asyncio

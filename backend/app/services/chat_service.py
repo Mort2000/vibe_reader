@@ -140,6 +140,7 @@ async def stream_llm_response(
     job_runner: Any | None = None,
 ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
     agent = get_chat_agent(settings)
+    llm = settings.effective_llm("chat")
     deps = ChatDeps()
     t0 = time.monotonic()
     ttft_ms: float | None = None
@@ -155,7 +156,7 @@ async def stream_llm_response(
             "ai.ReadingChatAgent.run",
             {
                 "ai.agent": "ReadingChatAgent",
-                "ai.model": settings.llm.model,
+                "ai.model": llm.model,
                 "book.id": book_id,
                 "chapter.idx": chapter_idx,
                 "paragraph.idx": paragraph_idx,
@@ -189,7 +190,7 @@ async def stream_llm_response(
                 mark_span_error(span, exc)
                 record_agent_metric(
                     agent="ReadingChatAgent",
-                    model=settings.llm.model,
+                    model=llm.model,
                     status="error",
                     duration_ms=latency_ms,
                 )
@@ -212,7 +213,7 @@ async def stream_llm_response(
             )
             record_agent_metric(
                 agent="ReadingChatAgent",
-                model=settings.llm.model,
+                model=llm.model,
                 status="ok",
                 duration_ms=latency_ms,
                 input_tokens=tokens_in,

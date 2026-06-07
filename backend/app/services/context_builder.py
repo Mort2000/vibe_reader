@@ -384,6 +384,7 @@ def render_context(
     emergency_overflow_used: bool,
     estimator: TokenEstimator,
     settings: Settings,
+    calibration_model: str,
 ) -> ContextBuildResult:
     """Render a ContextPlan into a prompt string and manifest."""
     prompt_parts: list[str] = []
@@ -418,10 +419,9 @@ def render_context(
     full_prompt = "\n".join(prompt_parts)
     ctx_hash = hashlib.sha256(full_prompt.encode("utf-8")).hexdigest()[:16]
 
-    model = settings.llm.model
     raw_total = _estimate_text_tokens(full_prompt)
-    safe_total = estimator.get_safe_estimate(full_prompt, model)
-    estimator_info = estimator.get_calibration_info(model)
+    safe_total = estimator.get_safe_estimate(full_prompt, calibration_model)
+    estimator_info = estimator.get_calibration_info(calibration_model)
 
     ctx_cfg = settings.context
     manifest = {
@@ -597,8 +597,10 @@ async def build_context(
             )
 
             # --- BUDGET ---
+            calibration_agent = "chat" if task_type == "chat" else "comment"
+            calibration_model = settings.effective_model_identity(calibration_agent)
             safe_estimated_tokens = (
-                est.get_safe_estimate(original_block, settings.llm.model)
+                est.get_safe_estimate(original_block, calibration_model)
                 + system_tokens
                 + metadata_tokens
                 + reserved_tokens
@@ -633,6 +635,7 @@ async def build_context(
                 emergency_overflow_used=overflow_already_used or emergency_now,
                 estimator=est,
                 settings=settings,
+                calibration_model=calibration_model,
             )
             duration_ms = (time.monotonic() - started) * 1000
             set_span_attributes(

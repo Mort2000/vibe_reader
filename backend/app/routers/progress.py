@@ -6,6 +6,7 @@ from fastapi import APIRouter, Path as PathParam, Request
 from pydantic import BaseModel, Field
 
 from ..application.progress import UpdateProgressCommand, UpdateProgressUseCase
+from ..infrastructure.settings import current_settings
 from ..repos import progress as progress_repo
 
 router = APIRouter(tags=["progress"])
@@ -33,7 +34,7 @@ async def update_progress(
     body: ProgressRequest = ...,
 ) -> dict[str, Any]:
     db = request.app.state.db
-    settings = request.app.state.settings
+    settings = current_settings(request)
     job_runner = request.app.state.job_runner
     token_estimator = getattr(request.app.state, "token_estimator", None)
 

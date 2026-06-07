@@ -7,20 +7,33 @@ from typing import Any
 
 import httpx
 
-from ..config import LLMConfig
+from ..config import MASKED_SECRET, LLMConfig, ModelConfig
 from ..errors import AppError
 from ..observability import get_trace_id
 
 
-async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
+def _redact(text: str, *secrets: str) -> str:
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, MASKED_SECRET)
+    return redacted
+
+
+async def ping_llm(
+    llm: LLMConfig | ModelConfig,
+    timeout_s: float = 60.0,
+) -> dict[str, Any]:
     """Send a minimal chat completion request and return usage summary."""
+    if isinstance(llm, ModelConfig):
+        llm = llm.to_llm()
     if not llm.base_url:
         raise AppError(
-            "llm_not_configured", "LLM base_url is not configured", status=400
+            "llm_not_configured", "LLM Base URL 未配置", status=400
         )
     if not llm.api_key:
         raise AppError(
-            "llm_not_configured", "LLM api_key is not configured", status=400
+            "llm_not_configured", "LLM API Key 未配置", status=400
         )
 
     url = f"{llm.base_url.rstrip('/')}/chat/completions"
@@ -43,11 +56,13 @@ async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
             resp = await client.post(url, headers=headers, json=payload)
     except httpx.TimeoutException as exc:
         raise AppError(
-            "llm_timeout", f"LLM ping timed out after {timeout_s}s", status=504
+            "llm_timeout", f"LLM 连通性测试在 {timeout_s}s 后超时", status=504
         ) from exc
     except httpx.HTTPError as exc:
         raise AppError(
-            "llm_provider_error", f"LLM ping request failed: {exc}", status=502
+            "llm_provider_error",
+            f"LLM 连通性请求失败：{_redact(str(exc), llm.api_key)}",
+            status=502,
         ) from exc
 
     elapsed_ms = (time.monotonic() - start) * 1000
@@ -56,11 +71,11 @@ async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
         detail = resp.text[:300] if resp.text else resp.reason_phrase
         raise AppError(
             "llm_provider_error",
-            f"LLM provider returned HTTP {resp.status_code}",
+            f"LLM 服务返回 HTTP {resp.status_code}",
             status=502,
             details={
                 "provider_status": resp.status_code,
-                "provider_body_excerpt": detail,
+                "provider_body_excerpt": _redact(detail, llm.api_key),
             },
         )
 
@@ -68,7 +83,7 @@ async def ping_llm(llm: LLMConfig, timeout_s: float = 60.0) -> dict[str, Any]:
         body = resp.json()
     except ValueError as exc:
         raise AppError(
-            "llm_provider_error", "LLM provider returned non-JSON response", status=502
+            "llm_provider_error", "LLM 服务返回了非 JSON 响应", status=502
         ) from exc
 
     usage = body.get("usage") or {}
